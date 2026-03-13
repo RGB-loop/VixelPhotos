@@ -28,6 +28,7 @@ export interface WatchedFolder {
   lastScanAt?: string
   recursive: boolean
   createdAt: string
+  photoCount?: number // 该文件夹中的照片数量
 }
 
 export interface SearchResult {
@@ -73,6 +74,7 @@ export const IPC_CHANNELS = {
   REMOVE_FOLDER: 'remove-folder',
   GET_FOLDERS: 'get-folders',
   SELECT_FOLDER: 'select-folder',
+  GET_FOLDER_STATS: 'get-folder-stats',
 
   // 照片
   GET_PHOTO_DETAIL: 'get-photo-detail',

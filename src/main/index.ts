@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { readFile } from 'fs/promises'
+import { readFile, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase } from './db'
@@ -119,19 +119,46 @@ function registerIpcHandlers(): void {
     return folder
   })
 
-  // 移除监控文件夹
+  // 移除监控文件夹（包括删除所有索引数据）
   ipcMain.handle(IPC_CHANNELS.REMOVE_FOLDER, async (_event, folderId: number) => {
     const folder = db.getFolder(folderId)
     if (folder) {
+      // 1. 停止监听
       watcher.unwatchFolder(folderId)
+
+      // 2. 获取并删除所有照片数据，返回需要清理的照片 ID
+      const photoIds = db.deletePhotosByFolder(folderId)
+
+      // 3. 删除缩略图文件
+      const thumbnailsDir = join(app.getPath('userData'), 'thumbnails')
+      for (const photoId of photoIds) {
+        const thumbnailPath = join(thumbnailsDir, `${photoId}.webp`)
+        try {
+          if (existsSync(thumbnailPath)) {
+            await unlink(thumbnailPath)
+          }
+        } catch (e) {
+          // 忽略删除失败的错误
+          console.warn(`Failed to delete thumbnail: ${thumbnailPath}`, e)
+        }
+      }
+
+      // 4. 删除文件夹记录
       db.removeFolder(folderId)
+
+      console.log(`Removed folder ${folderId} with ${photoIds.length} photos`)
     }
     return true
   })
 
-  // 获取所有监控文件夹
+  // 获取所有监控文件夹（包含照片数量统计）
   ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {
-    return db.getFolders()
+    return db.getFoldersWithStats()
+  })
+
+  // 获取文件夹统计信息
+  ipcMain.handle(IPC_CHANNELS.GET_FOLDER_STATS, async (_event, folderId: number) => {
+    return db.getFolderStats(folderId)
   })
 
   // 获取照片详情

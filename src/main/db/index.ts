@@ -84,7 +84,10 @@ export interface DatabaseInstance {
   removeFolder: (id: number) => void
   getFolder: (id: number) => WatchedFolder | undefined
   getFolders: () => WatchedFolder[]
+  getFoldersWithStats: () => WatchedFolder[]
   updateFolderScanTime: (id: number) => void
+  getFolderStats: (id: number) => { photoCount: number; photoIds: number[] }
+  deletePhotosByFolder: (folderId: number) => number[]
 
   // 照片操作
   addPhoto: (
@@ -177,9 +180,27 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     removeFolder: db.prepare(`DELETE FROM watched_folders WHERE id = ?`),
     getFolder: db.prepare(`SELECT * FROM watched_folders WHERE id = ?`),
     getFolders: db.prepare(`SELECT * FROM watched_folders ORDER BY created_at DESC`),
+    getFoldersWithStats: db.prepare(`
+      SELECT wf.*, COUNT(p.id) as photoCount
+      FROM watched_folders wf
+      LEFT JOIN photos p ON wf.id = p.folder_id AND p.deleted_at IS NULL
+      GROUP BY wf.id
+      ORDER BY wf.created_at DESC
+    `),
     updateFolderScanTime: db.prepare(`
       UPDATE watched_folders SET last_scan_at = CURRENT_TIMESTAMP WHERE id = ?
     `),
+    getFolderPhotoCount: db.prepare(`
+      SELECT COUNT(*) as count FROM photos WHERE folder_id = ? AND deleted_at IS NULL
+    `),
+    getFolderPhotoIds: db.prepare(`
+      SELECT id FROM photos WHERE folder_id = ?
+    `),
+    deletePhotosByFolderId: db.prepare(`DELETE FROM photos WHERE folder_id = ?`),
+    deleteCaptionsByPhotoIds: db.prepare(`DELETE FROM captions WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
+    deleteImageVecsByPhotoIds: db.prepare(`DELETE FROM image_vecs WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
+    deleteCaptionVecsByPhotoIds: db.prepare(`DELETE FROM caption_vecs WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
+    deleteQueueByPhotoIds: db.prepare(`DELETE FROM index_queue WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
 
     addPhoto: db.prepare(`
       INSERT INTO photos (folder_id, file_path, file_name, file_size, file_mtime)
@@ -313,8 +334,36 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       return stmts.getFolders.all() as WatchedFolder[]
     },
 
+    getFoldersWithStats: (): WatchedFolder[] => {
+      return stmts.getFoldersWithStats.all() as WatchedFolder[]
+    },
+
     updateFolderScanTime: (id: number): void => {
       stmts.updateFolderScanTime.run(id)
+    },
+
+    getFolderStats: (id: number): { photoCount: number; photoIds: number[] } => {
+      const countResult = stmts.getFolderPhotoCount.get(id) as { count: number }
+      const idsResult = stmts.getFolderPhotoIds.all(id) as Array<{ id: number }>
+      return {
+        photoCount: countResult.count,
+        photoIds: idsResult.map((r) => r.id),
+      }
+    },
+
+    deletePhotosByFolder: (folderId: number): number[] => {
+      // 获取所有要删除的照片 ID（用于后续清理缩略图）
+      const idsResult = stmts.getFolderPhotoIds.all(folderId) as Array<{ id: number }>
+      const photoIds = idsResult.map((r) => r.id)
+
+      // 级联删除所有相关数据
+      stmts.deleteQueueByPhotoIds.run(folderId)
+      stmts.deleteCaptionsByPhotoIds.run(folderId)
+      stmts.deleteImageVecsByPhotoIds.run(folderId)
+      stmts.deleteCaptionVecsByPhotoIds.run(folderId)
+      stmts.deletePhotosByFolderId.run(folderId)
+
+      return photoIds
     },
 
     addPhoto: (

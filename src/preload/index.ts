@@ -21,6 +21,9 @@ const api = {
   getFolders: (): Promise<WatchedFolder[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_FOLDERS)
   },
+  getFolderStats: (id: number): Promise<{ photoCount: number; photoIds: number[] }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_FOLDER_STATS, id)
+  },
 
   // 照片
   getPhotoDetail: (id: number): Promise<PhotoDetail> => {
