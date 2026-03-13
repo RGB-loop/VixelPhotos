@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义样式 */
+:root {
+  --app-region-drag: drag;
+  --app-region-no-drag: no-drag;
+}
+
+/* macOS 标题栏拖拽区域 */
+.titlebar {
+  -webkit-app-region: drag;
+}
+
+.titlebar button,
+.titlebar input {
+  -webkit-app-region: no-drag;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* 照片网格项的悬浮效果 */
+.photo-card {
+  @apply transition-transform duration-200 ease-out;
+}
+
+.photo-card:hover {
+  @apply scale-[1.02] shadow-lg;
+}
+
+/* 搜索框聚焦效果 */
+.search-input:focus {
+  @apply ring-2 ring-primary-500 ring-opacity-50;
+}
+
+/* 图片加载占位符 */
+.image-placeholder {
+  @apply bg-gray-200 dark:bg-gray-700 animate-pulse;
+}
