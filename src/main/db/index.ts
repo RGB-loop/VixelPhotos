@@ -115,6 +115,9 @@ export interface DatabaseInstance {
   failTask: (taskId: number, error: string) => void
   getQueueStats: () => { pending: number; processing: number; done: number }
 
+  // 照片统计（用于进度展示）
+  getPhotoStats: () => { total: number; indexed: number; captioned: number }
+
   // 向量操作
   saveImageVec: (photoId: number, embedding: Float32Array) => void
   saveCaptionVec: (photoId: number, embedding: Float32Array) => void
@@ -270,6 +273,16 @@ export function initDatabase(dbPath: string): DatabaseInstance {
         COALESCE(SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), 0) as processing,
         COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done
       FROM index_queue
+    `),
+
+    // 照片统计（基于照片数，不是任务数）
+    getPhotoStats: db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN embed_status = 'done' THEN 1 ELSE 0 END) as indexed,
+        SUM(CASE WHEN caption_status = 'done' THEN 1 ELSE 0 END) as captioned
+      FROM photos
+      WHERE deleted_at IS NULL
     `),
 
     // 向量操作
@@ -440,6 +453,19 @@ export function initDatabase(dbPath: string): DatabaseInstance {
         pending: result.pending || 0,
         processing: result.processing || 0,
         done: result.done || 0,
+      }
+    },
+
+    getPhotoStats: () => {
+      const result = stmts.getPhotoStats.get() as {
+        total: number
+        indexed: number
+        captioned: number
+      }
+      return {
+        total: result.total || 0,
+        indexed: result.indexed || 0,
+        captioned: result.captioned || 0,
       }
     },
 

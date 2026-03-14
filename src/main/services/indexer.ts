@@ -84,7 +84,7 @@ export class Indexer extends EventEmitter {
       }
 
       if (task.taskType === 'embed') {
-        this.emitProgress('embedding', photo.fileName)
+        this.emitProgress('indexing', photo.fileName)
         await this.processEmbedding(task.photoId, photo.filePath)
         // 完成 embedding 后，添加 caption 任务（低优先级）
         this.db.addToQueue(task.photoId, 'caption', 5)
@@ -223,13 +223,16 @@ export class Indexer extends EventEmitter {
    * 发送进度事件
    */
   private emitProgress(stage: IndexProgress['stage'], currentFile?: string): void {
-    const stats = this.db.getQueueStats()
+    const photoStats = this.db.getPhotoStats()
+    const captionGenerator = getCaptionGenerator()
 
     const progress: IndexProgress = {
-      total: stats.pending + stats.processing + stats.done,
-      done: stats.done,
-      currentFile,
+      totalPhotos: photoStats.total,
+      indexedPhotos: photoStats.indexed,
+      captionedPhotos: photoStats.captioned,
       stage,
+      currentFile,
+      aiModelReady: captionGenerator.isAvailable(),
     }
 
     this.emit('progress', progress)

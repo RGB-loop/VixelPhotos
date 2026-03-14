@@ -38,11 +38,17 @@ export interface SearchResult {
 }
 
 export interface IndexProgress {
-  total: number
-  done: number
+  // 照片统计（基于实际照片数，不是任务数）
+  totalPhotos: number           // 总照片数
+  indexedPhotos: number         // 已完成索引的照片数（有 embedding）
+  captionedPhotos: number       // 已生成 AI 描述的照片数
+
+  // 当前状态
+  stage: 'idle' | 'indexing' | 'captioning'
   currentFile?: string
-  etaSeconds?: number
-  stage: 'scanning' | 'embedding' | 'captioning' | 'idle'
+
+  // AI 模型状态
+  aiModelReady: boolean
 }
 
 export interface PhotoDetail extends Photo {
