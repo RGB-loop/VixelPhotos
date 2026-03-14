@@ -98,6 +98,31 @@ export class ImageEmbedding {
   }
 
   /**
+   * 生成文本查询的 embedding（用于跨模态搜索：文本 → 图像）
+   * CLIP 的文本编码器和图像编码器在同一空间，所以可以直接比较
+   */
+  async encodeText(text: string): Promise<Float32Array> {
+    await this.init()
+
+    if (!this.extractor) {
+      throw new Error('Model not loaded')
+    }
+
+    try {
+      // CLIP 的 tokenizer 会处理文本
+      const output = await this.extractor(text, {
+        pooling: 'mean',
+        normalize: true,
+      })
+
+      return new Float32Array(output.data)
+    } catch (error) {
+      console.error('Text embedding with CLIP failed:', error)
+      throw error
+    }
+  }
+
+  /**
    * 获取 embedding 维度
    */
   getDimension(): number {

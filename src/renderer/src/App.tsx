@@ -13,6 +13,7 @@ function App(): JSX.Element {
   const [indexProgress, setIndexProgress] = useState<IndexProgressType | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   const [hasPhotos, setHasPhotos] = useState(false)
+  const [hasSearchQuery, setHasSearchQuery] = useState(false)  // 是否有搜索词
 
   // 监听索引进度
   useEffect(() => {
@@ -40,7 +41,10 @@ function App(): JSX.Element {
 
   // 搜索处理
   const handleSearch = useCallback(async (query: string) => {
-    if (!query.trim()) {
+    const trimmedQuery = query.trim()
+    setHasSearchQuery(!!trimmedQuery)
+
+    if (!trimmedQuery) {
       setSearchResults([])
       return
     }
@@ -126,7 +130,7 @@ function App(): JSX.Element {
       {/* 主内容区 */}
       <div className="flex-1 overflow-hidden">
         {searchResults.length > 0 ? (
-          <PhotoGrid results={searchResults} onSelect={handleSelectPhoto} />
+          <PhotoGrid results={searchResults} onSelect={handleSelectPhoto} isSearching={hasSearchQuery} />
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-center text-gray-500 dark:text-gray-400">

@@ -4,14 +4,17 @@ import type { SearchResult, Photo } from '../../../shared/types'
 interface PhotoGridProps {
   results: SearchResult[]
   onSelect: (photo: Photo) => void
+  isSearching?: boolean  // 是否正在搜索（用于决定是否显示相关性分数）
 }
 
 interface PhotoCardProps {
   result: SearchResult
   onClick: () => void
+  showScore?: boolean
+  rank?: number  // 排名（1-based）
 }
 
-function PhotoCard({ result, onClick }: PhotoCardProps): JSX.Element {
+function PhotoCard({ result, onClick, showScore, rank }: PhotoCardProps): JSX.Element {
   const [thumbnailUrl, setThumbnailUrl] = useState<string>('')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -78,15 +81,30 @@ function PhotoCard({ result, onClick }: PhotoCardProps): JSX.Element {
         </div>
       </div>
 
-      {/* 相关性评分 */}
-      <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/50 text-white text-xs">
-        {Math.round(result.score * 100)}%
-      </div>
+      {/* 搜索排名和相关性 */}
+      {showScore && rank && (
+        <div className="absolute top-2 left-2 right-2 flex justify-between items-start pointer-events-none">
+          {/* 排名 */}
+          <div className="px-1.5 py-0.5 rounded bg-primary-500/90 text-white text-xs font-medium">
+            #{rank}
+          </div>
+          {/* 相关性条 */}
+          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/50">
+            <div className="w-12 h-1.5 bg-white/30 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-green-400 rounded-full transition-all"
+                style={{ width: `${Math.min(result.score * 100, 100)}%` }}
+              />
+            </div>
+            <span className="text-white text-xs">{(result.score * 100).toFixed(0)}%</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-export function PhotoGrid({ results, onSelect }: PhotoGridProps): JSX.Element {
+export function PhotoGrid({ results, onSelect, isSearching }: PhotoGridProps): JSX.Element {
   const handleSelect = useCallback(
     (photo: Photo) => {
       onSelect(photo)
@@ -97,11 +115,13 @@ export function PhotoGrid({ results, onSelect }: PhotoGridProps): JSX.Element {
   return (
     <div className="h-full overflow-auto p-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-        {results.map((result) => (
+        {results.map((result, index) => (
           <PhotoCard
             key={result.photo.id}
             result={result}
             onClick={() => handleSelect(result.photo)}
+            showScore={isSearching}
+            rank={index + 1}
           />
         ))}
       </div>
