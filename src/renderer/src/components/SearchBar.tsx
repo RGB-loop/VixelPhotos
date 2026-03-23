@@ -72,7 +72,7 @@ export function SearchBar({ onSearch, isSearching }: SearchBarProps): JSX.Elemen
         value={query}
         onChange={handleChange}
         placeholder="搜索照片..."
-        className="search-input w-full pl-8 pr-8 py-1.5 text-sm rounded-md bg-white/8 border border-white/8 text-white placeholder-white/30 focus:outline-none focus:bg-white/12 focus:border-white/15 transition-all"
+        className="search-input w-full pl-8 pr-8 py-1.5 text-sm rounded-md bg-white/5 border border-white/10 text-white placeholder-white/30 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all"
       />
 
       {query && (

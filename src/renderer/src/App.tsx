@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { SearchBar } from './components/SearchBar'
 import { PhotoGrid } from './components/PhotoGrid'
 import { PhotoDetail } from './components/PhotoDetail'
@@ -14,6 +14,15 @@ function App(): JSX.Element {
   const [isSearching, setIsSearching] = useState(false)
   const [hasPhotos, setHasPhotos] = useState(false)
   const [hasSearchQuery, setHasSearchQuery] = useState(false)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [showDateFilter, setShowDateFilter] = useState(false)
+  const currentQuery = useRef('')
+
+  const doSearch = useCallback(async (query: string, from?: string, to?: string) => {
+    const options = (from || to) ? { dateFrom: from || undefined, dateTo: to || undefined } : undefined
+    return window.api.search(query, undefined, options)
+  }, [])
 
   // 监听索引进度
   useEffect(() => {
@@ -34,16 +43,14 @@ function App(): JSX.Element {
 
       if (thumbnailChanged || indexedChanged || captionChanged) {
         setHasPhotos(true)
-
-        // 刷新照片列表以更新缩略图和状态
         if (!hasSearchQuery) {
-          const results = await window.api.search('')
+          const results = await doSearch('')
           setSearchResults(results)
         }
       }
     })
     return unsubscribe
-  }, [hasSearchQuery])
+  }, [hasSearchQuery, doSearch])
 
   // 初始加载
   useEffect(() => {
@@ -52,7 +59,7 @@ function App(): JSX.Element {
       if (folders.length === 0) {
         setShowFolderManager(true)
       } else {
-        const results = await window.api.search('')
+        const results = await doSearch('')
         setSearchResults(results)
         if (results.length > 0) {
           setHasPhotos(true)
@@ -60,23 +67,39 @@ function App(): JSX.Element {
       }
     }
     init()
-  }, [])
+  }, [doSearch])
 
   // 搜索处理
   const handleSearch = useCallback(async (query: string) => {
     const trimmedQuery = query.trim()
+    currentQuery.current = query
     setHasSearchQuery(!!trimmedQuery)
 
     setIsSearching(true)
     try {
-      const results = await window.api.search(query)
+      const results = await doSearch(query, dateFrom, dateTo)
       setSearchResults(results)
     } catch (error) {
       console.error('Search error:', error)
     } finally {
       setIsSearching(false)
     }
-  }, [])
+  }, [doSearch, dateFrom, dateTo])
+
+  // 日期过滤变化时重新搜索
+  const handleDateFilterChange = useCallback(async (from: string, to: string) => {
+    setDateFrom(from)
+    setDateTo(to)
+    setIsSearching(true)
+    try {
+      const results = await doSearch(currentQuery.current, from, to)
+      setSearchResults(results)
+    } catch (error) {
+      console.error('Filter error:', error)
+    } finally {
+      setIsSearching(false)
+    }
+  }, [doSearch])
 
   const handleSelectPhoto = useCallback((photo: Photo) => {
     setSelectedPhoto(photo)
@@ -89,13 +112,13 @@ function App(): JSX.Element {
   const handleFolderManagerClose = useCallback(async () => {
     setShowFolderManager(false)
     if (!hasSearchQuery) {
-      const results = await window.api.search('')
+      const results = await doSearch('')
       setSearchResults(results)
       if (results.length > 0) {
         setHasPhotos(true)
       }
     }
-  }, [hasSearchQuery])
+  }, [hasSearchQuery, doSearch])
 
   // 键盘快捷键
   useEffect(() => {
@@ -127,8 +150,24 @@ function App(): JSX.Element {
       <div className="titlebar h-11 flex items-center px-4 bg-surface-0/80 glass relative z-10">
         <div className="w-20" />
 
-        <div className="flex-1 max-w-xl mx-auto">
-          <SearchBar onSearch={handleSearch} isSearching={isSearching} />
+        <div className="flex-1 max-w-xl mx-auto flex items-center gap-2">
+          <div className="flex-1">
+            <SearchBar onSearch={handleSearch} isSearching={isSearching} />
+          </div>
+          {/* 日期过滤按钮 */}
+          <button
+            onClick={() => setShowDateFilter(!showDateFilter)}
+            className={`p-1.5 rounded-md transition-colors ${
+              showDateFilter || dateFrom || dateTo
+                ? 'bg-accent/20 text-accent'
+                : 'hover:bg-white/10 text-white/30'
+            }`}
+            title="时间过滤"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </button>
         </div>
 
         {/* 设置按钮 */}
@@ -143,6 +182,34 @@ function App(): JSX.Element {
           </svg>
         </button>
       </div>
+
+      {/* 日期过滤栏 */}
+      {showDateFilter && (
+        <div className="px-4 py-2 bg-surface-1 border-b border-white/5 flex items-center gap-3 animate-fade-in">
+          <span className="text-[11px] text-white/30">时间范围</span>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => handleDateFilterChange(e.target.value, dateTo)}
+            className="px-2 py-1 text-[11px] bg-white/5 border border-white/10 rounded text-white/70 focus:outline-none focus:border-white/20"
+          />
+          <span className="text-white/20 text-[11px]">至</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => handleDateFilterChange(dateFrom, e.target.value)}
+            className="px-2 py-1 text-[11px] bg-white/5 border border-white/10 rounded text-white/70 focus:outline-none focus:border-white/20"
+          />
+          {(dateFrom || dateTo) && (
+            <button
+              onClick={() => handleDateFilterChange('', '')}
+              className="text-[10px] text-white/30 hover:text-white/60"
+            >
+              清除
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 主内容区 */}
       <div className="flex-1 overflow-hidden">
@@ -176,7 +243,7 @@ function App(): JSX.Element {
 
       {/* 照片详情 */}
       {selectedPhoto && (
-        <PhotoDetail photo={selectedPhoto} onClose={handleCloseDetail} />
+        <PhotoDetail photo={selectedPhoto} onSelect={handleSelectPhoto} onClose={handleCloseDetail} />
       )}
 
       {/* 设置面板 */}

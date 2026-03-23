@@ -157,7 +157,21 @@ export interface DatabaseInstance {
     query: string,
     limit: number
   ) => Array<{ fileHash: string; score: number }>
+  searchByFileName: (
+    query: string,
+    limit: number
+  ) => Array<{ fileHash: string }>
   getRepresentativeByHash: (fileHash: string) => Photo | undefined
+  getRepresentativePhotosFiltered: (
+    limit: number,
+    offset: number,
+    dateFrom?: string,
+    dateTo?: string
+  ) => Photo[]
+  findSimilar: (
+    fileHash: string,
+    limit: number
+  ) => Array<{ fileHash: string; distance: number }>
 
   // 关闭
   close: () => void
@@ -421,6 +435,32 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     getAllImageVecs: db.prepare(`
       SELECT file_hash, embedding FROM image_vecs
     `),
+    // 文件名搜索（LIKE 模糊匹配，按 hash 去重）
+    searchByFileName: db.prepare(`
+      SELECT DISTINCT file_hash FROM photos
+      WHERE deleted_at IS NULL AND (file_name LIKE ? OR file_path LIKE ?)
+      LIMIT ?
+    `),
+    // 带时间过滤的代表照片查询
+    getRepresentativePhotosFiltered: db.prepare(`
+      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
+             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
+             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
+             p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+             (SELECT COUNT(*) FROM photos p2
+              WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
+      FROM photos p
+      WHERE p.deleted_at IS NULL
+        AND p.id = (
+          SELECT MIN(p3.id) FROM photos p3
+          WHERE p3.file_hash = p.file_hash AND p3.deleted_at IS NULL
+        )
+        AND (? IS NULL OR p.taken_at >= ?)
+        AND (? IS NULL OR p.taken_at <= ?)
+      ORDER BY p.taken_at DESC, p.created_at DESC
+      LIMIT ? OFFSET ?
+    `),
   }
 
   return {
@@ -620,6 +660,37 @@ export function initDatabase(dbPath: string): DatabaseInstance {
         return results.map((row) => ({ fileHash: row.file_hash, score: Math.abs(row.score) }))
       } catch (error) {
         console.error('Text search error:', error)
+        return []
+      }
+    },
+    searchByFileName: (query, limit) => {
+      const pattern = `%${query}%`
+      const results = stmts.searchByFileName.all(pattern, pattern, limit) as Array<{ file_hash: string }>
+      return results.map((r) => ({ fileHash: r.file_hash }))
+    },
+    getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo) => {
+      return stmts.getRepresentativePhotosFiltered.all(
+        dateFrom || null, dateFrom || null,
+        dateTo || null, dateTo || null,
+        limit, offset
+      ) as Photo[]
+    },
+    findSimilar: (fileHash, limit) => {
+      try {
+        const allVecs = stmts.getAllImageVecs.all() as Array<{ file_hash: string; embedding: Buffer }>
+        const target = allVecs.find((v) => v.file_hash === fileHash)
+        if (!target) return []
+        const targetVec = bufferToVec(target.embedding)
+        return allVecs
+          .filter((v) => v.file_hash !== fileHash)
+          .map((row) => ({
+            fileHash: row.file_hash,
+            distance: 1 - cosineSimilarity(targetVec, bufferToVec(row.embedding)),
+          }))
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, limit)
+      } catch (error) {
+        console.error('Find similar error:', error)
         return []
       }
     },

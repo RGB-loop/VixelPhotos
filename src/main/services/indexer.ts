@@ -1,11 +1,12 @@
 import { EventEmitter } from 'events'
 import { join } from 'path'
 import { mkdir, readFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { app } from 'electron'
 import sharp from 'sharp'
 import exifr from 'exifr'
 import type { DatabaseInstance } from '../db'
-import type { IndexProgress } from '../../shared/types'
+import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../../shared/types'
 import { getEmbeddingService } from './embedding'
 import { getLlamaServerManager } from './llama/serverManager'
 
@@ -23,6 +24,78 @@ export class Indexer extends EventEmitter {
     this.userDataPath = userDataPath
     this.thumbnailDir = join(userDataPath, 'thumbnails')
     this.ensureThumbnailDir()
+  }
+
+  /** 读取 caption 语言配置 */
+  getCaptionConfig(): CaptionConfig {
+    try {
+      const configPath = join(app.getPath('userData'), 'caption-config.json')
+      if (existsSync(configPath)) {
+        return JSON.parse(readFileSync(configPath, 'utf-8'))
+      }
+    } catch { /* ignore */ }
+    return { language: 'en' }
+  }
+
+  /** 保存 caption 语言配置 */
+  setCaptionConfig(config: CaptionConfig): void {
+    const configPath = join(app.getPath('userData'), 'caption-config.json')
+    writeFileSync(configPath, JSON.stringify(config, null, 2))
+  }
+
+  private getCaptionPrompt(lang: CaptionLanguage): { system: string; user: string } {
+    if (lang === 'zh') {
+      return {
+        system: '你是一个图片描述助手。只输出描述内容，不要解释。',
+        user: '用一句详细的中文描述这张图片。',
+      }
+    }
+    return {
+      system: 'You are an image captioning assistant. Respond with only the caption, no explanations.',
+      user: 'Describe this image in one detailed sentence.',
+    }
+  }
+
+  /** 为指定 hash 重新生成 caption（公开方法，供 IPC 调用） */
+  async regenerateCaption(fileHash: string, filePath: string): Promise<string | null> {
+    const manager = getLlamaServerManager()
+    await manager.ensureModel('caption')
+
+    const imageBuffer = await readFile(filePath)
+    const base64Image = imageBuffer.toString('base64')
+    const mimeType = this.detectMimeType(imageBuffer)
+    const { language } = this.getCaptionConfig()
+    const prompt = this.getCaptionPrompt(language)
+
+    const response = await manager.chatCompletion({
+      model: 'qwen3.5-4b',
+      messages: [
+        { role: 'system', content: prompt.system },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } },
+            { type: 'text', text: prompt.user },
+          ],
+        },
+      ],
+      max_tokens: 512,
+      temperature: 0.3,
+    })
+
+    const message = response.choices[0]?.message
+    let caption = message?.content?.trim()
+    if (!caption && message?.reasoning_content) {
+      caption = this.extractCaptionFromReasoning(message.reasoning_content)
+    }
+    if (caption) {
+      caption = this.stripThinkingContent(caption)
+    }
+    if (!caption) return null
+
+    this.db.saveCaption(fileHash, caption)
+    console.log(`Caption regenerated: hash=${fileHash} -> "${caption}"`)
+    return caption
   }
 
   private async ensureThumbnailDir(): Promise<void> {
@@ -217,19 +290,18 @@ export class Indexer extends EventEmitter {
       const imageBuffer = await readFile(filePath)
       const base64Image = imageBuffer.toString('base64')
       const mimeType = this.detectMimeType(imageBuffer)
+      const { language } = this.getCaptionConfig()
+      const prompt = this.getCaptionPrompt(language)
 
       const response = await manager.chatCompletion({
         model: 'qwen3.5-4b',
         messages: [
-          {
-            role: 'system',
-            content: 'You are an image captioning assistant. Respond with only the caption, no explanations.',
-          },
+          { role: 'system', content: prompt.system },
           {
             role: 'user',
             content: [
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } },
-              { type: 'text', text: 'Describe this image in one detailed sentence.' },
+              { type: 'text', text: prompt.user },
             ],
           },
         ],

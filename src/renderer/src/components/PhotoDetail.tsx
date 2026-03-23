@@ -1,26 +1,44 @@
 import { useEffect, useState, useCallback } from 'react'
-import type { Photo, PhotoDetail as PhotoDetailType, PhotoLocation } from '../../../shared/types'
+import type { Photo, PhotoDetail as PhotoDetailType, PhotoLocation, SearchResult } from '../../../shared/types'
 
 interface PhotoDetailProps {
   photo: Photo
+  onSelect: (photo: Photo) => void
   onClose: () => void
 }
 
-export function PhotoDetail({ photo, onClose }: PhotoDetailProps): JSX.Element {
+export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX.Element {
   const [detail, setDetail] = useState<PhotoDetailType | null>(null)
   const [imageUrl, setImageUrl] = useState<string>('')
   const [locations, setLocations] = useState<PhotoLocation[]>([])
+  const [isEditingCaption, setIsEditingCaption] = useState(false)
+  const [editCaption, setEditCaption] = useState('')
+  const [isRegenerating, setIsRegenerating] = useState(false)
+  const [similarPhotos, setSimilarPhotos] = useState<SearchResult[]>([])
+  const [similarThumbnails, setSimilarThumbnails] = useState<Map<number, string>>(new Map())
 
   useEffect(() => {
     const loadDetail = async (): Promise<void> => {
-      const [data, imageData, locs] = await Promise.all([
+      const [data, imageData, locs, similar] = await Promise.all([
         window.api.getPhotoDetail(photo.id),
         window.api.getFullImageData(photo.id),
         window.api.getPhotoLocations(photo.id),
+        window.api.findSimilar(photo.id, 6),
       ])
       setDetail(data)
       if (imageData) setImageUrl(imageData)
       setLocations(locs)
+      setSimilarPhotos(similar)
+
+      // 加载相似照片的缩略图
+      const thumbs = new Map<number, string>()
+      await Promise.all(
+        similar.map(async (r) => {
+          const thumb = await window.api.getThumbnailData(r.photo.id)
+          if (thumb) thumbs.set(r.photo.id, thumb)
+        })
+      )
+      setSimilarThumbnails(thumbs)
     }
     loadDetail()
   }, [photo])
@@ -73,12 +91,78 @@ export function PhotoDetail({ photo, onClose }: PhotoDetailProps): JSX.Element {
         <h2 className="text-sm font-semibold text-white mb-4 truncate">{photo.fileName}</h2>
 
         {/* Caption */}
-        {detail?.caption && (
-          <div className="mb-5">
-            <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-1.5">AI 描述</h3>
-            <p className="text-white/70 text-xs leading-relaxed">{detail.caption}</p>
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider">描述</h3>
+            <div className="flex items-center gap-1">
+              {detail?.caption && !isEditingCaption && (
+                <button
+                  onClick={() => { setEditCaption(detail.caption || ''); setIsEditingCaption(true) }}
+                  className="p-0.5 rounded hover:bg-white/10 text-white/20 hover:text-white/50"
+                  title="编辑"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                </button>
+              )}
+              <button
+                onClick={async () => {
+                  setIsRegenerating(true)
+                  try {
+                    const result = await window.api.regenerateCaption(photo.id)
+                    if (result.success && result.caption) {
+                      setDetail((prev) => prev ? { ...prev, caption: result.caption } : prev)
+                      setIsEditingCaption(false)
+                    }
+                  } finally {
+                    setIsRegenerating(false)
+                  }
+                }}
+                disabled={isRegenerating}
+                className="p-0.5 rounded hover:bg-white/10 text-white/20 hover:text-white/50 disabled:opacity-30"
+                title="重新生成"
+              >
+                <svg className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
           </div>
-        )}
+          {isEditingCaption ? (
+            <div className="space-y-1.5">
+              <textarea
+                value={editCaption}
+                onChange={(e) => setEditCaption(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded p-1.5 text-white/70 text-xs leading-relaxed resize-none focus:outline-none focus:border-white/20"
+                rows={3}
+                autoFocus
+              />
+              <div className="flex gap-1.5">
+                <button
+                  onClick={async () => {
+                    await window.api.updateCaption(photo.id, editCaption)
+                    setDetail((prev) => prev ? { ...prev, caption: editCaption } : prev)
+                    setIsEditingCaption(false)
+                  }}
+                  className="px-2 py-1 text-[10px] bg-accent/20 text-accent rounded hover:bg-accent/30"
+                >
+                  保存
+                </button>
+                <button
+                  onClick={() => setIsEditingCaption(false)}
+                  className="px-2 py-1 text-[10px] bg-white/5 text-white/40 rounded hover:bg-white/10"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : detail?.caption ? (
+            <p className="text-white/70 text-xs leading-relaxed">{detail.caption}</p>
+          ) : (
+            <p className="text-white/20 text-xs italic">暂无描述</p>
+          )}
+        </div>
 
         {/* 文件信息 */}
         <div className="mb-5">
@@ -177,6 +261,32 @@ export function PhotoDetail({ photo, onClose }: PhotoDetailProps): JSX.Element {
           </svg>
           在访达中显示
         </button>
+
+        {/* 相似照片 */}
+        {similarPhotos.length > 0 && (
+          <div className="mt-5 pt-4 border-t border-white/5">
+            <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-2">相似照片</h3>
+            <div className="grid grid-cols-3 gap-1">
+              {similarPhotos.map((r) => (
+                <button
+                  key={r.photo.id}
+                  onClick={() => onSelect(r.photo)}
+                  className="aspect-square rounded overflow-hidden bg-surface-2 hover:ring-1 hover:ring-accent/50 transition-all"
+                >
+                  {similarThumbnails.get(r.photo.id) ? (
+                    <img
+                      src={similarThumbnails.get(r.photo.id)}
+                      alt={r.photo.fileName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full image-placeholder" />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

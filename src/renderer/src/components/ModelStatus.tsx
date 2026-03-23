@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { ModelStatus as ModelStatusType, DownloadProgress, ModelDownloadType, EmbeddingApiConfig } from '../../../shared/types'
+import type { ModelStatus as ModelStatusType, DownloadProgress, ModelDownloadType, EmbeddingApiConfig, CaptionLanguage } from '../../../shared/types'
 
 interface DownloadState {
   isDownloading: boolean
@@ -25,6 +25,7 @@ export function ModelStatus(): JSX.Element {
   })
   const [embeddingConfigSaving, setEmbeddingConfigSaving] = useState(false)
   const [embeddingTestResult, setEmbeddingTestResult] = useState<string | null>(null)
+  const [captionLang, setCaptionLang] = useState<CaptionLanguage>('en')
 
   const loadStatus = useCallback(async () => {
     try {
@@ -35,6 +36,9 @@ export function ModelStatus(): JSX.Element {
       if (config) {
         setEmbeddingConfig(config)
       }
+
+      const captionConfig = await window.api.getCaptionConfig()
+      setCaptionLang(captionConfig.language)
     } catch (error) {
       console.error('Failed to get model status:', error)
     } finally {
@@ -276,6 +280,30 @@ export function ModelStatus(): JSX.Element {
           <span className="text-[11px] text-green-400/80">Caption 模型已就绪</span>
         </div>
       )}
+
+      {/* Caption 语言 */}
+      <div className="pt-4 border-t border-white/5">
+        <h3 className="text-xs font-semibold text-white/80 mb-0.5">描述语言</h3>
+        <p className="text-[11px] text-white/30 mb-2">新照片的 AI 描述将使用选定语言生成</p>
+        <div className="flex gap-2">
+          {([['en', 'English'], ['zh', '中文']] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={async () => {
+                setCaptionLang(val)
+                await window.api.setCaptionConfig({ language: val })
+              }}
+              className={`flex-1 py-1.5 text-xs rounded-md transition-colors ${
+                captionLang === val
+                  ? 'bg-accent/20 text-accent'
+                  : 'bg-white/5 text-white/40 hover:bg-white/10'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Embedding API */}
       <div className="pt-4 border-t border-white/5">

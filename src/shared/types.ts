@@ -118,6 +118,15 @@ export const IPC_CHANNELS = {
   GET_EMBEDDING_CONFIG: 'get-embedding-config',
   SET_EMBEDDING_CONFIG: 'set-embedding-config',
   TEST_EMBEDDING_API: 'test-embedding-api',
+
+  // Caption 配置与操作
+  GET_CAPTION_CONFIG: 'get-caption-config',
+  SET_CAPTION_CONFIG: 'set-caption-config',
+  REGENERATE_CAPTION: 'regenerate-caption',
+  UPDATE_CAPTION: 'update-caption',
+
+  // 相似照片
+  FIND_SIMILAR: 'find-similar',
 } as const
 
 export interface ModelStatus {
@@ -140,6 +149,12 @@ export interface EmbeddingApiConfig {
   endpoint: string
   apiKey?: string
   model?: string
+}
+
+export type CaptionLanguage = 'en' | 'zh'
+
+export interface CaptionConfig {
+  language: CaptionLanguage
 }
 
 export interface DownloadProgress {

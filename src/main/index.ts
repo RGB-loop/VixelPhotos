@@ -10,7 +10,7 @@ import { SearchEngine } from './services/search'
 import { getDownloadManager, MODEL_FILES } from './services/downloadManager'
 import { getLlamaServerManager } from './services/llama/serverManager'
 import { getEmbeddingService } from './services/embedding'
-import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress } from '../shared/types'
+import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress, type CaptionConfig } from '../shared/types'
 
 // 全局服务实例
 let db: ReturnType<typeof initDatabase>
@@ -132,9 +132,16 @@ async function initServices(): Promise<void> {
 
 // 注册 IPC 处理器
 function registerIpcHandlers(): void {
-  // 搜索
-  ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number) => {
-    return searchEngine.search(query, limit)
+  // 搜索（支持时间过滤）
+  ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }) => {
+    return searchEngine.search(query, limit, options)
+  })
+
+  // 相似照片
+  ipcMain.handle(IPC_CHANNELS.FIND_SIMILAR, async (_event, photoId: number, limit?: number) => {
+    const photo = db.getPhoto(photoId)
+    if (!photo?.fileHash) return []
+    return searchEngine.findSimilar(photo.fileHash, limit || 12)
   })
 
   // 选择文件夹对话框
@@ -359,6 +366,40 @@ function registerIpcHandlers(): void {
       // 尝试编码一个简单文本
       const testVec = await embeddingService.encodeText('test')
       return { success: true, dimension: testVec.length }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Caption 配置
+  ipcMain.handle(IPC_CHANNELS.GET_CAPTION_CONFIG, async () => {
+    return indexer.getCaptionConfig()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SET_CAPTION_CONFIG, async (_event, config: CaptionConfig) => {
+    indexer.setCaptionConfig(config)
+    return { success: true }
+  })
+
+  // 重新生成 caption
+  ipcMain.handle(IPC_CHANNELS.REGENERATE_CAPTION, async (_event, photoId: number) => {
+    try {
+      const photo = db.getPhoto(photoId)
+      if (!photo?.fileHash) return { success: false, error: 'Photo not found' }
+      const caption = await indexer.regenerateCaption(photo.fileHash, photo.filePath)
+      return { success: true, caption }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // 手动更新 caption
+  ipcMain.handle(IPC_CHANNELS.UPDATE_CAPTION, async (_event, photoId: number, text: string) => {
+    try {
+      const photo = db.getPhoto(photoId)
+      if (!photo?.fileHash) return { success: false, error: 'Photo not found' }
+      db.saveCaption(photo.fileHash, text)
+      return { success: true }
     } catch (error) {
       return { success: false, error: String(error) }
     }

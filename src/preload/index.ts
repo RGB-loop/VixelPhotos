@@ -1,11 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig, type CaptionConfig } from '../shared/types'
 
 // 暴露给渲染进程的 API
 const api = {
   // 搜索
-  search: (query: string, limit?: number): Promise<SearchResult[]> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.SEARCH, query, limit)
+  search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }): Promise<SearchResult[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SEARCH, query, limit, options)
+  },
+  findSimilar: (photoId: number, limit?: number): Promise<SearchResult[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.FIND_SIMILAR, photoId, limit)
   },
 
   // 文件夹管理
@@ -98,6 +101,20 @@ const api = {
   },
   testEmbeddingApi: (): Promise<{ success: boolean; dimension?: number; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.TEST_EMBEDDING_API)
+  },
+
+  // Caption 配置与操作
+  getCaptionConfig: (): Promise<CaptionConfig> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_CAPTION_CONFIG)
+  },
+  setCaptionConfig: (config: CaptionConfig): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_CAPTION_CONFIG, config)
+  },
+  regenerateCaption: (photoId: number): Promise<{ success: boolean; caption?: string; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REGENERATE_CAPTION, photoId)
+  },
+  updateCaption: (photoId: number, text: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CAPTION, photoId, text)
   },
 }
 
