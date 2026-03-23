@@ -10,6 +10,9 @@ const api = {
   findSimilar: (photoId: number, limit?: number): Promise<SearchResult[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.FIND_SIMILAR, photoId, limit)
   },
+  getPhotosWithGPS: (): Promise<import('../shared/types').Photo[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTOS_WITH_GPS)
+  },
 
   // 文件夹管理
   selectFolder: (): Promise<string | null> => {

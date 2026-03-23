@@ -127,6 +127,9 @@ export const IPC_CHANNELS = {
 
   // 相似照片
   FIND_SIMILAR: 'find-similar',
+
+  // 地图
+  GET_PHOTOS_WITH_GPS: 'get-photos-with-gps',
 } as const
 
 export interface ModelStatus {

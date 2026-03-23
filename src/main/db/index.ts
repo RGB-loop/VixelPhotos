@@ -172,6 +172,7 @@ export interface DatabaseInstance {
     fileHash: string,
     limit: number
   ) => Array<{ fileHash: string; distance: number }>
+  getPhotosWithGPS: (limit?: number) => Photo[]
 
   // 关闭
   close: () => void
@@ -461,6 +462,22 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       ORDER BY p.taken_at DESC, p.created_at DESC
       LIMIT ? OFFSET ?
     `),
+    getPhotosWithGPS: db.prepare(`
+      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
+             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
+             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
+             p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt
+      FROM photos p
+      WHERE p.deleted_at IS NULL
+        AND p.lat IS NOT NULL AND p.lng IS NOT NULL
+        AND p.id = (
+          SELECT MIN(p3.id) FROM photos p3
+          WHERE p3.file_hash = p.file_hash AND p3.deleted_at IS NULL
+        )
+      ORDER BY p.taken_at DESC
+      LIMIT ?
+    `),
   }
 
   return {
@@ -693,6 +710,10 @@ export function initDatabase(dbPath: string): DatabaseInstance {
         console.error('Find similar error:', error)
         return []
       }
+    },
+
+    getPhotosWithGPS: (limit = 5000) => {
+      return stmts.getPhotosWithGPS.all(limit) as Photo[]
     },
 
     close: (): void => { db.close() },

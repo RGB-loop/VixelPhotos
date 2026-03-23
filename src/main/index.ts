@@ -137,6 +137,11 @@ function registerIpcHandlers(): void {
     return searchEngine.search(query, limit, options)
   })
 
+  // 有 GPS 的照片
+  ipcMain.handle(IPC_CHANNELS.GET_PHOTOS_WITH_GPS, async () => {
+    return db.getPhotosWithGPS()
+  })
+
   // 相似照片
   ipcMain.handle(IPC_CHANNELS.FIND_SIMILAR, async (_event, photoId: number, limit?: number) => {
     const photo = db.getPhoto(photoId)

@@ -227,16 +227,17 @@ export class Indexer extends EventEmitter {
       sharp(imageBuffer).metadata(),
       exifr.parse(imageBuffer, {
         pick: ['Make', 'Model', 'ExposureTime', 'FNumber', 'ISO',
-          'FocalLength', 'DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
+          'FocalLength', 'DateTimeOriginal', 'latitude', 'longitude'],
       }).catch(() => null),
     ])
 
+    // exifr: GPSLatitude/GPSLongitude 是度分秒数组，latitude/longitude 是 decimal
     this.db.updatePhotoMeta(photoId, {
       width: metadata.width,
       height: metadata.height,
       takenAt: exifData?.DateTimeOriginal?.toISOString(),
-      lat: exifData?.GPSLatitude,
-      lng: exifData?.GPSLongitude,
+      lat: exifData?.latitude,
+      lng: exifData?.longitude,
     })
   }
 

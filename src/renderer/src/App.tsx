@@ -4,6 +4,7 @@ import { PhotoGrid } from './components/PhotoGrid'
 import { PhotoDetail } from './components/PhotoDetail'
 import { FolderManager } from './components/FolderManager'
 import { IndexProgress } from './components/IndexProgress'
+import { MapView } from './components/MapView'
 import type { SearchResult, Photo, IndexProgress as IndexProgressType } from '../../shared/types'
 
 function App(): JSX.Element {
@@ -17,6 +18,7 @@ function App(): JSX.Element {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showDateFilter, setShowDateFilter] = useState(false)
+  const [viewMode, setViewMode] = useState<'grid' | 'map'>('grid')
   const currentQuery = useRef('')
 
   const doSearch = useCallback(async (query: string, from?: string, to?: string) => {
@@ -154,6 +156,28 @@ function App(): JSX.Element {
           <div className="flex-1">
             <SearchBar onSearch={handleSearch} isSearching={isSearching} />
           </div>
+          {/* 视图切换 */}
+          <div className="flex items-center bg-white/5 rounded-md p-0.5">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1 rounded transition-colors ${viewMode === 'grid' ? 'bg-white/10 text-white/70' : 'text-white/30 hover:text-white/50'}`}
+              title="网格视图"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode('map')}
+              className={`p-1 rounded transition-colors ${viewMode === 'map' ? 'bg-white/10 text-white/70' : 'text-white/30 hover:text-white/50'}`}
+              title="地图视图"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          </div>
           {/* 日期过滤按钮 */}
           <button
             onClick={() => setShowDateFilter(!showDateFilter)}
@@ -213,7 +237,9 @@ function App(): JSX.Element {
 
       {/* 主内容区 */}
       <div className="flex-1 overflow-hidden">
-        {searchResults.length > 0 ? (
+        {viewMode === 'map' ? (
+          <MapView onSelect={handleSelectPhoto} />
+        ) : searchResults.length > 0 ? (
           <PhotoGrid results={searchResults} onSelect={handleSelectPhoto} isSearching={hasSearchQuery} />
         ) : hasSearchQuery ? (
           <div className="h-full flex items-center justify-center">

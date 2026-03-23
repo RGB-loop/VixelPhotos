@@ -83,6 +83,35 @@
   animation: slideIn 0.25s ease-out both;
 }
 
+/* Leaflet 暗色 popup */
+.dark-popup .leaflet-popup-content-wrapper {
+  background: #1e1e1e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.dark-popup .leaflet-popup-tip {
+  background: #1e1e1e;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.dark-popup .leaflet-popup-content {
+  margin: 8px;
+}
+.leaflet-container {
+  font-family: inherit;
+}
+
+/* 模态层需要高于 Leaflet 容器 (z-index: 800) */
+.modal-overlay {
+  z-index: 900 !important;
+}
+.marker-cluster {
+  background: transparent !important;
+}
+.marker-cluster div {
+  background: transparent !important;
+}
+
 /* 毛玻璃 */
 .glass {
   backdrop-filter: blur(24px) saturate(1.2);

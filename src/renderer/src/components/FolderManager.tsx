@@ -68,7 +68,7 @@ export function FolderManager({ onClose }: FolderManagerProps): JSX.Element {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 modal-overlay"
       onClick={handleBackdropClick}
     >
       <div className="bg-surface-2 rounded-xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col border border-white/10 animate-fade-in">
@@ -186,7 +186,7 @@ export function FolderManager({ onClose }: FolderManagerProps): JSX.Element {
       {/* 删除确认对话框 */}
       {deleteConfirm?.isOpen && (
         <div
-          className="fixed inset-0 z-60 bg-black/60 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 modal-overlay" style={{ zIndex: 950 }}
           onClick={(e) => {
             if (e.target === e.currentTarget && !isDeleting) {
               handleCancelRemove()

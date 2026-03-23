@@ -62,7 +62,7 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/95 flex animate-fade-in"
+      className="fixed inset-0 bg-black/95 flex animate-fade-in modal-overlay"
       onClick={handleBackdropClick}
     >
       {/* 关闭按钮 */}
