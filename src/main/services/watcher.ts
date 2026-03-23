@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, extname } from 'path'
-import { stat, readFile } from 'fs/promises'
+import { stat, readFile, access } from 'fs/promises'
 import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from '../db'
 import type { Indexer } from './indexer'
@@ -63,6 +63,8 @@ export class FileWatcher {
       .on('ready', () => {
         console.log(`Initial scan complete for folder: ${folderPath}`)
         this.db.updateFolderScanTime(folderId)
+        // 清理离线期间被删除的文件
+        this.cleanupStalePhotos(folderId)
       })
       .on('error', (error) => {
         console.error(`Watcher error for folder ${folderId}:`, error)
@@ -83,6 +85,31 @@ export class FileWatcher {
   stopAll(): void {
     for (const [folderId] of this.watchers) {
       this.unwatchFolder(folderId)
+    }
+  }
+
+  /** 启动时清理离线期间被删除的文件 */
+  private async cleanupStalePhotos(folderId: number): Promise<void> {
+    try {
+      const { photoIds } = this.db.getFolderStats(folderId)
+      // 逐个检查文件是否存在（用 getPhoto 拿路径）
+      let cleaned = 0
+      for (const photoId of photoIds) {
+        const photo = this.db.getPhoto(photoId)
+        if (!photo || photo.deletedAt) continue
+        try {
+          await access(photo.filePath)
+        } catch {
+          // 文件不存在，soft delete
+          this.db.softDeletePhoto(photo.filePath)
+          cleaned++
+        }
+      }
+      if (cleaned > 0) {
+        console.log(`Cleaned up ${cleaned} stale photos in folder ${folderId}`)
+      }
+    } catch (error) {
+      console.error(`Error cleaning stale photos for folder ${folderId}:`, error)
     }
   }
 

@@ -5,6 +5,7 @@ import { PhotoDetail } from './components/PhotoDetail'
 import { FolderManager } from './components/FolderManager'
 import { IndexProgress } from './components/IndexProgress'
 import { MapView } from './components/MapView'
+import { PeopleView } from './components/PeopleView'
 import type { SearchResult, Photo, IndexProgress as IndexProgressType } from '../../shared/types'
 
 function App(): JSX.Element {
@@ -18,7 +19,7 @@ function App(): JSX.Element {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showDateFilter, setShowDateFilter] = useState(false)
-  const [viewMode, setViewMode] = useState<'grid' | 'map'>('grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'map' | 'people'>('grid')
   const currentQuery = useRef('')
 
   const doSearch = useCallback(async (query: string, from?: string, to?: string) => {
@@ -177,6 +178,15 @@ function App(): JSX.Element {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </button>
+            <button
+              onClick={() => setViewMode('people')}
+              className={`p-1 rounded transition-colors ${viewMode === 'people' ? 'bg-white/10 text-white/70' : 'text-white/30 hover:text-white/50'}`}
+              title="人物视图"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
           </div>
           {/* 日期过滤按钮 */}
           <button
@@ -237,7 +247,9 @@ function App(): JSX.Element {
 
       {/* 主内容区 */}
       <div className="flex-1 overflow-hidden">
-        {viewMode === 'map' ? (
+        {viewMode === 'people' ? (
+          <PeopleView onSelectPhoto={handleSelectPhoto} />
+        ) : viewMode === 'map' ? (
           <MapView onSelect={handleSelectPhoto} />
         ) : searchResults.length > 0 ? (
           <PhotoGrid results={searchResults} onSelect={handleSelectPhoto} isSearching={hasSearchQuery} />

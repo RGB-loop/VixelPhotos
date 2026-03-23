@@ -18,6 +18,8 @@ export interface Photo {
   caption?: string
   embedStatus: 'pending' | 'done' | 'error'
   captionStatus: 'pending' | 'done' | 'error'
+  faceStatus?: 'pending' | 'done' | 'error'
+  faceCount?: number
   duplicateCount?: number
   deletedAt?: string
   createdAt: string
@@ -54,7 +56,7 @@ export interface IndexProgress {
   captionedPhotos: number       // 已生成 AI 描述的照片数
 
   // 当前状态
-  stage: 'idle' | 'indexing' | 'captioning'
+  stage: 'idle' | 'indexing' | 'captioning' | 'detecting_faces'
   currentFile?: string
 
   // AI 模型状态
@@ -130,6 +132,15 @@ export const IPC_CHANNELS = {
 
   // 地图
   GET_PHOTOS_WITH_GPS: 'get-photos-with-gps',
+
+  // 人脸识别
+  START_FACE_SCAN: 'start-face-scan',
+  GET_PEOPLE: 'get-people',
+  GET_PERSON_PHOTOS: 'get-person-photos',
+  SET_PERSON_NAME: 'set-person-name',
+  MERGE_PEOPLE: 'merge-people',
+  GET_FACE_THUMBNAIL: 'get-face-thumbnail',
+  GET_PHOTO_FACES: 'get-photo-faces',
 } as const
 
 export interface ModelStatus {
@@ -152,6 +163,33 @@ export interface EmbeddingApiConfig {
   endpoint: string
   apiKey?: string
   model?: string
+}
+
+// 人脸检测
+export interface FaceBbox {
+  x: number  // 归一化 0-1
+  y: number
+  w: number
+  h: number
+}
+
+export interface FaceRecord {
+  id: number
+  fileHash: string
+  faceIndex: number
+  bbox: FaceBbox
+  confidence: number
+  personId: number | null
+  personName?: string | null
+}
+
+export interface Person {
+  id: number
+  name: string | null
+  coverFaceId: number | null
+  faceCount: number
+  photoCount?: number
+  createdAt: string
 }
 
 export type CaptionLanguage = 'en' | 'zh'

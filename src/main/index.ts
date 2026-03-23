@@ -10,7 +10,8 @@ import { SearchEngine } from './services/search'
 import { getDownloadManager, MODEL_FILES } from './services/downloadManager'
 import { getLlamaServerManager } from './services/llama/serverManager'
 import { getEmbeddingService } from './services/embedding'
-import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress, type CaptionConfig } from '../shared/types'
+import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress, type CaptionConfig, type FaceBbox } from '../shared/types'
+import { getFaceThumbnail } from './services/face'
 
 // 全局服务实例
 let db: ReturnType<typeof initDatabase>
@@ -408,6 +409,56 @@ function registerIpcHandlers(): void {
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  })
+
+  // 人脸识别
+  ipcMain.handle(IPC_CHANNELS.START_FACE_SCAN, async () => {
+    try {
+      return await indexer.startFaceScan()
+    } catch (error) {
+      return { error: String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_PEOPLE, async () => {
+    return db.getPeople()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_PERSON_PHOTOS, async (_event, personId: number, limit?: number) => {
+    const photos = db.getPersonPhotos(personId, limit || 50)
+    return photos.map((p) => ({ photo: p, score: 1.0 }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SET_PERSON_NAME, async (_event, personId: number, name: string) => {
+    db.updatePersonName(personId, name)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MERGE_PEOPLE, async (_event, targetId: number, sourceIds: number[]) => {
+    db.mergePeople(targetId, sourceIds)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_FACE_THUMBNAIL, async (_event, faceId: number) => {
+    try {
+      const info = db.getFaceCoverInfo(faceId)
+      if (!info) return null
+      // 找到该 hash 对应的文件路径
+      const photo = db.getRepresentativeByHash(info.fileHash)
+      if (!photo) return null
+      const imageBuffer = await readFile(photo.filePath)
+      const bbox = JSON.parse(info.bbox) as FaceBbox
+      const crop = await getFaceThumbnail(imageBuffer, bbox)
+      return `data:image/jpeg;base64,${crop.toString('base64')}`
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_PHOTO_FACES, async (_event, photoId: number) => {
+    const photo = db.getPhoto(photoId)
+    if (!photo?.fileHash) return []
+    return db.getFacesByHash(photo.fileHash)
   })
 }
 

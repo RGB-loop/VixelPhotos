@@ -9,6 +9,7 @@ import type { DatabaseInstance } from '../db'
 import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../../shared/types'
 import { getEmbeddingService } from './embedding'
 import { getLlamaServerManager } from './llama/serverManager'
+import { initFaceService, isFaceServiceReady, processPhotoFaces, runClustering } from './face'
 
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
@@ -98,6 +99,68 @@ export class Indexer extends EventEmitter {
     return caption
   }
 
+  /** 手动触发人脸扫描 */
+  async startFaceScan(): Promise<{ queued: number }> {
+    // 初始化人脸模型
+    const ready = await initFaceService()
+    if (!ready) {
+      throw new Error('Face models not available')
+    }
+
+    const pending = this.db.getPendingFacePhotos()
+    for (const photo of pending) {
+      this.db.addToQueue(photo.id, 'face', 8)
+    }
+
+    console.log(`Face scan started: ${pending.length} photos queued`)
+    if (pending.length > 0) {
+      this.processNext()
+    }
+
+    return { queued: pending.length }
+  }
+
+  /** 处理单张照片的人脸检测 */
+  private async processFace(fileHash: string, filePath: string): Promise<void> {
+    try {
+      if (this.db.hasFacesForHash(fileHash)) {
+        console.log(`  Faces already detected for hash ${fileHash}, skipping`)
+        this.db.updateFaceStatusByHash(fileHash)
+        return
+      }
+
+      if (!isFaceServiceReady()) {
+        await initFaceService()
+      }
+
+      const imageBuffer = await readFile(filePath)
+      const faces = await processPhotoFaces(imageBuffer)
+
+      for (const face of faces) {
+        this.db.saveFace(
+          fileHash,
+          face.faceIndex,
+          JSON.stringify(face.bbox),
+          face.confidence,
+          face.embedding
+        )
+      }
+
+      this.db.updateFaceStatusByHash(fileHash)
+      console.log(`  Detected ${faces.length} faces in ${filePath}`)
+
+      // 检查队列中是否还有 face 任务，没有则触发聚类
+      const nextTask = this.db.peekNextTask()
+      if (!nextTask || nextTask.taskType !== 'face') {
+        console.log('  All face tasks done, running clustering...')
+        runClustering(this.db)
+      }
+    } catch (error) {
+      console.error(`Error processing faces for ${filePath}:`, error)
+      throw error
+    }
+  }
+
   private async ensureThumbnailDir(): Promise<void> {
     if (!existsSync(this.thumbnailDir)) {
       await mkdir(this.thumbnailDir, { recursive: true })
@@ -173,6 +236,11 @@ export class Indexer extends EventEmitter {
         if (photo.captionStatus !== 'done') {
           this.db.addToQueue(task.photoId, 'caption', 5)
         }
+        this.db.completeTask(task.id)
+      } else if (task.taskType === 'face') {
+        console.log(`Face detection: ${photo.fileName}`)
+        this.emitProgress('detecting_faces', photo.fileName)
+        await this.processFace(photo.fileHash, photo.filePath)
         this.db.completeTask(task.id)
       } else if (task.taskType === 'caption') {
         const nextTask = this.db.peekNextTask()

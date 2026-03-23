@@ -89,6 +89,31 @@ CREATE TRIGGER IF NOT EXISTS captions_au AFTER UPDATE ON captions BEGIN
   DELETE FROM captions_fts WHERE rowid = old.id;
   INSERT INTO captions_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+-- 人脸表
+CREATE TABLE IF NOT EXISTS faces (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL,
+  face_index  INTEGER NOT NULL,
+  bbox        TEXT NOT NULL,
+  confidence  REAL NOT NULL,
+  embedding   BLOB NOT NULL,
+  person_id   INTEGER REFERENCES people(id),
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(file_hash, face_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_faces_file_hash ON faces(file_hash);
+CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
+
+-- 人物表
+CREATE TABLE IF NOT EXISTS people (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT,
+  cover_face_id INTEGER,
+  face_count  INTEGER DEFAULT 0,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 export interface DatabaseInstance {
@@ -174,6 +199,20 @@ export interface DatabaseInstance {
   ) => Array<{ fileHash: string; distance: number }>
   getPhotosWithGPS: (limit?: number) => Photo[]
 
+  // 人脸
+  saveFace: (fileHash: string, faceIndex: number, bbox: string, confidence: number, embedding: Float32Array) => number
+  updateFaceStatusByHash: (fileHash: string) => void
+  hasFacesForHash: (fileHash: string) => boolean
+  getFacesByHash: (fileHash: string) => Array<{ id: number; faceIndex: number; bbox: string; confidence: number; personId: number | null; personName: string | null }>
+  getAllFaceEmbeddings: () => Array<{ id: number; embedding: Float32Array; confidence: number }>
+  clearPeopleAndReassign: (clusters: Map<number, Array<{ id: number; confidence: number }>>) => void
+  getPeople: () => Array<{ id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; createdAt: string }>
+  getPersonPhotos: (personId: number, limit?: number) => Photo[]
+  updatePersonName: (personId: number, name: string) => void
+  mergePeople: (targetId: number, sourceIds: number[]) => void
+  getPendingFacePhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
+  getFaceCoverInfo: (faceId: number) => { fileHash: string; bbox: string } | undefined
+
   // 关闭
   close: () => void
 }
@@ -209,6 +248,9 @@ export function initDatabase(dbPath: string): DatabaseInstance {
   migrateIfNeeded(db)
 
   db.exec(SCHEMA)
+
+  // 确保新列存在
+  ensureFaceStatusColumn(db)
 
   const stmts = {
     addFolder: db.prepare(`
@@ -478,6 +520,73 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       ORDER BY p.taken_at DESC
       LIMIT ?
     `),
+
+    // 人脸相关
+    saveFace: db.prepare(`
+      INSERT INTO faces (file_hash, face_index, bbox, confidence, embedding)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(file_hash, face_index) DO UPDATE SET
+        bbox = excluded.bbox, confidence = excluded.confidence, embedding = excluded.embedding
+      RETURNING id
+    `),
+    updateFaceStatusByHash: db.prepare(`
+      UPDATE photos SET face_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
+    `),
+    hasFacesForHash: db.prepare(`SELECT 1 FROM faces WHERE file_hash = ? LIMIT 1`),
+    getFacesByHash: db.prepare(`
+      SELECT f.id, f.face_index as faceIndex, f.bbox, f.confidence, f.person_id as personId, p.name as personName
+      FROM faces f
+      LEFT JOIN people p ON f.person_id = p.id
+      WHERE f.file_hash = ?
+      ORDER BY f.face_index
+    `),
+    getAllFaceEmbeddings: db.prepare(`
+      SELECT id, embedding, confidence FROM faces
+    `),
+    getPeople: db.prepare(`
+      SELECT p.id, p.name, p.cover_face_id as coverFaceId, p.face_count as faceCount,
+             (SELECT COUNT(DISTINCT f.file_hash) FROM faces f WHERE f.person_id = p.id) as photoCount,
+             p.created_at as createdAt
+      FROM people p
+      WHERE p.face_count > 0
+      ORDER BY photoCount DESC
+    `),
+    getPersonPhotos: db.prepare(`
+      SELECT ph.id, ph.folder_id as folderId, ph.file_path as filePath, ph.file_name as fileName,
+             ph.file_size as fileSize, ph.file_mtime as fileMtime, ph.file_hash as fileHash,
+             ph.width, ph.height, ph.taken_at as takenAt, ph.lat, ph.lng,
+             ph.embed_status as embedStatus, ph.caption_status as captionStatus,
+             ph.deleted_at as deletedAt, ph.created_at as createdAt, ph.updated_at as updatedAt
+      FROM photos ph
+      WHERE ph.deleted_at IS NULL
+        AND ph.file_hash IN (SELECT DISTINCT f.file_hash FROM faces f WHERE f.person_id = ?)
+        AND ph.id = (
+          SELECT MIN(p2.id) FROM photos p2
+          WHERE p2.file_hash = ph.file_hash AND p2.deleted_at IS NULL
+        )
+      ORDER BY ph.taken_at DESC
+      LIMIT ?
+    `),
+    updatePersonName: db.prepare(`UPDATE people SET name = ? WHERE id = ?`),
+    mergePeopleFaces: db.prepare(`UPDATE faces SET person_id = ? WHERE person_id = ?`),
+    deletePerson: db.prepare(`DELETE FROM people WHERE id = ?`),
+    getPendingFacePhotos: db.prepare(`
+      SELECT p.id, p.file_hash as fileHash, p.file_path as filePath
+      FROM photos p
+      WHERE p.deleted_at IS NULL
+        AND (p.face_status IS NULL OR p.face_status = 'pending')
+        AND p.id = (
+          SELECT MIN(p2.id) FROM photos p2
+          WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL
+        )
+    `),
+    clearAllPeople: db.prepare(`DELETE FROM people`),
+    resetAllFacePersonIds: db.prepare(`UPDATE faces SET person_id = NULL`),
+    insertPerson: db.prepare(`INSERT INTO people (name, cover_face_id, face_count) VALUES (?, ?, ?) RETURNING id`),
+    setFacePersonId: db.prepare(`UPDATE faces SET person_id = ? WHERE id = ?`),
+    updatePersonCover: db.prepare(`UPDATE people SET cover_face_id = ?, face_count = ? WHERE id = ?`),
+    getFaceCoverInfo: db.prepare(`SELECT file_hash as fileHash, bbox FROM faces WHERE id = ?`),
+    checkFaceStatusColumn: db.prepare(`SELECT face_status FROM photos LIMIT 0`),
   }
 
   return {
@@ -716,7 +825,94 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       return stmts.getPhotosWithGPS.all(limit) as Photo[]
     },
 
+    // 人脸
+    saveFace: (fileHash, faceIndex, bbox, confidence, embedding) => {
+      const buffer = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      const result = stmts.saveFace.get(fileHash, faceIndex, bbox, confidence, buffer) as { id: number }
+      return result.id
+    },
+    updateFaceStatusByHash: (fileHash) => {
+      stmts.updateFaceStatusByHash.run(fileHash)
+    },
+    hasFacesForHash: (fileHash) => {
+      return !!stmts.hasFacesForHash.get(fileHash)
+    },
+    getFacesByHash: (fileHash) => {
+      return stmts.getFacesByHash.all(fileHash) as Array<{
+        id: number; faceIndex: number; bbox: string; confidence: number; personId: number | null; personName: string | null
+      }>
+    },
+    getAllFaceEmbeddings: () => {
+      const rows = stmts.getAllFaceEmbeddings.all() as Array<{ id: number; embedding: Buffer; confidence: number }>
+      return rows.map((r) => ({
+        id: r.id,
+        embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+        confidence: r.confidence,
+      }))
+    },
+    clearPeopleAndReassign: (clusters) => {
+      const transaction = db.transaction(() => {
+        stmts.resetAllFacePersonIds.run()
+        stmts.clearAllPeople.run()
+
+        for (const [, members] of clusters) {
+          if (members.length === 0) continue
+          // 选最高置信度的脸作为封面
+          const best = members.reduce((a, b) => a.confidence > b.confidence ? a : b)
+          const result = stmts.insertPerson.get(null, best.id, members.length) as { id: number }
+          const personId = result.id
+
+          for (const m of members) {
+            stmts.setFacePersonId.run(personId, m.id)
+          }
+        }
+      })
+      transaction()
+    },
+    getPeople: () => {
+      return stmts.getPeople.all() as Array<{
+        id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; createdAt: string
+      }>
+    },
+    getPersonPhotos: (personId, limit = 50) => {
+      return stmts.getPersonPhotos.all(personId, limit) as Photo[]
+    },
+    updatePersonName: (personId, name) => {
+      stmts.updatePersonName.run(name, personId)
+    },
+    mergePeople: (targetId, sourceIds) => {
+      const transaction = db.transaction(() => {
+        for (const sourceId of sourceIds) {
+          stmts.mergePeopleFaces.run(targetId, sourceId)
+          stmts.deletePerson.run(sourceId)
+        }
+        // 更新 target 的 face_count
+        const faces = stmts.getAllFaceEmbeddings.all() as Array<{ id: number }>
+        // 简单重新计数
+        const count = (db.prepare('SELECT COUNT(*) as c FROM faces WHERE person_id = ?').get(targetId) as { c: number }).c
+        const best = db.prepare('SELECT id FROM faces WHERE person_id = ? ORDER BY confidence DESC LIMIT 1').get(targetId) as { id: number } | undefined
+        stmts.updatePersonCover.run(best?.id || null, count, targetId)
+      })
+      transaction()
+    },
+    getPendingFacePhotos: () => {
+      return stmts.getPendingFacePhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
+    },
+    getFaceCoverInfo: (faceId) => {
+      return stmts.getFaceCoverInfo.get(faceId) as { fileHash: string; bbox: string } | undefined
+    },
+
     close: (): void => { db.close() },
+  }
+}
+
+/** 确保 face_status 列存在 */
+function ensureFaceStatusColumn(db: Database.Database): void {
+  try {
+    db.prepare('SELECT face_status FROM photos LIMIT 0').get()
+  } catch {
+    db.exec('ALTER TABLE photos ADD COLUMN face_status TEXT DEFAULT \'pending\'')
+    console.log('Added face_status column to photos table')
   }
 }
 

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig, type CaptionConfig } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig, type CaptionConfig, type Person, type FaceRecord } from '../shared/types'
 
 // 暴露给渲染进程的 API
 const api = {
@@ -118,6 +118,29 @@ const api = {
   },
   updateCaption: (photoId: number, text: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CAPTION, photoId, text)
+  },
+
+  // 人脸识别
+  startFaceScan: (): Promise<{ queued?: number; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.START_FACE_SCAN)
+  },
+  getPeople: (): Promise<Person[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PEOPLE)
+  },
+  getPersonPhotos: (personId: number, limit?: number): Promise<SearchResult[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PERSON_PHOTOS, personId, limit)
+  },
+  setPersonName: (personId: number, name: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_PERSON_NAME, personId, name)
+  },
+  mergePeople: (targetId: number, sourceIds: number[]): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.MERGE_PEOPLE, targetId, sourceIds)
+  },
+  getFaceThumbnail: (faceId: number): Promise<string | null> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_FACE_THUMBNAIL, faceId)
+  },
+  getPhotoFaces: (photoId: number): Promise<FaceRecord[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTO_FACES, photoId)
   },
 }
 
