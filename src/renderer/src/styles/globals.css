@@ -2,7 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 自定义样式 */
 :root {
   --app-region-drag: drag;
   --app-region-no-drag: no-drag;
@@ -20,8 +19,8 @@
 
 /* 滚动条样式 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -29,37 +28,63 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: #4b5563;
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* 照片网格项的悬浮效果 */
 .photo-card {
-  @apply transition-transform duration-200 ease-out;
+  @apply transition-all duration-200 ease-out;
 }
 
 .photo-card:hover {
-  @apply scale-[1.02] shadow-lg;
+  @apply brightness-110 z-10;
 }
 
 /* 搜索框聚焦效果 */
 .search-input:focus {
-  @apply ring-2 ring-primary-500 ring-opacity-50;
+  @apply ring-1 ring-white/20;
 }
 
 /* 图片加载占位符 */
 .image-placeholder {
-  @apply bg-gray-200 dark:bg-gray-700 animate-pulse;
+  background: linear-gradient(110deg, #1e1e1e 8%, #282828 18%, #1e1e1e 33%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 淡入动画 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out both;
+}
+
+/* 滑入动画 */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.25s ease-out both;
+}
+
+/* 毛玻璃 */
+.glass {
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
 }

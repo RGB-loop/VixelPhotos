@@ -17,18 +17,30 @@ export interface DownloadProgress {
 export type DownloadProgressCallback = (progress: DownloadProgress) => void
 
 // 模型文件信息
-// 使用 Qwen3-VL-4B (Vision-Language) 而不是 Qwen3.5-4B (纯文本)
-// Qwen3-VL 支持图像理解，可以生成图片描述
+// 1. Qwen3-VL-Embedding-2B: 统一的多模态 embedding（用于搜索）
+// 2. Qwen3.5-4B: 多模态 caption 生成
 export const MODEL_FILES = {
-  model: {
-    name: 'Qwen3VL-4B-Instruct-Q4_K_M.gguf',
-    url: 'https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf',
-    size: 2_497_281_664, // ~2.5GB
+  // Caption 模型 - 用于生成图片描述（优先下载，用于验证）
+  caption: {
+    name: 'Qwen3.5-4B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+    size: 2_740_000_000, // 2.74GB
   },
-  mmproj: {
-    name: 'mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf',
-    url: 'https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf',
-    size: 453_974_304, // ~454MB
+  captionMmproj: {
+    name: 'mmproj-Qwen3.5-4B-F16.gguf',
+    url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf',
+    size: 672_000_000, // 672MB
+  },
+  // Embedding 模型 - 用于图像和文本的统一表示
+  embedding: {
+    name: 'Qwen3-VL-Embedding-2B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/DevQuasar/Qwen.Qwen3-VL-Embedding-2B-GGUF/resolve/main/Qwen.Qwen3-VL-Embedding-2B.Q4_K_M.gguf',
+    size: 1_110_000_000, // ~1.1GB
+  },
+  embeddingMmproj: {
+    name: 'mmproj-Qwen3-VL-Embedding-2B.gguf',
+    url: 'https://huggingface.co/DevQuasar/Qwen.Qwen3-VL-Embedding-2B-GGUF/resolve/main/mmproj-Qwen.Qwen3-VL-Embedding-2B.f16.gguf',
+    size: 450_000_000, // ~450MB
   },
 }
 
@@ -173,7 +185,7 @@ export class DownloadManager {
    * 下载模型文件
    */
   async downloadModel(
-    type: 'model' | 'mmproj',
+    type: keyof typeof MODEL_FILES,
     onProgress?: DownloadProgressCallback
   ): Promise<void> {
     const fileInfo = MODEL_FILES[type]

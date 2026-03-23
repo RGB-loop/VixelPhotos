@@ -1,29 +1,28 @@
-import chokidar from 'chokidar'
+import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, extname } from 'path'
-import { stat } from 'fs/promises'
+import { stat, readFile } from 'fs/promises'
+import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from '../db'
 import type { Indexer } from './indexer'
 
+// xxHash 实例（懒初始化）
+let hashFn: ((input: Uint8Array) => string) | null = null
+async function getHasher(): Promise<(input: Uint8Array) => string> {
+  if (!hashFn) {
+    const hasher = await xxhash()
+    // h64Raw 接受 Uint8Array 返回 bigint，转 16 位 hex
+    hashFn = (data: Uint8Array) => {
+      const raw = hasher.h64Raw(data)
+      return raw.toString(16).padStart(16, '0')
+    }
+  }
+  return hashFn
+}
+
 // 支持的图片格式
 const SUPPORTED_EXTENSIONS = new Set([
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.heic',
-  '.webp',
-  '.gif',
-  '.bmp',
-  '.tiff',
-  '.tif',
-  // RAW 格式
-  '.cr2',
-  '.cr3',
-  '.nef',
-  '.arw',
-  '.dng',
-  '.raf',
-  '.orf',
-  '.rw2',
+  '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.tif',
+  '.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2',
 ])
 
 function isSupportedImage(filePath: string): boolean {
@@ -32,7 +31,7 @@ function isSupportedImage(filePath: string): boolean {
 }
 
 export class FileWatcher {
-  private watchers: Map<number, chokidar.FSWatcher> = new Map()
+  private watchers: Map<number, FSWatcher> = new Map()
   private db: DatabaseInstance
   private indexer: Indexer
 
@@ -41,9 +40,6 @@ export class FileWatcher {
     this.indexer = indexer
   }
 
-  /**
-   * 开始监听一个文件夹
-   */
   watchFolder(folderId: number, folderPath: string): void {
     if (this.watchers.has(folderId)) {
       console.log(`Folder ${folderId} already being watched`)
@@ -53,18 +49,11 @@ export class FileWatcher {
     console.log(`Starting to watch folder: ${folderPath}`)
 
     const watcher = chokidar.watch(folderPath, {
-      ignored: [
-        /(^|[\/\\])\../, // 忽略隐藏文件
-        /node_modules/,
-        /\.git/,
-      ],
+      ignored: [/(^|[\/\\])\./, /node_modules/, /\.git/],
       persistent: true,
-      ignoreInitial: false, // 首次扫描时触发 add 事件
-      awaitWriteFinish: {
-        stabilityThreshold: 2000, // 等待文件写入完成
-        pollInterval: 100,
-      },
-      depth: 99, // 递归深度
+      ignoreInitial: false,
+      awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 100 },
+      depth: 99,
     })
 
     watcher
@@ -82,9 +71,6 @@ export class FileWatcher {
     this.watchers.set(folderId, watcher)
   }
 
-  /**
-   * 停止监听一个文件夹
-   */
   unwatchFolder(folderId: number): void {
     const watcher = this.watchers.get(folderId)
     if (watcher) {
@@ -94,18 +80,12 @@ export class FileWatcher {
     }
   }
 
-  /**
-   * 停止所有监听
-   */
   stopAll(): void {
     for (const [folderId] of this.watchers) {
       this.unwatchFolder(folderId)
     }
   }
 
-  /**
-   * 处理新增文件
-   */
   private async handleAdd(folderId: number, filePath: string): Promise<void> {
     if (!isSupportedImage(filePath)) return
 
@@ -113,20 +93,37 @@ export class FileWatcher {
       const stats = await stat(filePath)
       const fileName = basename(filePath)
 
-      const photoId = this.db.addPhoto(folderId, filePath, fileName, stats.size, stats.mtimeMs)
+      // 计算文件 hash
+      const fileBuffer = await readFile(filePath)
+      const hash = await getHasher()
+      const fileHash = hash(new Uint8Array(fileBuffer.buffer, fileBuffer.byteOffset, fileBuffer.byteLength))
 
-      // 添加到索引队列（高优先级）
-      this.db.addToQueue(photoId, 'embed', 10)
+      const photoId = this.db.addPhoto(folderId, filePath, fileName, stats.size, stats.mtimeMs, fileHash)
 
-      this.indexer.processNext()
+      // 检查该 hash 是否已有内容（缩略图/embedding/caption）
+      const { hasEmbedding, hasCaption } = this.db.hasContentForHash(fileHash)
+
+      if (hasEmbedding && hasCaption) {
+        // 重复照片：资源已存在，直接标记完成
+        console.log(`Duplicate detected (hash=${fileHash}): ${filePath}, skipping processing`)
+        this.db.markDuplicateProcessed(photoId)
+        this.indexer.emitProgressPublic()
+      } else if (hasEmbedding) {
+        // 有 embedding 但无 caption（可能 caption 还在处理中）
+        this.db.addToQueue(photoId, 'thumbnail', 20)
+        this.db.addToQueue(photoId, 'caption', 5)
+        this.indexer.processNext()
+      } else {
+        // 全新内容：需要完整处理
+        this.db.addToQueue(photoId, 'thumbnail', 20)
+        this.db.addToQueue(photoId, 'embed', 10)
+        this.indexer.processNext()
+      }
     } catch (error) {
       console.error(`Error handling add for ${filePath}:`, error)
     }
   }
 
-  /**
-   * 处理文件修改
-   */
   private async handleChange(filePath: string): Promise<void> {
     if (!isSupportedImage(filePath)) return
 
@@ -135,16 +132,18 @@ export class FileWatcher {
       if (!existing) return
 
       const stats = await stat(filePath)
-
-      // 检查是否真的有变化
       if (existing.fileSize === stats.size && existing.fileMtime === stats.mtimeMs) {
         return
       }
 
-      // 重新索引
       const fileName = basename(filePath)
-      const photoId = this.db.addPhoto(existing.folderId, filePath, fileName, stats.size, stats.mtimeMs)
+      const fileBuffer = await readFile(filePath)
+      const hash = await getHasher()
+      const fileHash = hash(new Uint8Array(fileBuffer.buffer, fileBuffer.byteOffset, fileBuffer.byteLength))
 
+      const photoId = this.db.addPhoto(existing.folderId, filePath, fileName, stats.size, stats.mtimeMs, fileHash)
+
+      this.db.addToQueue(photoId, 'thumbnail', 20)
       this.db.addToQueue(photoId, 'embed', 10)
       this.indexer.processNext()
     } catch (error) {
@@ -152,9 +151,6 @@ export class FileWatcher {
     }
   }
 
-  /**
-   * 处理文件删除
-   */
   private handleRemove(filePath: string): void {
     if (!isSupportedImage(filePath)) return
 

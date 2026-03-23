@@ -9,6 +9,7 @@ export interface Photo {
   fileName: string
   fileSize: number
   fileMtime: number
+  fileHash: string
   width?: number
   height?: number
   takenAt?: string
@@ -17,9 +18,17 @@ export interface Photo {
   caption?: string
   embedStatus: 'pending' | 'done' | 'error'
   captionStatus: 'pending' | 'done' | 'error'
+  duplicateCount?: number
   deletedAt?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface PhotoLocation {
+  filePath: string
+  folderPath: string
+  folderName: string
+  folderId: number
 }
 
 export interface WatchedFolder {
@@ -40,7 +49,8 @@ export interface SearchResult {
 export interface IndexProgress {
   // 照片统计（基于实际照片数，不是任务数）
   totalPhotos: number           // 总照片数
-  indexedPhotos: number         // 已完成索引的照片数（有 embedding）
+  thumbnailedPhotos: number     // 已生成缩略图的照片数
+  indexedPhotos: number         // 已完成 embedding 的照片数
   captionedPhotos: number       // 已生成 AI 描述的照片数
 
   // 当前状态
@@ -88,6 +98,7 @@ export const IPC_CHANNELS = {
   GET_THUMBNAIL_DATA: 'get-thumbnail-data',
   GET_FULL_IMAGE_DATA: 'get-full-image-data',
   SHOW_IN_FINDER: 'show-in-finder',
+  GET_PHOTO_LOCATIONS: 'get-photo-locations',
 
   // 进度
   INDEX_PROGRESS: 'index-progress',
@@ -102,14 +113,33 @@ export const IPC_CHANNELS = {
   CANCEL_DOWNLOAD: 'cancel-download',
   DOWNLOAD_PROGRESS: 'download-progress',
   INIT_CAPTION_GENERATOR: 'init-caption-generator',
+
+  // Embedding API 配置
+  GET_EMBEDDING_CONFIG: 'get-embedding-config',
+  SET_EMBEDDING_CONFIG: 'set-embedding-config',
+  TEST_EMBEDDING_API: 'test-embedding-api',
 } as const
 
 export interface ModelStatus {
   modelsDir: string
-  modelExists: boolean
-  mmprojExists: boolean
+  // Caption 模型 (Qwen3.5-4B)
+  captionModelExists: boolean
+  captionMmprojExists: boolean
+  captionReady: boolean
+  // Embedding API（使用外部 API，不使用本地模型）
+  embeddingApiConfigured: boolean
+  embeddingApiEndpoint?: string
+  embeddingReady: boolean
+  // llama-server
   llamaServerExists: boolean
   serverReady: boolean
+  currentModel: 'caption' | null  // embedding 不再使用本地 llama-server
+}
+
+export interface EmbeddingApiConfig {
+  endpoint: string
+  apiKey?: string
+  model?: string
 }
 
 export interface DownloadProgress {
@@ -120,6 +150,4 @@ export interface DownloadProgress {
   speed: number
 }
 
-export interface DownloadRequest {
-  type: 'model' | 'mmproj' | 'llama-server'
-}
+export type ModelDownloadType = 'caption' | 'captionMmproj' | 'embedding' | 'embeddingMmproj'

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type IndexProgress, type ModelStatus, type DownloadProgress } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig } from '../shared/types'
 
 // 暴露给渲染进程的 API
 const api = {
@@ -40,6 +40,9 @@ const api = {
   },
   showInFinder: (filePath: string): Promise<boolean> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SHOW_IN_FINDER, filePath)
+  },
+  getPhotoLocations: (photoId: number): Promise<PhotoLocation[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTO_LOCATIONS, photoId)
   },
 
   // 进度监听
@@ -84,6 +87,17 @@ const api = {
   },
   initCaptionGenerator: (): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.INIT_CAPTION_GENERATOR)
+  },
+
+  // Embedding API 配置
+  getEmbeddingConfig: (): Promise<EmbeddingApiConfig | null> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_EMBEDDING_CONFIG)
+  },
+  setEmbeddingConfig: (config: EmbeddingApiConfig): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_EMBEDDING_CONFIG, config)
+  },
+  testEmbeddingApi: (): Promise<{ success: boolean; dimension?: number; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TEST_EMBEDDING_API)
   },
 }
 

@@ -7,9 +7,9 @@ import { initDatabase } from './db'
 import { FileWatcher } from './services/watcher'
 import { Indexer } from './services/indexer'
 import { SearchEngine } from './services/search'
-import { getLlamaServer } from './services/llamaServer'
 import { getDownloadManager, MODEL_FILES } from './services/downloadManager'
-import { getCaptionGenerator } from './services/captionGenerator'
+import { getLlamaServerManager } from './services/llama/serverManager'
+import { getEmbeddingService } from './services/embedding'
 import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress } from '../shared/types'
 
 // 全局服务实例
@@ -65,6 +65,18 @@ async function initServices(): Promise<void> {
   // 初始化数据库
   db = initDatabase(dbPath)
 
+  // 恢复上次运行时卡住的任务（程序被强制关闭时可能发生）
+  const recoveredTasks = db.recoverStuckTasks()
+  if (recoveredTasks > 0) {
+    console.log(`Recovered ${recoveredTasks} stuck tasks from previous run`)
+  }
+
+  // 重新队列缺失 embedding 的照片（模型之前不可用时可能发生）
+  const requeuedEmbeddings = db.requeueMissingEmbeddings()
+  if (requeuedEmbeddings > 0) {
+    console.log(`Requeued ${requeuedEmbeddings} photos for embedding`)
+  }
+
   // 初始化索引器
   indexer = new Indexer(db, userDataPath)
 
@@ -87,9 +99,31 @@ async function initServices(): Promise<void> {
 
   console.log('Services initialized')
 
-  // 后台预加载 AI 模型（不阻塞启动）
+  // 初始化 llama server manager（配置模型路径）
+  const llamaManager = getLlamaServerManager(userDataPath)
+  const modelsDir = join(userDataPath, 'models')
+
+  // 配置 embedding 模型
+  llamaManager.setModelConfig('embedding', {
+    type: 'embedding',
+    modelPath: join(modelsDir, 'Qwen3-VL-Embedding-2B-Q4_K_M.gguf'),
+    mmprojPath: join(modelsDir, 'mmproj-Qwen3-VL-Embedding-2B.gguf'),
+    embeddingMode: true,
+    poolingType: 'last',
+    contextSize: 8192,
+  })
+
+  // 配置 caption 模型 (Qwen3.5-4B 多模态，原生支持 262K context)
+  llamaManager.setModelConfig('caption', {
+    type: 'caption',
+    modelPath: join(modelsDir, 'Qwen3.5-4B-Q4_K_M.gguf'),
+    mmprojPath: join(modelsDir, 'mmproj-Qwen3.5-4B-F16.gguf'),
+    contextSize: 32768,
+  })
+
+  // 后台预加载 embedding 模型（用于搜索）
   setTimeout(() => {
-    console.log('Starting AI model preload...')
+    console.log('Starting embedding model preload...')
     indexer.preloadModels().catch((e) => {
       console.error('Model preload error:', e)
     })
@@ -126,19 +160,18 @@ function registerIpcHandlers(): void {
       // 1. 停止监听
       watcher.unwatchFolder(folderId)
 
-      // 2. 获取并删除所有照片数据，返回需要清理的照片 ID
-      const photoIds = db.deletePhotosByFolder(folderId)
+      // 2. 删除照片数据，返回孤立的 hash（没有其他文件夹有副本）
+      const orphanedHashes = db.deletePhotosByFolder(folderId)
 
-      // 3. 删除缩略图文件
+      // 3. 删除孤立 hash 的缩略图文件
       const thumbnailsDir = join(app.getPath('userData'), 'thumbnails')
-      for (const photoId of photoIds) {
-        const thumbnailPath = join(thumbnailsDir, `${photoId}.webp`)
+      for (const hash of orphanedHashes) {
+        const thumbnailPath = join(thumbnailsDir, `${hash}.webp`)
         try {
           if (existsSync(thumbnailPath)) {
             await unlink(thumbnailPath)
           }
         } catch (e) {
-          // 忽略删除失败的错误
           console.warn(`Failed to delete thumbnail: ${thumbnailPath}`, e)
         }
       }
@@ -146,7 +179,7 @@ function registerIpcHandlers(): void {
       // 4. 删除文件夹记录
       db.removeFolder(folderId)
 
-      console.log(`Removed folder ${folderId} with ${photoIds.length} photos`)
+      console.log(`Removed folder ${folderId}, cleaned ${orphanedHashes.length} orphaned hashes`)
     }
     return true
   })
@@ -166,20 +199,28 @@ function registerIpcHandlers(): void {
     return db.getPhotoDetail(photoId)
   })
 
-  // 获取缩略图路径
+  // 获取缩略图路径（按 hash）
   ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL, async (_event, photoId: number) => {
-    const thumbnailPath = join(app.getPath('userData'), 'thumbnails', `${photoId}.webp`)
-    return thumbnailPath
+    const photo = db.getPhoto(photoId)
+    if (!photo?.fileHash) return null
+    return indexer.getThumbnailPath(photo.fileHash)
   })
 
-  // 获取缩略图数据（base64）
+  // 获取缩略图数据（base64，按 hash）
   ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
-    const thumbnailPath = join(app.getPath('userData'), 'thumbnails', `${photoId}.webp`)
-    if (!existsSync(thumbnailPath)) {
-      return null
-    }
+    const photo = db.getPhoto(photoId)
+    if (!photo?.fileHash) return null
+    const thumbnailPath = indexer.getThumbnailPath(photo.fileHash)
+    if (!existsSync(thumbnailPath)) return null
     const buffer = await readFile(thumbnailPath)
     return `data:image/webp;base64,${buffer.toString('base64')}`
+  })
+
+  // 获取照片所有位置（按 hash 查重复）
+  ipcMain.handle(IPC_CHANNELS.GET_PHOTO_LOCATIONS, async (_event, photoId: number) => {
+    const photo = db.getPhoto(photoId)
+    if (!photo?.fileHash) return []
+    return db.getPhotoLocations(photo.fileHash)
   })
 
   // 获取原图数据（base64）
@@ -207,32 +248,51 @@ function registerIpcHandlers(): void {
 
   // 获取模型状态
   ipcMain.handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
-    const server = getLlamaServer()
     const downloadManager = getDownloadManager()
-    const models = server.checkModels()
+    const modelsDir = downloadManager.getModelsDir()
+
+    // 检查 Caption 模型文件是否存在
+    const captionModelExists = existsSync(join(modelsDir, MODEL_FILES.caption.name))
+    const captionMmprojExists = existsSync(join(modelsDir, MODEL_FILES.captionMmproj.name))
+
+    const llamaManager = getLlamaServerManager()
+    const embeddingService = getEmbeddingService()
+    const embeddingConfig = embeddingService.getConfig()
+
     return {
-      modelsDir: server.getModelsDir(),
-      modelExists: models.model,
-      mmprojExists: models.mmproj,
+      modelsDir,
+      // Caption 模型状态
+      captionModelExists,
+      captionMmprojExists,
+      captionReady: captionModelExists && captionMmprojExists,
+      // Embedding API 状态（使用外部 API，不使用本地模型）
+      embeddingApiConfigured: embeddingService.isConfigured(),
+      embeddingApiEndpoint: embeddingConfig?.endpoint,
+      embeddingReady: embeddingService.isReady(),
+      // llama-server
       llamaServerExists: downloadManager.isLlamaServerInstalled(),
-      serverReady: server.isServerReady(),
+      serverReady: llamaManager.isServerReady(),
+      currentModel: llamaManager.getCurrentModel() === 'caption' ? 'caption' : null,
     }
   })
 
   // 下载模型
-  ipcMain.handle(IPC_CHANNELS.DOWNLOAD_MODEL, async (_event, type: 'model' | 'mmproj') => {
-    const downloadManager = getDownloadManager()
-    const progressCallback = (progress: DownloadProgress): void => {
-      mainWindow?.webContents.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, progress)
-    }
+  ipcMain.handle(
+    IPC_CHANNELS.DOWNLOAD_MODEL,
+    async (_event, type: 'caption' | 'captionMmproj' | 'embedding' | 'embeddingMmproj') => {
+      const downloadManager = getDownloadManager()
+      const progressCallback = (progress: DownloadProgress): void => {
+        mainWindow?.webContents.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, progress)
+      }
 
-    try {
-      await downloadManager.downloadModel(type, progressCallback)
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: String(error) }
+      try {
+        await downloadManager.downloadModel(type, progressCallback)
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
     }
-  })
+  )
 
   // 下载 llama-server
   ipcMain.handle(IPC_CHANNELS.DOWNLOAD_LLAMA_SERVER, async () => {
@@ -256,13 +316,49 @@ function registerIpcHandlers(): void {
     return { success: true }
   })
 
-  // 初始化/重新初始化 caption generator
+  // 初始化 Caption 模型（Qwen3.5-4B）
   ipcMain.handle(IPC_CHANNELS.INIT_CAPTION_GENERATOR, async () => {
     try {
-      const captionGen = getCaptionGenerator()
-      // 强制重新初始化
-      await captionGen.reinit()
-      return { success: true, ready: captionGen.isAvailable() }
+      const llamaManager = getLlamaServerManager()
+      await llamaManager.ensureModel('caption')
+      return { success: true, ready: llamaManager.isModelLoaded('caption') }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // 获取 Embedding API 配置
+  ipcMain.handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
+    const embeddingService = getEmbeddingService()
+    const config = embeddingService.getConfig()
+    return config ? { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model } : null
+  })
+
+  // 设置 Embedding API 配置
+  ipcMain.handle(
+    IPC_CHANNELS.SET_EMBEDDING_CONFIG,
+    async (_event, config: { endpoint: string; apiKey?: string; model?: string }) => {
+      try {
+        const embeddingService = getEmbeddingService()
+        embeddingService.setConfig(config)
+        await embeddingService.init()
+        return { success: true, ready: embeddingService.isReady() }
+      } catch (error) {
+        return { success: false, error: String(error) }
+      }
+    }
+  )
+
+  // 测试 Embedding API
+  ipcMain.handle(IPC_CHANNELS.TEST_EMBEDDING_API, async () => {
+    try {
+      const embeddingService = getEmbeddingService()
+      if (!embeddingService.isConfigured()) {
+        return { success: false, error: 'API not configured' }
+      }
+      // 尝试编码一个简单文本
+      const testVec = await embeddingService.encodeText('test')
+      return { success: true, dimension: testVec.length }
     } catch (error) {
       return { success: false, error: String(error) }
     }
@@ -298,6 +394,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // 清理资源
   watcher?.stopAll()
-  getLlamaServer().stop()
+  getLlamaServerManager().stop()
   db?.close()
 })

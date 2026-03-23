@@ -1,11 +1,20 @@
+/**
+ * 搜索引擎
+ * 结合向量搜索和 BM25 文本搜索
+ */
+
 import type { DatabaseInstance } from '../db'
-import type { SearchResult, Photo } from '../../shared/types'
-import { getTextEmbedding } from './textEmbedding'
-import { getImageEmbedding } from './imageEmbedding'
+import type { SearchResult } from '../../shared/types'
+import { getEmbeddingService } from './embedding'
 
 interface VecSearchResult {
-  photoId: number
+  fileHash: string
   distance: number
+}
+
+interface TextSearchResult {
+  fileHash: string
+  score: number
 }
 
 export class SearchEngine {
@@ -15,9 +24,6 @@ export class SearchEngine {
     this.db = db
   }
 
-  /**
-   * 语义搜索照片
-   */
   async search(query: string, limit: number = 50): Promise<SearchResult[]> {
     const trimmedQuery = query.trim()
 
@@ -28,55 +34,41 @@ export class SearchEngine {
     console.log(`Searching for: "${trimmedQuery}", limit: ${limit}`)
 
     try {
-      // 1. 生成查询向量（两种空间）
-      const textEmbedding = getTextEmbedding()
-      const imageEmbedding = getImageEmbedding()
-
-      // E5 向量用于 caption 搜索，CLIP 向量用于图像搜索
-      const [e5QueryVec, clipQueryVec] = await Promise.all([
-        textEmbedding.encode(trimmedQuery),
-        imageEmbedding.encodeText(trimmedQuery),
+      const [vecResults, textResults] = await Promise.all([
+        this.searchByVector(trimmedQuery, limit * 2),
+        this.searchByBM25(trimmedQuery, limit * 2),
       ])
 
-      // 2. 双路检索（并行）
-      // - CLIP 文本向量 vs CLIP 图像向量（跨模态）
-      // - E5 文本向量 vs E5 caption 向量（同模态）
-      const [imageResults, captionResults] = await Promise.all([
-        this.searchByImageVec(clipQueryVec, limit * 2),
-        this.searchByCaptionVec(e5QueryVec, limit * 2),
-      ])
+      console.log(`Vector results: ${vecResults.length}, BM25 results: ${textResults.length}`)
 
-      console.log(
-        `Image results: ${imageResults.length}, Caption results: ${captionResults.length}`
-      )
+      // RRF 融合排序并归一化分数
+      const mergedResults = this.rrfMerge(vecResults, textResults, 60)
 
-      // 3. RRF 融合排序
-      const mergedIds = this.rrfMerge(imageResults, captionResults, 60)
+      const maxScore = mergedResults.length > 0 ? mergedResults[0].score : 1
+      for (const r of mergedResults) {
+        r.score = r.score / maxScore
+      }
 
-      // 4. 获取照片详情并构建结果
+      // 映射到代表照片
       const results: SearchResult[] = []
-      const seenIds = new Set<number>()
+      const seenHashes = new Set<string>()
 
-      for (const { photoId, score } of mergedIds) {
-        if (seenIds.has(photoId)) continue
-        seenIds.add(photoId)
+      for (const { fileHash, score } of mergedResults) {
+        if (seenHashes.has(fileHash)) continue
+        seenHashes.add(fileHash)
 
-        const photo = this.db.getPhoto(photoId)
+        const photo = this.db.getRepresentativeByHash(fileHash)
         if (photo && !photo.deletedAt) {
-          results.push({
-            photo,
-            score,
-          })
-
+          results.push({ photo, score })
           if (results.length >= limit) break
         }
       }
 
-      // 如果结果太少，用最新照片补充
+      // 结果不足时补充最近照片
       if (results.length < limit) {
-        const recent = this.db.getPhotos(limit - results.length)
+        const recent = this.db.getRepresentativePhotos(limit - results.length)
         for (const photo of recent) {
-          if (!seenIds.has(photo.id)) {
+          if (!seenHashes.has(photo.fileHash)) {
             results.push({ photo, score: 0.1 })
           }
         }
@@ -85,85 +77,57 @@ export class SearchEngine {
       return results
     } catch (error) {
       console.error('Search error:', error)
-      // 降级到返回最新照片
       return this.getRecentPhotos(limit)
     }
   }
 
-  /**
-   * 通过图像向量搜索（跨模态：CLIP 文本向量 vs CLIP 图像向量）
-   */
-  private async searchByImageVec(
-    clipQueryVec: Float32Array,
-    limit: number
-  ): Promise<VecSearchResult[]> {
+  private async searchByVector(query: string, limit: number): Promise<VecSearchResult[]> {
     try {
-      return this.db.searchByImageVec(clipQueryVec, limit)
+      const embeddingService = getEmbeddingService()
+      if (!embeddingService.isReady()) return []
+      const queryVec = await embeddingService.encodeText(query)
+      return this.db.searchByVec(queryVec, limit)
     } catch (error) {
-      console.error('Image vector search failed:', error)
+      console.error('Vector search failed:', error)
       return []
     }
   }
 
-  /**
-   * 通过 Caption 向量搜索
-   */
-  private async searchByCaptionVec(
-    queryVec: Float32Array,
-    limit: number
-  ): Promise<VecSearchResult[]> {
+  private searchByBM25(query: string, limit: number): TextSearchResult[] {
     try {
-      return this.db.searchByCaptionVec(queryVec, limit)
+      return this.db.searchByText(query, limit)
     } catch (error) {
-      console.error('Caption vector search failed:', error)
+      console.error('BM25 search failed:', error)
       return []
     }
   }
 
-  /**
-   * RRF (Reciprocal Rank Fusion) 融合排序
-   * @param lists 多个搜索结果列表
-   * @param k RRF 常数（默认 60）
-   */
   private rrfMerge(
-    list1: VecSearchResult[],
-    list2: VecSearchResult[],
+    vecResults: VecSearchResult[],
+    textResults: TextSearchResult[],
     k: number = 60
-  ): Array<{ photoId: number; score: number }> {
-    const scores = new Map<number, number>()
+  ): Array<{ fileHash: string; score: number }> {
+    const scores = new Map<string, number>()
 
-    // 处理第一个列表（按距离排序，距离越小排名越高）
-    list1
+    vecResults
       .sort((a, b) => a.distance - b.distance)
       .forEach((r, rank) => {
-        const rrfScore = 1 / (k + rank + 1)
-        scores.set(r.photoId, (scores.get(r.photoId) || 0) + rrfScore)
+        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
       })
 
-    // 处理第二个列表
-    list2
-      .sort((a, b) => a.distance - b.distance)
-      .forEach((r, rank) => {
-        const rrfScore = 1 / (k + rank + 1)
-        scores.set(r.photoId, (scores.get(r.photoId) || 0) + rrfScore)
-      })
-
-    // 转换为数组并排序
-    const merged = Array.from(scores.entries())
-      .map(([photoId, score]) => ({ photoId, score }))
+    textResults
       .sort((a, b) => b.score - a.score)
+      .forEach((r, rank) => {
+        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
+      })
 
-    return merged
+    return Array.from(scores.entries())
+      .map(([fileHash, score]) => ({ fileHash, score }))
+      .sort((a, b) => b.score - a.score)
   }
 
-  /**
-   * 获取最近的照片（无搜索词时的默认结果）
-   */
   private getRecentPhotos(limit: number): SearchResult[] {
-    const photos = this.db.getPhotos(limit)
-    return photos.map((photo) => ({
-      photo,
-      score: 1.0,
-    }))
+    const photos = this.db.getRepresentativePhotos(limit)
+    return photos.map((photo) => ({ photo, score: 1.0 }))
   }
 }

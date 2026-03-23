@@ -6,9 +6,8 @@ import sharp from 'sharp'
 import exifr from 'exifr'
 import type { DatabaseInstance } from '../db'
 import type { IndexProgress } from '../../shared/types'
-import { getImageEmbedding } from './imageEmbedding'
-import { getTextEmbedding } from './textEmbedding'
-import { getCaptionGenerator } from './captionGenerator'
+import { getEmbeddingService } from './embedding'
+import { getLlamaServerManager } from './llama/serverManager'
 
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
@@ -23,8 +22,6 @@ export class Indexer extends EventEmitter {
     this.db = db
     this.userDataPath = userDataPath
     this.thumbnailDir = join(userDataPath, 'thumbnails')
-
-    // 确保缩略图目录存在
     this.ensureThumbnailDir()
   }
 
@@ -34,23 +31,14 @@ export class Indexer extends EventEmitter {
     }
   }
 
-  /**
-   * 预加载 AI 模型
-   */
   async preloadModels(): Promise<void> {
     if (this.modelsLoaded || this.modelsLoading) return
-
     this.modelsLoading = true
     console.log('Preloading AI models...')
-
     try {
-      // 并行加载模型
-      await Promise.all([
-        getImageEmbedding().init().catch((e) => console.warn('Image embedding init failed:', e)),
-        getTextEmbedding().init().catch((e) => console.warn('Text embedding init failed:', e)),
-        getCaptionGenerator().init().catch((e) => console.warn('Caption generator init failed:', e)),
-      ])
-
+      await getEmbeddingService().init().catch((e) => {
+        console.warn('Embedding service init failed:', e)
+      })
       this.modelsLoaded = true
       console.log('AI models preloaded')
     } catch (error) {
@@ -60,9 +48,24 @@ export class Indexer extends EventEmitter {
     }
   }
 
-  /**
-   * 处理下一个任务
-   */
+  private isCaptionModelReady(): boolean {
+    try {
+      return getLlamaServerManager().isModelLoaded('caption')
+    } catch {
+      return false
+    }
+  }
+
+  /** 公开的进度发射（供 watcher 调用） */
+  emitProgressPublic(): void {
+    this.emitProgress('idle')
+  }
+
+  /** 获取缩略图路径（按 hash） */
+  getThumbnailPath(fileHash: string): string {
+    return join(this.thumbnailDir, `${fileHash}.webp`)
+  }
+
   async processNext(): Promise<void> {
     if (this.isProcessing) return
 
@@ -72,6 +75,7 @@ export class Indexer extends EventEmitter {
       return
     }
 
+    console.log(`processNext: task ${task.id} (${task.taskType}) for photo ${task.photoId}`)
     this.isProcessing = true
 
     try {
@@ -83,17 +87,32 @@ export class Indexer extends EventEmitter {
         return
       }
 
-      if (task.taskType === 'embed') {
+      if (task.taskType === 'thumbnail') {
+        console.log(`Thumbnail: ${photo.fileName}`)
         this.emitProgress('indexing', photo.fileName)
-        await this.processEmbedding(task.photoId, photo.filePath)
-        // 完成 embedding 后，添加 caption 任务（低优先级）
-        this.db.addToQueue(task.photoId, 'caption', 5)
+        await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
+        this.db.completeTask(task.id)
+      } else if (task.taskType === 'embed') {
+        console.log(`Embedding: ${photo.fileName}`)
+        this.emitProgress('indexing', photo.fileName)
+        await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
+        console.log(`Embedding done: ${photo.fileName}`)
+        if (photo.captionStatus !== 'done') {
+          this.db.addToQueue(task.photoId, 'caption', 5)
+        }
+        this.db.completeTask(task.id)
       } else if (task.taskType === 'caption') {
+        const nextTask = this.db.peekNextTask()
+        if (nextTask && nextTask.taskType === 'embed') {
+          this.db.resetTask(task.id)
+          this.isProcessing = false
+          setImmediate(() => this.processNext())
+          return
+        }
         this.emitProgress('captioning', photo.fileName)
-        await this.processCaption(task.photoId, photo.filePath)
+        await this.processCaption(photo.fileHash, photo.filePath)
+        this.db.completeTask(task.id)
       }
-
-      this.db.completeTask(task.id)
     } catch (error) {
       console.error(`Error processing task ${task.id}:`, error)
       this.db.failTask(task.id, String(error))
@@ -101,61 +120,80 @@ export class Indexer extends EventEmitter {
 
     this.isProcessing = false
     this.emitProgress('idle')
-
-    // 处理下一个任务
     setImmediate(() => this.processNext())
   }
 
-  /**
-   * 处理图像 Embedding
-   */
-  private async processEmbedding(photoId: number, filePath: string): Promise<void> {
+  private async processThumbnail(fileHash: string, filePath: string, photoId: number): Promise<void> {
     try {
-      // 读取图像文件
+      // 如果该 hash 的缩略图已存在，跳过
+      const thumbnailPath = this.getThumbnailPath(fileHash)
+      if (existsSync(thumbnailPath)) {
+        console.log(`  Thumbnail already exists for hash ${fileHash}, skipping`)
+        // 但仍需解析 EXIF 更新当前 photo 的元数据
+        const imageBuffer = await readFile(filePath)
+        await this.parseAndUpdateMeta(photoId, imageBuffer)
+        return
+      }
+
+      console.log(`  Reading file: ${filePath}`)
       const imageBuffer = await readFile(filePath)
 
-      // 1. 解析 EXIF
-      const [metadata, exifData] = await Promise.all([
-        sharp(imageBuffer).metadata(),
-        exifr
-          .parse(imageBuffer, {
-            pick: [
-              'Make',
-              'Model',
-              'ExposureTime',
-              'FNumber',
-              'ISO',
-              'FocalLength',
-              'DateTimeOriginal',
-              'GPSLatitude',
-              'GPSLongitude',
-            ],
-          })
-          .catch(() => null),
-      ])
+      await this.parseAndUpdateMeta(photoId, imageBuffer)
 
-      // 更新照片元数据
-      this.db.updatePhotoMeta(photoId, {
-        width: metadata.width,
-        height: metadata.height,
-        takenAt: exifData?.DateTimeOriginal?.toISOString(),
-        lat: exifData?.GPSLatitude,
-        lng: exifData?.GPSLongitude,
-      })
+      console.log(`  Generating thumbnail (hash=${fileHash})...`)
+      await this.generateThumbnail(fileHash, imageBuffer)
+    } catch (error) {
+      console.error(`Error processing thumbnail for ${filePath}:`, error)
+      throw error
+    }
+  }
 
-      // 2. 生成缩略图
-      await this.generateThumbnail(photoId, imageBuffer)
+  private async parseAndUpdateMeta(photoId: number, imageBuffer: Buffer): Promise<void> {
+    console.log(`  Parsing EXIF...`)
+    const [metadata, exifData] = await Promise.all([
+      sharp(imageBuffer).metadata(),
+      exifr.parse(imageBuffer, {
+        pick: ['Make', 'Model', 'ExposureTime', 'FNumber', 'ISO',
+          'FocalLength', 'DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
+      }).catch(() => null),
+    ])
 
-      // 3. 生成图像 Embedding
+    this.db.updatePhotoMeta(photoId, {
+      width: metadata.width,
+      height: metadata.height,
+      takenAt: exifData?.DateTimeOriginal?.toISOString(),
+      lat: exifData?.GPSLatitude,
+      lng: exifData?.GPSLongitude,
+    })
+  }
+
+  private async processEmbedding(fileHash: string, filePath: string, photoId: number): Promise<void> {
+    try {
+      // 如果该 hash 已有 embedding，跳过
+      const { hasEmbedding } = this.db.hasContentForHash(fileHash)
+      if (hasEmbedding) {
+        console.log(`  Embedding already exists for hash ${fileHash}, skipping`)
+        this.db.updateEmbedStatusByHash(fileHash)
+        return
+      }
+
+      console.log(`  Reading file: ${filePath}`)
+      const imageBuffer = await readFile(filePath)
+
+      // 兜底：确保缩略图存在
+      const thumbnailPath = this.getThumbnailPath(fileHash)
+      if (!existsSync(thumbnailPath)) {
+        await this.processThumbnail(fileHash, filePath, photoId)
+      }
+
+      console.log(`  Generating embedding...`)
       try {
-        const imageEmbedding = getImageEmbedding()
-        const embedding = await imageEmbedding.encode(imageBuffer)
-        this.db.saveImageVec(photoId, embedding)
-        console.log(`Indexed image embedding: ${filePath}`)
+        const embeddingService = getEmbeddingService()
+        const embedding = await embeddingService.encodeImage(imageBuffer)
+        this.db.saveImageVec(fileHash, embedding)
+        console.log(`  Embedding saved (dim=${embedding.length}, hash=${fileHash})`)
       } catch (embedError) {
         console.warn(`Image embedding failed for ${filePath}:`, embedError)
-        // 即使 embedding 失败也标记为完成，避免无限重试
-        // 可以使用默认/随机向量或跳过
       }
     } catch (error) {
       console.error(`Error processing embedding for ${filePath}:`, error)
@@ -163,78 +201,114 @@ export class Indexer extends EventEmitter {
     }
   }
 
-  /**
-   * 处理 Caption 生成
-   */
-  private async processCaption(photoId: number, filePath: string): Promise<void> {
+  private async processCaption(fileHash: string, filePath: string): Promise<void> {
     try {
-      const captionGenerator = getCaptionGenerator()
-
-      // 检查 caption 生成器是否可用
-      if (!captionGenerator.isAvailable()) {
-        console.log(`Caption generator not available, skipping: ${filePath}`)
+      // 如果该 hash 已有 caption，跳过
+      const { hasCaption } = this.db.hasContentForHash(fileHash)
+      if (hasCaption) {
+        console.log(`  Caption already exists for hash ${fileHash}, skipping`)
+        this.db.updateCaptionStatusByHash(fileHash)
         return
       }
 
-      const imageBuffer = await readFile(filePath)
+      const manager = getLlamaServerManager()
+      await manager.ensureModel('caption')
 
-      // 1. 生成 Caption
-      const caption = await captionGenerator.generate(imageBuffer)
+      const imageBuffer = await readFile(filePath)
+      const base64Image = imageBuffer.toString('base64')
+      const mimeType = this.detectMimeType(imageBuffer)
+
+      const response = await manager.chatCompletion({
+        model: 'qwen3.5-4b',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an image captioning assistant. Respond with only the caption, no explanations.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } },
+              { type: 'text', text: 'Describe this image in one detailed sentence.' },
+            ],
+          },
+        ],
+        max_tokens: 512,
+        temperature: 0.3,
+      })
+
+      const message = response.choices[0]?.message
+      let caption = message?.content?.trim()
+
+      if (!caption && message?.reasoning_content) {
+        caption = this.extractCaptionFromReasoning(message.reasoning_content)
+      }
 
       if (!caption) {
         console.warn(`No caption generated for ${filePath}`)
         return
       }
 
-      // 保存 Caption 文本
-      this.db.saveCaption(photoId, caption)
-
-      // 2. 生成 Caption Embedding
-      try {
-        const textEmbedding = getTextEmbedding()
-        const embedding = await textEmbedding.encodePassage(caption)
-        this.db.saveCaptionVec(photoId, embedding)
-        console.log(`Indexed caption: ${filePath} -> "${caption}"`)
-      } catch (embedError) {
-        console.warn(`Caption embedding failed for ${filePath}:`, embedError)
+      caption = this.stripThinkingContent(caption)
+      if (!caption) {
+        console.warn(`No caption after stripping thinking for ${filePath}`)
+        return
       }
+
+      this.db.saveCaption(fileHash, caption)
+      console.log(`Caption saved: hash=${fileHash} -> "${caption}"`)
     } catch (error) {
       console.error(`Error processing caption for ${filePath}:`, error)
       throw error
     }
   }
 
-  /**
-   * 生成缩略图
-   */
-  private async generateThumbnail(photoId: number, imageBuffer: Buffer): Promise<void> {
-    const thumbnailPath = join(this.thumbnailDir, `${photoId}.webp`)
+  private stripThinkingContent(content: string): string {
+    return content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  }
 
+  private extractCaptionFromReasoning(reasoning: string): string {
+    const lines = reasoning.split('\n')
+    const descriptions: string[] = []
+    for (const line of lines) {
+      if (line.includes('subject:') || line.includes('outfit:') ||
+          line.includes('setting:') || line.includes('background:')) {
+        const match = line.match(/:\s*(.+)/)
+        if (match && match[1]) descriptions.push(match[1].trim())
+      }
+    }
+    if (descriptions.length > 0) return descriptions.join(' ').replace(/\*\*/g, '').trim()
+    const cleaned = reasoning.replace(/\*\*/g, '').replace(/\n+/g, ' ').trim()
+    return cleaned.length > 200 ? cleaned.substring(0, 200) + '...' : cleaned
+  }
+
+  private detectMimeType(buffer: Buffer): string {
+    if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'image/png'
+    if (buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
+    if (buffer[8] === 0x57 && buffer[9] === 0x45) return 'image/webp'
+    if (buffer[0] === 0x47 && buffer[1] === 0x49) return 'image/gif'
+    return 'image/jpeg'
+  }
+
+  private async generateThumbnail(fileHash: string, imageBuffer: Buffer): Promise<void> {
+    const thumbnailPath = this.getThumbnailPath(fileHash)
     await sharp(imageBuffer)
-      .resize(512, 512, {
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
+      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 80 })
       .toFile(thumbnailPath)
   }
 
-  /**
-   * 发送进度事件
-   */
   private emitProgress(stage: IndexProgress['stage'], currentFile?: string): void {
     const photoStats = this.db.getPhotoStats()
-    const captionGenerator = getCaptionGenerator()
-
     const progress: IndexProgress = {
-      totalPhotos: photoStats.total,
+      totalPhotos: photoStats.uniqueTotal,
+      thumbnailedPhotos: photoStats.thumbnailed,
       indexedPhotos: photoStats.indexed,
       captionedPhotos: photoStats.captioned,
       stage,
       currentFile,
-      aiModelReady: captionGenerator.isAvailable(),
+      aiModelReady: getEmbeddingService().isReady(),
     }
-
     this.emit('progress', progress)
   }
 }
