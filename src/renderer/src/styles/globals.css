@@ -101,9 +101,10 @@
   font-family: inherit;
 }
 
-/* 模态层需要高于 Leaflet 容器 (z-index: 800) */
+/* 模态层需要高于 Leaflet 容器 (z-index: 800)，并禁用标题栏拖拽区域 */
 .modal-overlay {
   z-index: 900 !important;
+  -webkit-app-region: no-drag;
 }
 .marker-cluster {
   background: transparent !important;

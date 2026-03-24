@@ -77,18 +77,22 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
       </div>
 
       {/* 信息侧边栏 */}
-      <div className="w-72 bg-surface-1/80 glass border-l border-white/5 p-5 overflow-auto animate-slide-in">
-        <div className="flex items-start gap-2 mb-4">
+      <div className="w-72 bg-surface-1/80 glass border-l border-white/5 flex flex-col animate-slide-in">
+        {/* 固定头部（不滚动） */}
+        <div className="flex items-start gap-2 p-5 pb-0">
           <h2 className="text-sm font-semibold text-white flex-1 break-all leading-5">{photo.fileName}</h2>
           <button
-            onClick={onClose}
-            className="p-1 rounded-md hover:bg-white/10 transition-colors flex-shrink-0"
+            onClick={(e) => { e.stopPropagation(); onClose() }}
+            className="w-7 h-7 rounded-md bg-white/10 hover:bg-white/25 active:bg-white/30 transition-colors flex-shrink-0 flex items-center justify-center cursor-pointer"
+            title="关闭 (Esc)"
           >
-            <svg className="w-4 h-4 text-white/40 hover:text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg className="w-4 h-4 text-white/60 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
+        {/* 可滚动内容 */}
+        <div className="flex-1 overflow-auto p-5 pt-4">
 
         {/* Caption */}
         <div className="mb-5">
@@ -287,7 +291,8 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
             </div>
           </div>
         )}
-      </div>
+        </div>{/* 可滚动内容结束 */}
+      </div>{/* 侧边栏结束 */}
     </div>
   )
 }
