@@ -65,16 +65,6 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
       className="fixed inset-0 bg-black/95 flex animate-fade-in modal-overlay"
       onClick={handleBackdropClick}
     >
-      {/* 关闭按钮 */}
-      <button
-        onClick={onClose}
-        className="absolute top-3 right-3 z-10 p-1.5 rounded-full hover:bg-white/10 transition-colors"
-      >
-        <svg className="w-5 h-5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
-
       {/* 图片预览区域 */}
       <div className="flex-1 flex items-center justify-center p-8">
         {imageUrl && (
@@ -88,7 +78,17 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
 
       {/* 信息侧边栏 */}
       <div className="w-72 bg-surface-1/80 glass border-l border-white/5 p-5 overflow-auto animate-slide-in">
-        <h2 className="text-sm font-semibold text-white mb-4 truncate">{photo.fileName}</h2>
+        <div className="flex items-start gap-2 mb-4">
+          <h2 className="text-sm font-semibold text-white flex-1 break-all leading-5">{photo.fileName}</h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-md hover:bg-white/10 transition-colors flex-shrink-0"
+          >
+            <svg className="w-4 h-4 text-white/40 hover:text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
 
         {/* Caption */}
         <div className="mb-5">
