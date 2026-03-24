@@ -27,6 +27,7 @@
     "react-leaflet": "^5.0.0",
     "react-leaflet-cluster": "^4.0.0",
     "sharp": "^0.34.0",
+    "sqlite-vec": "^0.1.7",
     "unzip-stream": "^0.3.4",
     "xxhash-wasm": "^1.1.0"
   },

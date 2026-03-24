@@ -7,7 +7,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        external: ['better-sqlite3', 'sharp', 'onnxruntime-node']
+        external: ['better-sqlite3', 'sharp', 'onnxruntime-node', 'sqlite-vec']
       }
     }
   },

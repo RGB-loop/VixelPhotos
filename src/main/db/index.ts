@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
+import * as sqliteVec from 'sqlite-vec'
 import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../../shared/types'
 
 // 向量维度 - Qwen3-VL-Embedding
@@ -66,10 +67,15 @@ CREATE TABLE IF NOT EXISTS captions (
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 图像向量表（按 file_hash 去重共享）
-CREATE TABLE IF NOT EXISTS image_vecs (
-  file_hash   TEXT PRIMARY KEY,
-  embedding   BLOB NOT NULL
+-- 图像向量映射表（file_hash → rowid 映射，vec0 需要 integer rowid）
+CREATE TABLE IF NOT EXISTS image_vec_map (
+  rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL UNIQUE
+);
+
+-- 图像向量表（sqlite-vec ANN 索引）
+CREATE VIRTUAL TABLE IF NOT EXISTS image_vecs USING vec0(
+  embedding float[${EMBEDDING_DIM}]
 );
 
 -- Caption 全文搜索表 (FTS5, standalone — 通过触发器同步)
@@ -244,8 +250,13 @@ export function initDatabase(dbPath: string): DatabaseInstance {
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
 
+  // 加载 sqlite-vec 向量搜索扩展
+  sqliteVec.load(db)
+  console.log('sqlite-vec loaded:', (db.prepare('select vec_version()').get() as Record<string, string>)['vec_version()'])
+
   // 检测旧 schema 并迁移
   migrateIfNeeded(db)
+  migrateToVec0(db)
 
   db.exec(SCHEMA)
 
@@ -424,7 +435,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       SELECT p.id, p.file_hash FROM photos p
       WHERE p.deleted_at IS NULL
         AND p.file_hash IS NOT NULL
-        AND p.file_hash NOT IN (SELECT file_hash FROM image_vecs)
+        AND p.file_hash NOT IN (SELECT file_hash FROM image_vec_map)
         AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'embed' AND status IN ('pending', 'processing'))
     `),
     getQueueStats: db.prepare(`
@@ -446,12 +457,20 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     `),
 
     // 内容操作（按 file_hash）
-    hasEmbeddingForHash: db.prepare(`SELECT 1 FROM image_vecs WHERE file_hash = ?`),
+    hasEmbeddingForHash: db.prepare(`SELECT 1 FROM image_vec_map WHERE file_hash = ?`),
     hasCaptionForHash: db.prepare(`SELECT 1 FROM captions WHERE file_hash = ?`),
-    saveImageVec: db.prepare(`
-      INSERT INTO image_vecs (file_hash, embedding) VALUES (?, ?)
-      ON CONFLICT(file_hash) DO UPDATE SET embedding = excluded.embedding
+    insertVecMap: db.prepare(`
+      INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?) RETURNING rowid
     `),
+    getVecMapRowid: db.prepare(`SELECT rowid FROM image_vec_map WHERE file_hash = ?`),
+    insertVec: db.prepare(`
+      INSERT INTO image_vecs (rowid, embedding) VALUES (?, ?)
+    `),
+    updateVec: db.prepare(`
+      UPDATE image_vecs SET embedding = ? WHERE rowid = ?
+    `),
+    deleteVecByRowid: db.prepare(`DELETE FROM image_vecs WHERE rowid = ?`),
+    deleteVecMapByHash: db.prepare(`DELETE FROM image_vec_map WHERE file_hash = ?`),
     updateEmbedStatusByHash: db.prepare(`
       UPDATE photos SET embed_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
     `),
@@ -463,7 +482,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       UPDATE photos SET caption_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
     `),
     getCaption: db.prepare(`SELECT text FROM captions WHERE file_hash = ?`),
-    deleteImageVecByHash: db.prepare(`DELETE FROM image_vecs WHERE file_hash = ?`),
+    deleteImageVecByHash: db.prepare(`SELECT rowid FROM image_vec_map WHERE file_hash = ?`), // used to get rowid for vec deletion
     deleteCaptionByHash: db.prepare(`DELETE FROM captions WHERE file_hash = ?`),
 
     // 搜索
@@ -475,8 +494,20 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       ORDER BY score
       LIMIT ?
     `),
+    // KNN 向量搜索（sqlite-vec）
+    searchVecKnn: db.prepare(`
+      SELECT m.file_hash, v.distance
+      FROM image_vecs v
+      JOIN image_vec_map m ON m.rowid = v.rowid
+      WHERE v.embedding MATCH ?
+        AND k = ?
+      ORDER BY v.distance
+    `),
+    // 获取所有向量（用于 findSimilar）
     getAllImageVecs: db.prepare(`
-      SELECT file_hash, embedding FROM image_vecs
+      SELECT m.file_hash, v.embedding
+      FROM image_vecs v
+      JOIN image_vec_map m ON m.rowid = v.rowid
     `),
     // 文件名搜索（LIKE 模糊匹配，按 hash 去重）
     searchByFileName: db.prepare(`
@@ -742,7 +773,18 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     },
     saveImageVec: (fileHash: string, embedding: Float32Array): void => {
       const buffer = vecToBuffer(embedding)
-      stmts.saveImageVec.run(fileHash, buffer)
+      // 插入 file_hash → rowid 映射
+      let result = stmts.insertVecMap.get(fileHash) as { rowid: number } | undefined
+      if (!result) {
+        result = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
+      }
+      if (result) {
+        try {
+          stmts.insertVec.run(result.rowid, buffer)
+        } catch {
+          stmts.updateVec.run(buffer, result.rowid)
+        }
+      }
       stmts.updateEmbedStatusByHash.run(fileHash)
     },
     updateEmbedStatusByHash: (fileHash: string): void => {
@@ -760,20 +802,20 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       return result?.text
     },
     deleteContentByHash: (fileHash: string): void => {
-      stmts.deleteImageVecByHash.run(fileHash)
+      // 删除向量：先查 rowid，再删 vec0 行和映射
+      const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: number } | undefined
+      if (row) {
+        stmts.deleteVecByRowid.run(row.rowid)
+        stmts.deleteVecMapByHash.run(fileHash)
+      }
       stmts.deleteCaptionByHash.run(fileHash)
     },
 
     searchByVec: (queryVec, limit) => {
       try {
-        const allVecs = stmts.getAllImageVecs.all() as Array<{ file_hash: string; embedding: Buffer }>
-        return allVecs
-          .map((row) => ({
-            fileHash: row.file_hash,
-            distance: 1 - cosineSimilarity(queryVec, bufferToVec(row.embedding)),
-          }))
-          .sort((a, b) => a.distance - b.distance)
-          .slice(0, limit)
+        const buffer = vecToBuffer(queryVec)
+        const results = stmts.searchVecKnn.all(buffer, limit) as Array<{ file_hash: string; distance: number }>
+        return results.map((r) => ({ fileHash: r.file_hash, distance: r.distance }))
       } catch (error) {
         console.error('Vector search error:', error)
         return []
@@ -803,18 +845,19 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     },
     findSimilar: (fileHash, limit) => {
       try {
+        // 获取目标向量
+        const mapRow = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
+        if (!mapRow) return []
+        // 查 KNN (多取一个，因为会包含自身)
         const allVecs = stmts.getAllImageVecs.all() as Array<{ file_hash: string; embedding: Buffer }>
         const target = allVecs.find((v) => v.file_hash === fileHash)
         if (!target) return []
-        const targetVec = bufferToVec(target.embedding)
-        return allVecs
-          .filter((v) => v.file_hash !== fileHash)
-          .map((row) => ({
-            fileHash: row.file_hash,
-            distance: 1 - cosineSimilarity(targetVec, bufferToVec(row.embedding)),
-          }))
-          .sort((a, b) => a.distance - b.distance)
+        const buffer = target.embedding
+        const results = stmts.searchVecKnn.all(buffer, limit + 1) as Array<{ file_hash: string; distance: number }>
+        return results
+          .filter((r) => r.file_hash !== fileHash)
           .slice(0, limit)
+          .map((r) => ({ fileHash: r.file_hash, distance: r.distance }))
       } catch (error) {
         console.error('Find similar error:', error)
         return []
@@ -903,6 +946,29 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     },
 
     close: (): void => { db.close() },
+  }
+}
+
+/** 迁移 image_vecs 从普通表到 vec0 虚拟表 */
+function migrateToVec0(db: Database.Database): void {
+  try {
+    // 检查 image_vecs 是否是普通表（有 file_hash 列 = 旧格式）
+    const tableInfo = db.prepare(`PRAGMA table_info(image_vecs)`).all() as Array<{ name: string }>
+    if (tableInfo.some((col) => col.name === 'file_hash')) {
+      console.log('Migrating image_vecs to vec0 virtual table...')
+      db.exec(`
+        DROP TABLE IF EXISTS image_vecs;
+        DROP TABLE IF EXISTS image_vec_map;
+      `)
+      // 重置 embed_status 让照片重新生成 embedding
+      db.exec(`
+        UPDATE photos SET embed_status = 'pending' WHERE embed_status = 'done';
+        DELETE FROM index_queue WHERE task_type = 'embed';
+      `)
+      console.log('image_vecs migrated to vec0. Embeddings will be re-generated.')
+    }
+  } catch {
+    // 表不存在或已经是 vec0
   }
 }
 
