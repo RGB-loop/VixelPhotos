@@ -287,21 +287,21 @@ export class Indexer extends EventEmitter {
 
   private async parseAndUpdateMeta(photoId: number, imageBuffer: Buffer): Promise<void> {
     console.log(`  Parsing EXIF...`)
-    const [metadata, exifData] = await Promise.all([
+    const [metadata, exifData, gpsData] = await Promise.all([
       sharp(imageBuffer).metadata(),
       exifr.parse(imageBuffer, {
         pick: ['Make', 'Model', 'ExposureTime', 'FNumber', 'ISO',
-          'FocalLength', 'DateTimeOriginal', 'latitude', 'longitude'],
+          'FocalLength', 'DateTimeOriginal'],
       }).catch(() => null),
+      exifr.gps(imageBuffer).catch(() => null),
     ])
 
-    // exifr: GPSLatitude/GPSLongitude 是度分秒数组，latitude/longitude 是 decimal
     this.db.updatePhotoMeta(photoId, {
       width: metadata.width,
       height: metadata.height,
       takenAt: exifData?.DateTimeOriginal?.toISOString(),
-      lat: exifData?.latitude,
-      lng: exifData?.longitude,
+      lat: gpsData?.latitude,
+      lng: gpsData?.longitude,
     })
   }
 
