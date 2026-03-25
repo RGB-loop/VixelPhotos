@@ -356,7 +356,7 @@ Flags:
 
   // 初始化
   initEmbeddingServicePath(getUserDataPath())
-  const db = initDatabase(dbPath)
+  const db = initDatabase(dbPath, { runCleanup: false })
 
   try {
     switch (command) {

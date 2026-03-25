@@ -229,7 +229,7 @@ function vecToBuffer(vec: Float32Array): Buffer {
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
 }
 
-export function initDatabase(dbPath: string): DatabaseInstance {
+export function initDatabase(dbPath: string, options?: { runCleanup?: boolean }): DatabaseInstance {
   const dir = dirname(dbPath)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -251,6 +251,9 @@ export function initDatabase(dbPath: string): DatabaseInstance {
 
   // 确保新列存在
   ensureFaceStatusColumn(db)
+  if (options?.runCleanup !== false) {
+    cleanupStaleVecMap(db)
+  }
 
   const stmts = {
     addFolder: db.prepare(`
@@ -446,7 +449,11 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     `),
 
     // 内容操作（按 file_hash）
-    hasEmbeddingForHash: db.prepare(`SELECT 1 FROM image_vec_map WHERE file_hash = ?`),
+    hasEmbeddingForHash: db.prepare(`
+      SELECT 1 FROM image_vec_map m
+      JOIN image_vecs v ON v.rowid = m.rowid
+      WHERE m.file_hash = ?
+    `),
     hasCaptionForHash: db.prepare(`SELECT 1 FROM captions WHERE file_hash = ?`),
     insertVecMap: db.prepare(`
       INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?) RETURNING rowid
@@ -768,16 +775,20 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     },
     saveImageVec: (fileHash: string, embedding: Float32Array): void => {
       const buffer = vecToBuffer(embedding)
-      // 插入 file_hash → rowid 映射
-      let result = stmts.insertVecMap.get(fileHash) as { rowid: number } | undefined
-      if (!result) {
-        result = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
+      let mapRowid: number | undefined
+      try {
+        const insertResult = stmts.insertVecMap.get(fileHash) as { rowid: number } | undefined
+        mapRowid = insertResult?.rowid
+      } catch { /* conflict, try get */ }
+      if (!mapRowid) {
+        const existing = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
+        mapRowid = existing?.rowid
       }
-      if (result) {
+      if (mapRowid) {
         try {
-          stmts.insertVec.run(result.rowid, buffer)
+          stmts.insertVec.run(mapRowid, buffer)
         } catch {
-          stmts.updateVec.run(buffer, result.rowid)
+          try { stmts.updateVec.run(buffer, mapRowid) } catch { /* ignore update failure */ }
         }
       }
       stmts.updateEmbedStatusByHash.run(fileHash)
@@ -947,6 +958,28 @@ function migrateToVec0(db: Database.Database): void {
     }
   } catch {
     // 表不存在或已经是 vec0
+  }
+}
+
+/** 清理 image_vec_map 中没有对应 vec0 数据的孤立记录 */
+function cleanupStaleVecMap(db: Database.Database): void {
+  try {
+    const stale = db.prepare(`
+      SELECT m.rowid, m.file_hash FROM image_vec_map m
+      WHERE m.rowid NOT IN (SELECT rowid FROM image_vecs)
+    `).all() as Array<{ rowid: number; file_hash: string }>
+
+    if (stale.length > 0) {
+      const del = db.prepare('DELETE FROM image_vec_map WHERE rowid = ?')
+      const resetEmbed = db.prepare("UPDATE photos SET embed_status = 'pending' WHERE file_hash = ? AND deleted_at IS NULL")
+      for (const row of stale) {
+        del.run(row.rowid)
+        resetEmbed.run(row.file_hash)
+      }
+      console.log(`Cleaned ${stale.length} stale image_vec_map entries, photos will re-embed`)
+    }
+  } catch {
+    // 表可能还不存在
   }
 }
 
