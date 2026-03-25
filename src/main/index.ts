@@ -228,10 +228,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return null
+    try {
     const thumbnailPath = indexer.getThumbnailPath(photo.fileHash)
-    if (!existsSync(thumbnailPath)) return null
     const buffer = await readFile(thumbnailPath)
     return `data:image/webp;base64,${buffer.toString('base64')}`
+    } catch { return null }
   })
 
   // 获取照片所有位置（按 hash 查重复）
@@ -421,7 +422,7 @@ function registerIpcHandlers(): void {
     try {
       return await indexer.startFaceScan()
     } catch (error) {
-      return { error: String(error) }
+      return { success: false, error: String(error) }
     }
   })
 

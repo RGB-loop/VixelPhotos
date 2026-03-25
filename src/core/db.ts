@@ -223,20 +223,6 @@ export interface DatabaseInstance {
   close: () => void
 }
 
-// 计算余弦相似度 (归一化向量的点积)
-function cosineSimilarity(vec1: Float32Array, vec2: Float32Array): number {
-  if (vec1.length !== vec2.length) return 0
-  let dotProduct = 0
-  for (let i = 0; i < vec1.length; i++) {
-    dotProduct += vec1[i] * vec2[i]
-  }
-  return dotProduct
-}
-
-function bufferToVec(buffer: Buffer): Float32Array {
-  return new Float32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4)
-}
-
 function vecToBuffer(vec: Float32Array): Buffer {
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
 }
@@ -464,6 +450,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?) RETURNING rowid
     `),
     getVecMapRowid: db.prepare(`SELECT rowid FROM image_vec_map WHERE file_hash = ?`),
+    getVecByRowid: db.prepare(`SELECT embedding FROM image_vecs WHERE rowid = ?`),
     insertVec: db.prepare(`
       INSERT INTO image_vecs (rowid, embedding) VALUES (?, ?)
     `),
@@ -504,7 +491,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
         AND k = ?
       ORDER BY v.distance
     `),
-    // 获取所有向量（用于 findSimilar）
+    // 获取所有向量（用于 face clustering 等需要全量向量的场景）
     getAllImageVecs: db.prepare(`
       SELECT m.file_hash, v.embedding
       FROM image_vecs v
@@ -846,15 +833,11 @@ export function initDatabase(dbPath: string): DatabaseInstance {
     },
     findSimilar: (fileHash, limit) => {
       try {
-        // 获取目标向量
         const mapRow = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
         if (!mapRow) return []
-        // 查 KNN (多取一个，因为会包含自身)
-        const allVecs = stmts.getAllImageVecs.all() as Array<{ file_hash: string; embedding: Buffer }>
-        const target = allVecs.find((v) => v.file_hash === fileHash)
-        if (!target) return []
-        const buffer = target.embedding
-        const results = stmts.searchVecKnn.all(buffer, limit + 1) as Array<{ file_hash: string; distance: number }>
+        const vecRow = stmts.getVecByRowid.get(mapRow.rowid) as { embedding: Buffer } | undefined
+        if (!vecRow) return []
+        const results = stmts.searchVecKnn.all(vecRow.embedding, limit + 1) as Array<{ file_hash: string; distance: number }>
         return results
           .filter((r) => r.file_hash !== fileHash)
           .slice(0, limit)
@@ -925,16 +908,15 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       stmts.updatePersonName.run(name, personId)
     },
     mergePeople: (targetId, sourceIds) => {
+      const countStmt = db.prepare('SELECT COUNT(*) as c FROM faces WHERE person_id = ?')
+      const bestStmt = db.prepare('SELECT id FROM faces WHERE person_id = ? ORDER BY confidence DESC LIMIT 1')
       const transaction = db.transaction(() => {
         for (const sourceId of sourceIds) {
           stmts.mergePeopleFaces.run(targetId, sourceId)
           stmts.deletePerson.run(sourceId)
         }
-        // 更新 target 的 face_count
-        const faces = stmts.getAllFaceEmbeddings.all() as Array<{ id: number }>
-        // 简单重新计数
-        const count = (db.prepare('SELECT COUNT(*) as c FROM faces WHERE person_id = ?').get(targetId) as { c: number }).c
-        const best = db.prepare('SELECT id FROM faces WHERE person_id = ? ORDER BY confidence DESC LIMIT 1').get(targetId) as { id: number } | undefined
+        const count = (countStmt.get(targetId) as { c: number }).c
+        const best = bestStmt.get(targetId) as { id: number } | undefined
         stmts.updatePersonCover.run(best?.id || null, count, targetId)
       })
       transaction()

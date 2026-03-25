@@ -192,6 +192,8 @@ export interface Person {
   createdAt: string
 }
 
+export type ProcessingStatus = 'pending' | 'done' | 'error'
+export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face'
 export type CaptionLanguage = 'en' | 'zh'
 
 export interface CaptionConfig {
