@@ -5,29 +5,30 @@
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
-import { app } from 'electron'
 import { initDetection, isDetectionReady, detectFaces, type DetectedFace } from './detection'
 import { initFaceEmbedding, isEmbeddingReady, embedFace } from './embedding'
 import { alignFace, cropFace } from './alignment'
 import { clusterFaces } from './clustering'
-import type { DatabaseInstance } from '../../db'
-import type { FaceBbox } from '../../../shared/types'
+import type { DatabaseInstance } from '../db'
+import type { FaceBbox } from '../../shared/types'
 import sharp from 'sharp'
 
 let initialized = false
 let initializing = false
+let _modelsDir: string = ''
+
+export function setFaceModelsDir(dir: string): void {
+  _modelsDir = dir
+}
 
 function getModelsDir(): string {
-  // 开发环境：resources/models/
-  // 生产环境：app.getAppPath() + resources/models/ 或 extraResources
+  if (_modelsDir && existsSync(_modelsDir)) return _modelsDir
+
+  // fallback: 开发环境
   const devPath = join(process.cwd(), 'resources', 'models')
   if (existsSync(devPath)) return devPath
 
-  const prodPath = join(app.getAppPath(), '..', 'models')
-  if (existsSync(prodPath)) return prodPath
-
-  // fallback to resources in app path
-  return join(app.getAppPath(), 'resources', 'models')
+  return _modelsDir || devPath
 }
 
 export async function initFaceService(): Promise<boolean> {

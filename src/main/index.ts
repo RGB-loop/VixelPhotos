@@ -3,15 +3,15 @@ import { join } from 'path'
 import { readFile, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { initDatabase } from './db'
-import { FileWatcher } from './services/watcher'
-import { Indexer } from './services/indexer'
-import { SearchEngine } from './services/search'
+import { initDatabase } from '../core/db'
+import { FileWatcher } from '../core/watcher'
+import { Indexer } from '../core/indexer'
+import { SearchEngine } from '../core/search'
 import { getDownloadManager, MODEL_FILES } from './services/downloadManager'
-import { getLlamaServerManager } from './services/llama/serverManager'
-import { getEmbeddingService } from './services/embedding'
+import { getLlamaServerManager } from '../core/llama/serverManager'
+import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
+import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress, type CaptionConfig, type FaceBbox } from '../shared/types'
-import { getFaceThumbnail } from './services/face'
 
 // 全局服务实例
 let db: ReturnType<typeof initDatabase>
@@ -62,6 +62,11 @@ async function initServices(): Promise<void> {
 
   console.log('Initializing database at:', dbPath)
   console.log('User data path:', userDataPath)
+
+  // 初始化路径依赖
+  initEmbeddingServicePath(userDataPath)
+  // Face 模型在 resources/models/（打包进 app）
+  setFaceModelsDir(join(process.cwd(), 'resources', 'models'))
 
   // 初始化数据库
   db = initDatabase(dbPath)

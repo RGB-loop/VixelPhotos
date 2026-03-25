@@ -2,7 +2,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, extname } from 'path'
 import { stat, readFile, access } from 'fs/promises'
 import xxhash from 'xxhash-wasm'
-import type { DatabaseInstance } from '../db'
+import type { DatabaseInstance } from './db'
 import type { Indexer } from './indexer'
 
 // xxHash 实例（懒初始化）

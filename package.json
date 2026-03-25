@@ -25,7 +25,12 @@
     "preview": "electron-vite preview",
     "package": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "cli": "npm run build:cli && npx electron dist/cli/cli/index.js"
+  },
+  "bin": {
+    "vixel": "./dist/cli/cli/index.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",

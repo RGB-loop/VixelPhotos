@@ -5,7 +5,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { app } from 'electron'
 import type {
   EmbeddingProvider,
   EmbeddingProviderConfig,
@@ -17,11 +16,15 @@ import { ApiEmbeddingProvider } from './providers/apiProvider'
 
 export * from './types'
 
-/**
- * 获取配置文件路径
- */
+// 模块级路径，由 initEmbeddingServicePath() 设置
+let _userDataPath: string = ''
+
+export function initEmbeddingServicePath(userDataPath: string): void {
+  _userDataPath = userDataPath
+}
+
 function getConfigPath(): string {
-  return join(app.getPath('userData'), 'embedding-config.json')
+  return join(_userDataPath, 'embedding-config.json')
 }
 
 /**
@@ -41,7 +44,7 @@ function loadConfig(): ApiProviderConfig | null {
       console.warn('Embedding config missing endpoint')
       return null
     }
-    return { type: 'api', ...config }
+    return { ...config, type: 'api' as const }
   } catch (error) {
     console.error('Failed to load embedding config:', error)
     return null

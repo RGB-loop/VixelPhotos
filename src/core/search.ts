@@ -3,8 +3,8 @@
  * 结合向量搜索、BM25 文本搜索和文件名搜索
  */
 
-import type { DatabaseInstance } from '../db'
-import type { SearchResult } from '../../shared/types'
+import type { DatabaseInstance } from './db'
+import type { SearchResult } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 
 interface VecSearchResult {

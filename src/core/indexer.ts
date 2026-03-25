@@ -2,11 +2,10 @@ import { EventEmitter } from 'events'
 import { join } from 'path'
 import { mkdir, readFile } from 'fs/promises'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
-import { app } from 'electron'
 import sharp from 'sharp'
 import exifr from 'exifr'
-import type { DatabaseInstance } from '../db'
-import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../../shared/types'
+import type { DatabaseInstance } from './db'
+import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { getLlamaServerManager } from './llama/serverManager'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, runClustering } from './face'
@@ -30,7 +29,7 @@ export class Indexer extends EventEmitter {
   /** 读取 caption 语言配置 */
   getCaptionConfig(): CaptionConfig {
     try {
-      const configPath = join(app.getPath('userData'), 'caption-config.json')
+      const configPath = join(this.userDataPath, 'caption-config.json')
       if (existsSync(configPath)) {
         return JSON.parse(readFileSync(configPath, 'utf-8'))
       }
@@ -40,7 +39,7 @@ export class Indexer extends EventEmitter {
 
   /** 保存 caption 语言配置 */
   setCaptionConfig(config: CaptionConfig): void {
-    const configPath = join(app.getPath('userData'), 'caption-config.json')
+    const configPath = join(this.userDataPath, 'caption-config.json')
     writeFileSync(configPath, JSON.stringify(config, null, 2))
   }
 

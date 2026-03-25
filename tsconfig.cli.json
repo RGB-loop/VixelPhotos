@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist/cli",
+    "rootDir": "./src",
+    "declaration": false
+  },
+  "include": ["src/cli/**/*", "src/core/**/*", "src/shared/**/*"]
+}

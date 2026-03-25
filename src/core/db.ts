@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
-import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../../shared/types'
+import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../shared/types'
 
 // 向量维度 - Qwen3-VL-Embedding
 const EMBEDDING_DIM = 2048
@@ -249,6 +249,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
 
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
 
   // 加载 sqlite-vec 向量搜索扩展
   sqliteVec.load(db)
