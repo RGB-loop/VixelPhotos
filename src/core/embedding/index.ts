@@ -115,7 +115,6 @@ class EmbeddingService {
   async init(): Promise<void> {
     if (!this.isConfigured()) {
       this.initError = 'Embedding API not configured'
-      console.log('Embedding service: API not configured, skipping init')
       return
     }
 

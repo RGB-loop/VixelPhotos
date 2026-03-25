@@ -45,8 +45,6 @@ export class SearchEngine {
       return this.getRecentPhotos(limit)
     }
 
-    console.log(`Searching for: "${trimmedQuery}", limit: ${limit}`)
-
     try {
       // 并行执行三种搜索
       const [vecResults, textResults, fileNameResults] = await Promise.all([
@@ -54,8 +52,6 @@ export class SearchEngine {
         this.searchByBM25(trimmedQuery, limit * 2),
         Promise.resolve(this.db.searchByFileName(trimmedQuery, limit * 2)),
       ])
-
-      console.log(`Vector: ${vecResults.length}, BM25: ${textResults.length}, FileName: ${fileNameResults.length}`)
 
       // RRF 融合排序
       const mergedResults = this.rrfMerge(vecResults, textResults, fileNameResults, 60)

@@ -65,8 +65,10 @@ async function initServices(): Promise<void> {
 
   // 初始化路径依赖
   initEmbeddingServicePath(userDataPath)
-  // Face 模型在 resources/models/（打包进 app）
-  setFaceModelsDir(join(process.cwd(), 'resources', 'models'))
+  // Face 模型：生产环境在 extraResources/models/，开发环境在 resources/models/
+  const prodModelsDir = join(process.resourcesPath, 'models')
+  const devModelsDir = join(process.cwd(), 'resources', 'models')
+  setFaceModelsDir(existsSync(prodModelsDir) ? prodModelsDir : devModelsDir)
 
   // 初始化数据库
   db = initDatabase(dbPath)

@@ -94,7 +94,6 @@ export class Indexer extends EventEmitter {
     if (!caption) return null
 
     this.db.saveCaption(fileHash, caption)
-    console.log(`Caption regenerated: hash=${fileHash} -> "${caption}"`)
     return caption
   }
 
@@ -123,7 +122,6 @@ export class Indexer extends EventEmitter {
   private async processFace(fileHash: string, filePath: string): Promise<void> {
     try {
       if (this.db.hasFacesForHash(fileHash)) {
-        console.log(`  Faces already detected for hash ${fileHash}, skipping`)
         this.db.updateFaceStatusByHash(fileHash)
         return
       }
@@ -150,7 +148,6 @@ export class Indexer extends EventEmitter {
       }
 
       this.db.updateFaceStatusByHash(fileHash)
-      console.log(`  Detected ${faces.length} faces in ${filePath}`)
     } catch (error) {
       console.error(`Error processing faces for ${filePath}:`, error)
       throw error
@@ -207,7 +204,6 @@ export class Indexer extends EventEmitter {
       return
     }
 
-    console.log(`processNext: task ${task.id} (${task.taskType}) for photo ${task.photoId}`)
     this.isProcessing = true
 
     try {
@@ -220,21 +216,17 @@ export class Indexer extends EventEmitter {
       }
 
       if (task.taskType === 'thumbnail') {
-        console.log(`Thumbnail: ${photo.fileName}`)
         this.emitProgress('indexing', photo.fileName)
         await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
         this.db.completeTask(task.id)
       } else if (task.taskType === 'embed') {
-        console.log(`Embedding: ${photo.fileName}`)
         this.emitProgress('indexing', photo.fileName)
         await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
-        console.log(`Embedding done: ${photo.fileName}`)
         if (photo.captionStatus !== 'done') {
           this.db.addToQueue(task.photoId, 'caption', 5)
         }
         this.db.completeTask(task.id)
       } else if (task.taskType === 'face') {
-        console.log(`Face detection: ${photo.fileName}`)
         this.emitProgress('detecting_faces', photo.fileName)
         await this.processFace(photo.fileHash, photo.filePath)
         this.db.completeTask(task.id)
@@ -265,19 +257,15 @@ export class Indexer extends EventEmitter {
       // 如果该 hash 的缩略图已存在，跳过
       const thumbnailPath = this.getThumbnailPath(fileHash)
       if (existsSync(thumbnailPath)) {
-        console.log(`  Thumbnail already exists for hash ${fileHash}, skipping`)
         // 但仍需解析 EXIF 更新当前 photo 的元数据
         const imageBuffer = await readFile(filePath)
         await this.parseAndUpdateMeta(photoId, imageBuffer)
         return
       }
 
-      console.log(`  Reading file: ${filePath}`)
       const imageBuffer = await readFile(filePath)
 
       await this.parseAndUpdateMeta(photoId, imageBuffer)
-
-      console.log(`  Generating thumbnail (hash=${fileHash})...`)
       await this.generateThumbnail(fileHash, imageBuffer)
     } catch (error) {
       console.error(`Error processing thumbnail for ${filePath}:`, error)
@@ -286,7 +274,6 @@ export class Indexer extends EventEmitter {
   }
 
   private async parseAndUpdateMeta(photoId: number, imageBuffer: Buffer): Promise<void> {
-    console.log(`  Parsing EXIF...`)
     const [metadata, exifData, gpsData] = await Promise.all([
       sharp(imageBuffer).metadata(),
       exifr.parse(imageBuffer, {
@@ -310,12 +297,10 @@ export class Indexer extends EventEmitter {
       // 如果该 hash 已有 embedding，跳过
       const { hasEmbedding } = this.db.hasContentForHash(fileHash)
       if (hasEmbedding) {
-        console.log(`  Embedding already exists for hash ${fileHash}, skipping`)
         this.db.updateEmbedStatusByHash(fileHash)
         return
       }
 
-      console.log(`  Reading file: ${filePath}`)
       const imageBuffer = await readFile(filePath)
 
       // 兜底：确保缩略图存在
@@ -324,12 +309,10 @@ export class Indexer extends EventEmitter {
         await this.processThumbnail(fileHash, filePath, photoId)
       }
 
-      console.log(`  Generating embedding...`)
       try {
         const embeddingService = getEmbeddingService()
         const embedding = await embeddingService.encodeImage(imageBuffer)
         this.db.saveImageVec(fileHash, embedding)
-        console.log(`  Embedding saved (dim=${embedding.length}, hash=${fileHash})`)
       } catch (embedError) {
         console.warn(`Image embedding failed for ${filePath}:`, embedError)
       }
@@ -344,7 +327,6 @@ export class Indexer extends EventEmitter {
       // 如果该 hash 已有 caption，跳过
       const { hasCaption } = this.db.hasContentForHash(fileHash)
       if (hasCaption) {
-        console.log(`  Caption already exists for hash ${fileHash}, skipping`)
         this.db.updateCaptionStatusByHash(fileHash)
         return
       }
@@ -393,7 +375,6 @@ export class Indexer extends EventEmitter {
       }
 
       this.db.saveCaption(fileHash, caption)
-      console.log(`Caption saved: hash=${fileHash} -> "${caption}"`)
     } catch (error) {
       console.error(`Error processing caption for ${filePath}:`, error)
       throw error

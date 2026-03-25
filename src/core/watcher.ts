@@ -132,12 +132,10 @@ export class FileWatcher {
 
       if (hasEmbedding && hasCaption) {
         // 重复照片：资源已存在，直接标记完成
-        console.log(`Duplicate detected (hash=${fileHash}): ${filePath}, skipping processing`)
         this.db.markDuplicateProcessed(photoId)
         this.indexer.emitProgressPublic()
       } else if (hasEmbedding) {
         // 有 embedding 但无 caption
-        console.log(`Embedding exists for hash=${fileHash}, queueing thumbnail + caption`)
         this.db.updateEmbedStatusByHash(fileHash)
         this.db.addToQueue(photoId, 'thumbnail', 20)
         this.db.addToQueue(photoId, 'caption', 5)
@@ -185,7 +183,6 @@ export class FileWatcher {
 
     try {
       this.db.softDeletePhoto(filePath)
-      console.log(`Soft deleted: ${filePath}`)
     } catch (error) {
       console.error(`Error handling remove for ${filePath}:`, error)
     }

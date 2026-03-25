@@ -8,22 +8,48 @@
   "build": {
     "appId": "com.vixel.app",
     "productName": "Vixel",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": ["**/*.onnx"]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/sharp/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/sqlite-vec/**",
+      "node_modules/sqlite-vec-*/**"
+    ],
     "mac": {
       "icon": "build/icon.icns",
-      "category": "public.app-category.photography"
+      "category": "public.app-category.photography",
+      "target": ["dmg"]
     },
     "win": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "target": ["nsis"]
     },
     "linux": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "target": ["AppImage"]
     }
   },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-builder",
+    "package": "electron-vite build && electron-builder",
+    "package:mac": "electron-vite build && electron-builder --mac",
+    "package:win": "electron-vite build && electron-builder --win",
+    "package:linux": "electron-vite build && electron-builder --linux",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit",
     "build:cli": "tsc -p tsconfig.cli.json",

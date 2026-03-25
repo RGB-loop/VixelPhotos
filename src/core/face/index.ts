@@ -156,14 +156,12 @@ export function assignFaceToPerson(
     // 归入已有人物
     db.setFacePersonId(faceId, bestPersonId)
     db.updatePersonFaceCount(bestPersonId)
-    console.log(`    Face #${faceId} → Person #${bestPersonId} (distance=${bestDistance.toFixed(3)})`)
     return bestPersonId
   }
 
   // 创建新人物
   const personId = db.createPerson(faceId)
   db.setFacePersonId(faceId, personId)
-  console.log(`    Face #${faceId} → New Person #${personId} (nearest distance=${bestDistance.toFixed(3)})`)
   return personId
 }
 
