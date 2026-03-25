@@ -155,10 +155,28 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
         </div>
       )}
 
+      {/* 搜索排名和相关性 — 常驻显示 */}
+      {showScore && rank && (
+        <div className="absolute top-1.5 left-1.5 right-1.5 flex justify-between items-start pointer-events-none">
+          <div className="px-1.5 py-0.5 rounded bg-accent/80 text-white text-[10px] font-semibold">
+            #{rank}
+          </div>
+          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60">
+            <div className="w-8 h-1 bg-white/20 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-accent rounded-full"
+                style={{ width: `${Math.min(result.score * 100, 100)}%` }}
+              />
+            </div>
+            <span className="text-white/80 text-[10px]">{(result.score * 100).toFixed(0)}%</span>
+          </div>
+        </div>
+      )}
+
       {/* 处理状态 — 仅对可视区域内未完成的照片显示 */}
       {isVisible && <StatusBadge photo={result.photo} />}
 
-      {/* Hover overlay */}
+      {/* Hover overlay — 文件名和 caption */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 hover:opacity-100 transition-opacity duration-200">
         <div className="absolute bottom-0 left-0 right-0 p-2.5">
           <p className="text-white text-xs truncate font-medium">{result.photo.fileName}</p>
@@ -166,23 +184,6 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
             <p className="text-white/60 text-[11px] truncate mt-0.5">{result.photo.caption}</p>
           )}
         </div>
-
-        {showScore && rank && (
-          <div className="absolute top-2 left-2 right-2 flex justify-between items-start">
-            <div className="px-1.5 py-0.5 rounded bg-accent/80 text-white text-[10px] font-semibold">
-              #{rank}
-            </div>
-            <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/50">
-              <div className="w-8 h-1 bg-white/20 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-accent rounded-full"
-                  style={{ width: `${Math.min(result.score * 100, 100)}%` }}
-                />
-              </div>
-              <span className="text-white/80 text-[10px]">{(result.score * 100).toFixed(0)}%</span>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

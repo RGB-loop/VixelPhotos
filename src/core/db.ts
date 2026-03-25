@@ -225,9 +225,6 @@ export interface DatabaseInstance {
   close: () => void
 }
 
-function vecToBuffer(vec: Float32Array): Buffer {
-  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
-}
 
 export function initDatabase(dbPath: string, options?: { runCleanup?: boolean }): DatabaseInstance {
   const dir = dirname(dbPath)
@@ -248,6 +245,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   migrateToVec0(db)
 
   db.exec(SCHEMA)
+
+  // WAL checkpoint — 确保其他进程写入的数据对当前连接可见
+  db.pragma('wal_checkpoint(PASSIVE)')
 
   // 确保新列存在
   ensureFaceStatusColumn(db)
@@ -428,7 +428,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       WHERE p.deleted_at IS NULL
         AND p.file_hash IS NOT NULL
         AND p.file_hash NOT IN (SELECT file_hash FROM image_vec_map)
-        AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'embed' AND status IN ('pending', 'processing'))
+        AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type IN ('embed', 'thumbnail') AND status IN ('pending', 'processing'))
     `),
     getQueueStats: db.prepare(`
       SELECT
@@ -456,7 +456,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     `),
     hasCaptionForHash: db.prepare(`SELECT 1 FROM captions WHERE file_hash = ?`),
     insertVecMap: db.prepare(`
-      INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?) RETURNING rowid
+      INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?)
     `),
     getVecMapRowid: db.prepare(`SELECT rowid FROM image_vec_map WHERE file_hash = ?`),
     getVecByRowid: db.prepare(`SELECT embedding FROM image_vecs WHERE rowid = ?`),
@@ -492,14 +492,15 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       LIMIT ?
     `),
     // KNN 向量搜索（sqlite-vec）
-    searchVecKnn: db.prepare(`
-      SELECT m.file_hash, v.distance
-      FROM image_vecs v
-      JOIN image_vec_map m ON m.rowid = v.rowid
-      WHERE v.embedding MATCH ?
+    // sqlite-vec KNN: 先查 rowid+distance，再通过 map 映射到 file_hash
+    searchVecKnnRaw: db.prepare(`
+      SELECT rowid, distance
+      FROM image_vecs
+      WHERE embedding MATCH ?
         AND k = ?
-      ORDER BY v.distance
+      ORDER BY distance
     `),
+    getHashByRowid: db.prepare(`SELECT file_hash FROM image_vec_map WHERE rowid = ?`),
     // 获取所有向量（用于 face clustering 等需要全量向量的场景）
     getAllImageVecs: db.prepare(`
       SELECT m.file_hash, v.embedding
@@ -774,21 +775,23 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       }
     },
     saveImageVec: (fileHash: string, embedding: Float32Array): void => {
-      const buffer = vecToBuffer(embedding)
-      let mapRowid: number | undefined
+      // vec0 要求: rowid 必须是 BigInt, embedding 必须是 Float32Array（不是 Buffer）
+      let mapRowid: bigint | undefined
       try {
-        const insertResult = stmts.insertVecMap.get(fileHash) as { rowid: number } | undefined
-        mapRowid = insertResult?.rowid
-      } catch { /* conflict, try get */ }
-      if (!mapRowid) {
-        const existing = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
-        mapRowid = existing?.rowid
+        const info = stmts.insertVecMap.run(fileHash)
+        if (info.changes > 0) {
+          mapRowid = BigInt(info.lastInsertRowid)
+        }
+      } catch { /* conflict */ }
+      if (mapRowid === undefined) {
+        const existing = stmts.getVecMapRowid.get(fileHash) as { rowid: bigint | number } | undefined
+        if (existing) mapRowid = BigInt(existing.rowid)
       }
-      if (mapRowid) {
+      if (mapRowid !== undefined) {
         try {
-          stmts.insertVec.run(mapRowid, buffer)
+          stmts.insertVec.run(mapRowid, embedding)
         } catch {
-          try { stmts.updateVec.run(buffer, mapRowid) } catch { /* ignore update failure */ }
+          try { stmts.updateVec.run(embedding, mapRowid) } catch { /* ignore */ }
         }
       }
       stmts.updateEmbedStatusByHash.run(fileHash)
@@ -809,9 +812,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     deleteContentByHash: (fileHash: string): void => {
       // 删除向量：先查 rowid，再删 vec0 行和映射
-      const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: number } | undefined
+      const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: bigint | number } | undefined
       if (row) {
-        stmts.deleteVecByRowid.run(row.rowid)
+        stmts.deleteVecByRowid.run(Number(row.rowid))
         stmts.deleteVecMapByHash.run(fileHash)
       }
       stmts.deleteCaptionByHash.run(fileHash)
@@ -819,9 +822,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     searchByVec: (queryVec, limit) => {
       try {
-        const buffer = vecToBuffer(queryVec)
-        const results = stmts.searchVecKnn.all(buffer, limit) as Array<{ file_hash: string; distance: number }>
-        return results.map((r) => ({ fileHash: r.file_hash, distance: r.distance }))
+        // vec0 MATCH 接受 Float32Array
+        const knnResults = stmts.searchVecKnnRaw.all(queryVec, limit) as Array<{ rowid: bigint | number; distance: number }>
+        return knnResults
+          .map((r) => {
+            const hashRow = stmts.getHashByRowid.get(Number(r.rowid)) as { file_hash: string } | undefined
+            return hashRow ? { fileHash: hashRow.file_hash, distance: r.distance } : null
+          })
+          .filter((r): r is { fileHash: string; distance: number } => r !== null)
       } catch (error) {
         console.error('Vector search error:', error)
         return []
@@ -851,15 +859,20 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     findSimilar: (fileHash, limit) => {
       try {
-        const mapRow = stmts.getVecMapRowid.get(fileHash) as { rowid: number } | undefined
+        const mapRow = stmts.getVecMapRowid.get(fileHash) as { rowid: bigint | number } | undefined
         if (!mapRow) return []
-        const vecRow = stmts.getVecByRowid.get(mapRow.rowid) as { embedding: Buffer } | undefined
+        const vecRow = stmts.getVecByRowid.get(Number(mapRow.rowid)) as { embedding: Buffer } | undefined
         if (!vecRow) return []
-        const results = stmts.searchVecKnn.all(vecRow.embedding, limit + 1) as Array<{ file_hash: string; distance: number }>
-        return results
-          .filter((r) => r.file_hash !== fileHash)
+        // vec0 返回的 embedding 是 Buffer，需要转 Float32Array 给 MATCH
+        const targetVec = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4)
+        const knnResults = stmts.searchVecKnnRaw.all(targetVec, limit + 1) as Array<{ rowid: bigint | number; distance: number }>
+        return knnResults
+          .map((r) => {
+            const hashRow = stmts.getHashByRowid.get(Number(r.rowid)) as { file_hash: string } | undefined
+            return hashRow ? { fileHash: hashRow.file_hash, distance: r.distance } : null
+          })
+          .filter((r): r is { fileHash: string; distance: number } => r !== null && r.fileHash !== fileHash)
           .slice(0, limit)
-          .map((r) => ({ fileHash: r.file_hash, distance: r.distance }))
       } catch (error) {
         console.error('Find similar error:', error)
         return []
