@@ -136,7 +136,9 @@ export class FileWatcher {
         this.db.markDuplicateProcessed(photoId)
         this.indexer.emitProgressPublic()
       } else if (hasEmbedding) {
-        // 有 embedding 但无 caption（可能 caption 还在处理中）
+        // 有 embedding 但无 caption
+        console.log(`Embedding exists for hash=${fileHash}, queueing thumbnail + caption`)
+        this.db.updateEmbedStatusByHash(fileHash)
         this.db.addToQueue(photoId, 'thumbnail', 20)
         this.db.addToQueue(photoId, 'caption', 5)
         this.indexer.processNext()
