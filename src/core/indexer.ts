@@ -8,7 +8,7 @@ import type { DatabaseInstance } from './db'
 import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { getLlamaServerManager } from './llama/serverManager'
-import { initFaceService, isFaceServiceReady, processPhotoFaces, runClustering } from './face'
+import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
@@ -136,24 +136,21 @@ export class Indexer extends EventEmitter {
       const faces = await processPhotoFaces(imageBuffer)
 
       for (const face of faces) {
-        this.db.saveFace(
+        // 保存人脸数据
+        const faceId = this.db.saveFace(
           fileHash,
           face.faceIndex,
           JSON.stringify(face.bbox),
           face.confidence,
           face.embedding
         )
+
+        // 增量匹配：立即为这张脸分配 person
+        assignFaceToPerson(this.db, faceId, face.embedding)
       }
 
       this.db.updateFaceStatusByHash(fileHash)
       console.log(`  Detected ${faces.length} faces in ${filePath}`)
-
-      // 检查队列中是否还有 face 任务，没有则触发聚类
-      const nextTask = this.db.peekNextTask()
-      if (!nextTask || nextTask.taskType !== 'face') {
-        console.log('  All face tasks done, running clustering...')
-        runClustering(this.db)
-      }
     } catch (error) {
       console.error(`Error processing faces for ${filePath}:`, error)
       throw error

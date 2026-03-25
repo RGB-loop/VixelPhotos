@@ -13,7 +13,7 @@ export interface DetectedFace {
 }
 
 const INPUT_SIZE = 640
-const CONFIDENCE_THRESHOLD = 0.5
+const CONFIDENCE_THRESHOLD = 0.7
 const NMS_THRESHOLD = 0.4
 const FEAT_STRIDES = [8, 16, 32]
 const NUM_ANCHORS = 2

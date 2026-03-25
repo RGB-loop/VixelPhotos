@@ -210,8 +210,10 @@ export interface DatabaseInstance {
   updateFaceStatusByHash: (fileHash: string) => void
   hasFacesForHash: (fileHash: string) => boolean
   getFacesByHash: (fileHash: string) => Array<{ id: number; faceIndex: number; bbox: string; confidence: number; personId: number | null; personName: string | null }>
-  getAllFaceEmbeddings: () => Array<{ id: number; embedding: Float32Array; confidence: number }>
-  clearPeopleAndReassign: (clusters: Map<number, Array<{ id: number; confidence: number }>>) => void
+  getAllFaceEmbeddings: () => Array<{ id: number; embedding: Float32Array; confidence: number; personId: number | null }>
+  setFacePersonId: (faceId: number, personId: number) => void
+  createPerson: (coverFaceId: number) => number
+  updatePersonFaceCount: (personId: number) => void
   getPeople: () => Array<{ id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; createdAt: string }>
   getPersonPhotos: (personId: number, limit?: number) => Photo[]
   updatePersonName: (personId: number, name: string) => void
@@ -560,7 +562,16 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       ORDER BY f.face_index
     `),
     getAllFaceEmbeddings: db.prepare(`
-      SELECT id, embedding, confidence FROM faces
+      SELECT id, embedding, confidence, person_id as personId FROM faces
+    `),
+    createPerson: db.prepare(`
+      INSERT INTO people (name, cover_face_id, face_count) VALUES (NULL, ?, 1) RETURNING id
+    `),
+    updatePersonFaceCount: db.prepare(`
+      UPDATE people SET
+        face_count = (SELECT COUNT(*) FROM faces WHERE person_id = people.id),
+        cover_face_id = (SELECT id FROM faces WHERE person_id = people.id ORDER BY confidence DESC LIMIT 1)
+      WHERE id = ?
     `),
     getPeople: db.prepare(`
       SELECT p.id, p.name, p.cover_face_id as coverFaceId, p.face_count as faceCount,
@@ -599,11 +610,7 @@ export function initDatabase(dbPath: string): DatabaseInstance {
           WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL
         )
     `),
-    clearAllPeople: db.prepare(`DELETE FROM people`),
-    resetAllFacePersonIds: db.prepare(`UPDATE faces SET person_id = NULL`),
-    insertPerson: db.prepare(`INSERT INTO people (name, cover_face_id, face_count) VALUES (?, ?, ?) RETURNING id`),
     setFacePersonId: db.prepare(`UPDATE faces SET person_id = ? WHERE id = ?`),
-    updatePersonCover: db.prepare(`UPDATE people SET cover_face_id = ?, face_count = ? WHERE id = ?`),
     getFaceCoverInfo: db.prepare(`SELECT file_hash as fileHash, bbox FROM faces WHERE id = ?`),
     checkFaceStatusColumn: db.prepare(`SELECT face_status FROM photos LIMIT 0`),
   }
@@ -870,31 +877,23 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       }>
     },
     getAllFaceEmbeddings: () => {
-      const rows = stmts.getAllFaceEmbeddings.all() as Array<{ id: number; embedding: Buffer; confidence: number }>
+      const rows = stmts.getAllFaceEmbeddings.all() as Array<{ id: number; embedding: Buffer; confidence: number; personId: number | null }>
       return rows.map((r) => ({
         id: r.id,
         embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
         confidence: r.confidence,
+        personId: r.personId,
       }))
     },
-    clearPeopleAndReassign: (clusters) => {
-      const transaction = db.transaction(() => {
-        stmts.resetAllFacePersonIds.run()
-        stmts.clearAllPeople.run()
-
-        for (const [, members] of clusters) {
-          if (members.length === 0) continue
-          // 选最高置信度的脸作为封面
-          const best = members.reduce((a, b) => a.confidence > b.confidence ? a : b)
-          const result = stmts.insertPerson.get(null, best.id, members.length) as { id: number }
-          const personId = result.id
-
-          for (const m of members) {
-            stmts.setFacePersonId.run(personId, m.id)
-          }
-        }
-      })
-      transaction()
+    setFacePersonId: (faceId: number, personId: number): void => {
+      stmts.setFacePersonId.run(personId, faceId)
+    },
+    createPerson: (coverFaceId: number): number => {
+      const result = stmts.createPerson.get(coverFaceId) as { id: number }
+      return result.id
+    },
+    updatePersonFaceCount: (personId: number): void => {
+      stmts.updatePersonFaceCount.run(personId)
     },
     getPeople: () => {
       return stmts.getPeople.all() as Array<{
@@ -908,16 +907,12 @@ export function initDatabase(dbPath: string): DatabaseInstance {
       stmts.updatePersonName.run(name, personId)
     },
     mergePeople: (targetId, sourceIds) => {
-      const countStmt = db.prepare('SELECT COUNT(*) as c FROM faces WHERE person_id = ?')
-      const bestStmt = db.prepare('SELECT id FROM faces WHERE person_id = ? ORDER BY confidence DESC LIMIT 1')
       const transaction = db.transaction(() => {
         for (const sourceId of sourceIds) {
           stmts.mergePeopleFaces.run(targetId, sourceId)
           stmts.deletePerson.run(sourceId)
         }
-        const count = (countStmt.get(targetId) as { c: number }).c
-        const best = bestStmt.get(targetId) as { id: number } | undefined
-        stmts.updatePersonCover.run(best?.id || null, count, targetId)
+        stmts.updatePersonFaceCount.run(targetId)
       })
       transaction()
     },
