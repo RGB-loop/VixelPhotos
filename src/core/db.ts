@@ -957,7 +957,6 @@ function migrateToVec0(db: Database.Database): void {
     // 检查 image_vecs 是否是普通表（有 file_hash 列 = 旧格式）
     const tableInfo = db.prepare(`PRAGMA table_info(image_vecs)`).all() as Array<{ name: string }>
     if (tableInfo.some((col) => col.name === 'file_hash')) {
-      console.log('Migrating image_vecs to vec0 virtual table...')
       db.exec(`
         DROP TABLE IF EXISTS image_vecs;
         DROP TABLE IF EXISTS image_vec_map;
@@ -967,7 +966,6 @@ function migrateToVec0(db: Database.Database): void {
         UPDATE photos SET embed_status = 'pending' WHERE embed_status = 'done';
         DELETE FROM index_queue WHERE task_type = 'embed';
       `)
-      console.log('image_vecs migrated to vec0. Embeddings will be re-generated.')
     }
   } catch {
     // 表不存在或已经是 vec0
@@ -989,7 +987,6 @@ function cleanupStaleVecMap(db: Database.Database): void {
         del.run(row.rowid)
         resetEmbed.run(row.file_hash)
       }
-      console.log(`Cleaned ${stale.length} stale image_vec_map entries, photos will re-embed`)
     }
   } catch {
     // 表可能还不存在
@@ -1002,7 +999,6 @@ function ensureFaceStatusColumn(db: Database.Database): void {
     db.prepare('SELECT face_status FROM photos LIMIT 0').get()
   } catch {
     db.exec('ALTER TABLE photos ADD COLUMN face_status TEXT DEFAULT \'pending\'')
-    console.log('Added face_status column to photos table')
   }
 }
 
@@ -1013,8 +1009,6 @@ function migrateIfNeeded(db: Database.Database): void {
     const hasPhotoId = tableInfo.some((col) => col.name === 'photo_id')
 
     if (hasPhotoId) {
-      console.log('Detected old schema, migrating to hash-based content tables...')
-
       // 先清空 FTS5 内容，再按正确顺序删除
       try { db.exec(`DELETE FROM captions_fts`) } catch { /* ignore */ }
       db.exec(`
@@ -1031,7 +1025,6 @@ function migrateIfNeeded(db: Database.Database): void {
         UPDATE photos SET embed_status = 'pending', caption_status = 'pending', width = NULL, height = NULL;
         DELETE FROM index_queue;
       `)
-      console.log('Migration complete. Photos will be re-indexed.')
     }
   } catch {
     // 表不存在，正常初始化

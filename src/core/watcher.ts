@@ -42,7 +42,6 @@ export class FileWatcher {
 
   watchFolder(folderId: number, folderPath: string): void {
     if (this.watchers.has(folderId)) {
-      console.log(`Folder ${folderId} already being watched`)
       return
     }
 
@@ -61,7 +60,6 @@ export class FileWatcher {
       .on('change', (filePath) => this.handleChange(filePath))
       .on('unlink', (filePath) => this.handleRemove(filePath))
       .on('ready', () => {
-        console.log(`Initial scan complete for folder: ${folderPath}`)
         this.db.updateFolderScanTime(folderId)
         // 清理离线期间被删除的文件
         this.cleanupStalePhotos(folderId)
@@ -78,7 +76,6 @@ export class FileWatcher {
     if (watcher) {
       watcher.close()
       this.watchers.delete(folderId)
-      console.log(`Stopped watching folder: ${folderId}`)
     }
   }
 
@@ -104,9 +101,6 @@ export class FileWatcher {
           this.db.softDeletePhoto(photo.filePath)
           cleaned++
         }
-      }
-      if (cleaned > 0) {
-        console.log(`Cleaned up ${cleaned} stale photos in folder ${folderId}`)
       }
     } catch (error) {
       console.error(`Error cleaning stale photos for folder ${folderId}:`, error)

@@ -177,9 +177,6 @@ export class LlamaServerManager extends EventEmitter {
       args.push('--chat-template-kwargs', '{"enable_thinking":false}')
     }
 
-    console.log(`Starting llama-server with ${type} model...`)
-    console.log(`Command: ${this.llamaServerPath} ${args.join(' ')}`)
-
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('llama-server startup timeout'))
@@ -191,8 +188,6 @@ export class LlamaServerManager extends EventEmitter {
 
       this.process.stdout?.on('data', (data) => {
         const output = data.toString()
-        console.log(`[llama-server] ${output}`)
-
         if (output.includes('server listening') || output.includes('server is listening')) {
           clearTimeout(timeout)
           this.isReady = true
@@ -204,8 +199,6 @@ export class LlamaServerManager extends EventEmitter {
 
       this.process.stderr?.on('data', (data) => {
         const output = data.toString()
-        console.error(`[llama-server stderr] ${output}`)
-
         // 有些日志输出在 stderr
         if (output.includes('server listening') || output.includes('server is listening')) {
           clearTimeout(timeout)
@@ -243,7 +236,6 @@ export class LlamaServerManager extends EventEmitter {
       const proc = this.process!
 
       const timeout = setTimeout(() => {
-        console.log('Force killing llama-server...')
         proc.kill('SIGKILL')
         resolve()
       }, 5000)
@@ -253,7 +245,6 @@ export class LlamaServerManager extends EventEmitter {
         resolve()
       })
 
-      console.log('Stopping llama-server...')
       proc.kill('SIGTERM')
       this.isReady = false
       this.currentModel = null

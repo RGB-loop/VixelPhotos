@@ -60,8 +60,7 @@ async function initServices(): Promise<void> {
   const userDataPath = app.getPath('userData')
   const dbPath = join(userDataPath, 'library.db')
 
-  console.log('Initializing database at:', dbPath)
-  console.log('User data path:', userDataPath)
+  console.log('Initializing Vixel services...')
 
   // 初始化路径依赖
   initEmbeddingServicePath(userDataPath)
@@ -74,16 +73,10 @@ async function initServices(): Promise<void> {
   db = initDatabase(dbPath)
 
   // 恢复上次运行时卡住的任务（程序被强制关闭时可能发生）
-  const recoveredTasks = db.recoverStuckTasks()
-  if (recoveredTasks > 0) {
-    console.log(`Recovered ${recoveredTasks} stuck tasks from previous run`)
-  }
+  db.recoverStuckTasks()
 
   // 重新队列缺失 embedding 的照片（模型之前不可用时可能发生）
-  const requeuedEmbeddings = db.requeueMissingEmbeddings()
-  if (requeuedEmbeddings > 0) {
-    console.log(`Requeued ${requeuedEmbeddings} photos for embedding`)
-  }
+  db.requeueMissingEmbeddings()
 
   // 初始化索引器
   indexer = new Indexer(db, userDataPath)
@@ -104,8 +97,6 @@ async function initServices(): Promise<void> {
   for (const folder of folders) {
     watcher.watchFolder(folder.id, folder.path)
   }
-
-  console.log('Services initialized')
 
   // 初始化 llama server manager（配置模型路径）
   const llamaManager = getLlamaServerManager(userDataPath)
@@ -131,10 +122,7 @@ async function initServices(): Promise<void> {
 
   // 后台预加载 embedding 模型（用于搜索）
   setTimeout(() => {
-    console.log('Starting embedding model preload...')
-    indexer.preloadModels().catch((e) => {
-      console.error('Model preload error:', e)
-    })
+    indexer.preloadModels().catch(() => {})
   }, 2000)
 }
 
@@ -199,7 +187,6 @@ function registerIpcHandlers(): void {
       // 4. 删除文件夹记录
       db.removeFolder(folderId)
 
-      console.log(`Removed folder ${folderId}, cleaned ${orphanedHashes.length} orphaned hashes`)
     }
     return true
   })

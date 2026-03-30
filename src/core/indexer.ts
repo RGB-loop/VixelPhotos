@@ -110,7 +110,6 @@ export class Indexer extends EventEmitter {
       this.db.addToQueue(photo.id, 'face', 8)
     }
 
-    console.log(`Face scan started: ${pending.length} photos queued`)
     if (pending.length > 0) {
       this.processNext()
     }
@@ -163,15 +162,11 @@ export class Indexer extends EventEmitter {
   async preloadModels(): Promise<void> {
     if (this.modelsLoaded || this.modelsLoading) return
     this.modelsLoading = true
-    console.log('Preloading AI models...')
     try {
-      await getEmbeddingService().init().catch((e) => {
-        console.warn('Embedding service init failed:', e)
-      })
+      await getEmbeddingService().init().catch(() => {})
       this.modelsLoaded = true
-      console.log('AI models preloaded')
-    } catch (error) {
-      console.error('Failed to preload models:', error)
+    } catch {
+      // ignore preload failure
     } finally {
       this.modelsLoading = false
     }

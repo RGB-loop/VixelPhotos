@@ -104,9 +104,7 @@ export class DownloadManager {
    */
   isLlamaServerInstalled(): boolean {
     const serverPath = join(this.binDir, 'llama-server')
-    const exists = existsSync(serverPath)
-    console.log(`Checking llama-server at: ${serverPath}, exists: ${exists}`)
-    return exists
+    return existsSync(serverPath)
   }
 
   /**
@@ -157,9 +155,6 @@ export class DownloadManager {
       const serverSourcePath = matches[0]
       const binSourceDir = dirname(serverSourcePath)
 
-      console.log(`Found llama-server at: ${serverSourcePath}`)
-      console.log(`Copying all files from: ${binSourceDir}`)
-
       // 复制 bin 目录下所有文件到我们的 bin 目录
       const allFiles = globSync(`${binSourceDir}/*`)
       for (const file of allFiles) {
@@ -173,7 +168,6 @@ export class DownloadManager {
         }
       }
 
-      console.log(`llama-server installed to: ${this.binDir}`)
     } finally {
       // 清理临时文件
       await rm(archivePath, { force: true }).catch(() => {})
@@ -192,7 +186,6 @@ export class DownloadManager {
     const targetPath = join(this.modelsDir, fileInfo.name)
 
     if (existsSync(targetPath)) {
-      console.log(`Model already exists: ${targetPath}`)
       return
     }
 
@@ -283,8 +276,6 @@ export class DownloadManager {
 
       // 重命名临时文件
       await rename(tempPath, targetPath)
-
-      console.log(`Downloaded: ${targetPath}`)
     } catch (error) {
       // 清理临时文件
       await rm(tempPath, { force: true }).catch(() => {})
