@@ -9,6 +9,10 @@ import { tokenizeForFtsSync } from './text/tokenize'
 // 旧版用 2048 (Qwen3-VL-Embedding API)；migrateVectorDimension 会自动迁移
 const EMBEDDING_DIM = 768
 
+// 人脸 embedding 维度 - MobileFaceNet 标准输出
+// 与 src/core/face/embedding.ts 的 ONNX 模型保持一致
+const FACE_EMBEDDING_DIM = 128
+
 // 数据库 Schema
 const SCHEMA = `
 -- 监控文件夹表
@@ -141,6 +145,12 @@ CREATE TABLE IF NOT EXISTS faces (
 
 CREATE INDEX IF NOT EXISTS idx_faces_file_hash ON faces(file_hash);
 CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
+
+-- 人脸向量 ANN 索引（sqlite-vec），rowid == faces.id
+-- 避免 assignFaceToPerson 在每次新脸入库时全表 O(N) JS 余弦扫描。
+CREATE VIRTUAL TABLE IF NOT EXISTS face_vecs USING vec0(
+  embedding float[${FACE_EMBEDDING_DIM}]
+);
 
 -- 人物表
 CREATE TABLE IF NOT EXISTS people (
@@ -641,6 +651,16 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         bbox = excluded.bbox, confidence = excluded.confidence, embedding = excluded.embedding
       RETURNING id
     `),
+    // 写入 face_vecs（与 faces.id 同 rowid）。INSERT OR REPLACE 处理 ON CONFLICT 路径。
+    insertFaceVec: db.prepare(`
+      INSERT INTO face_vecs(rowid, embedding) VALUES (?, ?)
+    `),
+    updateFaceVec: db.prepare(`
+      UPDATE face_vecs SET embedding = ? WHERE rowid = ?
+    `),
+    deleteFaceVec: db.prepare(`
+      DELETE FROM face_vecs WHERE rowid = ?
+    `),
     updateFaceStatusByHash: db.prepare(`
       UPDATE photos SET face_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
     `),
@@ -995,6 +1015,21 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     saveFace: (fileHash, faceIndex, bbox, confidence, embedding) => {
       const buffer = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
       const result = stmts.saveFace.get(fileHash, faceIndex, bbox, confidence, buffer) as { id: number }
+
+      // 写 vec0 索引。维度必须匹配 face_vecs schema。
+      if (embedding.length === FACE_EMBEDDING_DIM) {
+        try {
+          // ON CONFLICT(file_hash, face_index) 的 UPDATE 路径会返回旧 id；
+          // 因此 INSERT 失败时 fallback 到 UPDATE 保持 vec0 同步。
+          stmts.insertFaceVec.run(result.id, embedding)
+        } catch {
+          try { stmts.updateFaceVec.run(embedding, result.id) } catch { /* ignore */ }
+        }
+      } else {
+        console.warn(
+          `face embedding dim mismatch (got ${embedding.length}, expected ${FACE_EMBEDDING_DIM}); skipping ANN index — search will fall back to BLOB scan`
+        )
+      }
       return result.id
     },
     updateFaceStatusByHash: (fileHash) => {
