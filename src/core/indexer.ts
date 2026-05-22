@@ -1,15 +1,26 @@
 import { EventEmitter } from 'events'
-import { join } from 'path'
-import { mkdir } from 'fs/promises'
+import { basename, join } from 'path'
+import { mkdir, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import sharp from 'sharp'
 import exifr from 'exifr'
+import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from './db'
 import type { IndexProgress } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 import { decodeImage } from './image/decode'
+import { extractKeyframes, isFfmpegAvailable } from './video/extract'
+
+// xxHash 懒加载（与 watcher 共用语义；模块级单例避免重复 init）
+let _hasher: ((input: Uint8Array) => string) | null = null
+async function getXxhasher(): Promise<(input: Uint8Array) => string> {
+  if (_hasher) return _hasher
+  const h = await xxhash()
+  _hasher = (data: Uint8Array) => h.h64Raw(data).toString(16).padStart(16, '0')
+  return _hasher
+}
 
 /**
  * Indexer 流水线（v0.2，纯本地，无 LLM）：
@@ -95,6 +106,69 @@ export class Indexer extends EventEmitter {
     }
   }
 
+  /**
+   * 处理 'extract_frames' 任务：用 ffmpeg 抽 N 帧 → 写到
+   * <userData>/video_frames/<videoHash>/<frameTimeMs>.jpg
+   * → 每帧 addPhoto + 入 thumbnail/embed 队列。
+   *
+   * 帧本身有 file_path（存在磁盘上），所以下游 thumbnail/embed/ocr/face
+   * 流水线无任何修改照样跑。
+   */
+  private async processExtractFrames(videoId: number): Promise<void> {
+    const video = this.db.getVideoById(videoId)
+    if (!video) return // 视频已被删除
+
+    if (!isFfmpegAvailable()) {
+      throw new Error('ffmpeg binary not available — install ffmpeg-static or rebuild app')
+    }
+
+    this.emitProgress('indexing', basename(video.filePath))
+
+    const frames = await extractKeyframes(video.filePath, {})
+    if (frames.length === 0) {
+      // 空视频 / 损坏；标记 frame_count=0 让搜索界面知道这个视频确实扫过了但没内容
+      this.db.updateVideoMeta(videoId, { frameCount: 0 })
+      return
+    }
+
+    const framesDir = join(this.userDataPath, 'video_frames', video.fileHash)
+    if (!existsSync(framesDir)) {
+      await mkdir(framesDir, { recursive: true })
+    }
+
+    const hasher = await getXxhasher()
+
+    for (const frame of frames) {
+      const frameFileName = `${frame.timestampMs}.jpg`
+      const framePath = join(framesDir, frameFileName)
+      // 帧 hash 用 JPEG 字节，做内容级 dedup（同一帧出现在两个视频里也共享 embedding）
+      const frameHash = hasher(new Uint8Array(frame.buffer.buffer, frame.buffer.byteOffset, frame.buffer.byteLength))
+
+      // 已存在的帧（如：之前部分跑完崩了再重试）跳过写盘
+      if (!existsSync(framePath)) {
+        await writeFile(framePath, frame.buffer)
+      }
+
+      const photoId = this.db.addPhoto(
+        video.folderId, framePath, frameFileName,
+        frame.buffer.byteLength, Date.now(), frameHash,
+        { videoId, frameTimeMs: frame.timestampMs }
+      )
+
+      // dedup：同内容的帧已有 embedding 就直接复用
+      const { hasEmbedding } = this.db.hasContentForHash(frameHash)
+      if (hasEmbedding) {
+        this.db.updateEmbedStatusByHash(frameHash)
+        this.db.addToQueue(photoId, 'thumbnail', 20)
+      } else {
+        this.db.addToQueue(photoId, 'thumbnail', 20)
+        this.db.addToQueue(photoId, 'embed', 10)
+      }
+    }
+
+    this.db.updateVideoMeta(videoId, { frameCount: frames.length })
+  }
+
   private async processFace(fileHash: string, filePath: string): Promise<void> {
     try {
       if (this.db.hasFacesForHash(fileHash)) {
@@ -169,33 +243,39 @@ export class Indexer extends EventEmitter {
     this.isProcessing = true
 
     try {
-      const photo = this.db.getPhoto(task.photoId)
-      if (!photo) {
+      // extract_frames 的 task.photoId 是 videos.id 而非 photos.id —— 单独处理
+      if (task.taskType === 'extract_frames') {
+        await this.processExtractFrames(task.photoId)
         this.db.completeTask(task.id)
-        this.isProcessing = false
-        this.processNext()
-        return
-      }
+      } else {
+        const photo = this.db.getPhoto(task.photoId)
+        if (!photo) {
+          this.db.completeTask(task.id)
+          this.isProcessing = false
+          this.processNext()
+          return
+        }
 
-      if (task.taskType === 'thumbnail') {
-        this.emitProgress('indexing', photo.fileName)
-        await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
-        this.db.completeTask(task.id)
-      } else if (task.taskType === 'embed') {
-        this.emitProgress('indexing', photo.fileName)
-        await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
-        this.db.completeTask(task.id)
-      } else if (task.taskType === 'face') {
-        this.emitProgress('detecting_faces', photo.fileName)
-        await this.processFace(photo.fileHash, photo.filePath)
-        this.db.completeTask(task.id)
-      } else if (task.taskType === 'ocr') {
-        this.emitProgress('ocr', photo.fileName)
-        await this.processOcr(photo.fileHash, photo.filePath)
-        this.db.completeTask(task.id)
-      } else if (task.taskType === 'caption') {
-        // legacy 队列条目：直接 drop（v0.2 不再生成 caption）
-        this.db.completeTask(task.id)
+        if (task.taskType === 'thumbnail') {
+          this.emitProgress('indexing', photo.fileName)
+          await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
+          this.db.completeTask(task.id)
+        } else if (task.taskType === 'embed') {
+          this.emitProgress('indexing', photo.fileName)
+          await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
+          this.db.completeTask(task.id)
+        } else if (task.taskType === 'face') {
+          this.emitProgress('detecting_faces', photo.fileName)
+          await this.processFace(photo.fileHash, photo.filePath)
+          this.db.completeTask(task.id)
+        } else if (task.taskType === 'ocr') {
+          this.emitProgress('ocr', photo.fileName)
+          await this.processOcr(photo.fileHash, photo.filePath)
+          this.db.completeTask(task.id)
+        } else if (task.taskType === 'caption') {
+          // legacy 队列条目：直接 drop（v0.2 不再生成 caption）
+          this.db.completeTask(task.id)
+        }
       }
     } catch (error) {
       console.error(`Error processing task ${task.id}:`, error)

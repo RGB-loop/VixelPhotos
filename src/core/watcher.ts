@@ -20,14 +20,23 @@ async function getHasher(): Promise<(input: Uint8Array) => string> {
 }
 
 // 支持的图片格式
-const SUPPORTED_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif', '.bmp', '.tiff', '.tif',
-  '.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2',
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.gif', '.bmp', '.tiff', '.tif',
+  '.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.avif',
 ])
 
-function isSupportedImage(filePath: string): boolean {
+// 支持的视频格式（实际能不能解码取决于 ffmpeg-static；这些是最常见的）
+const SUPPORTED_VIDEO_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi',
+])
+
+type MediaKind = 'image' | 'video' | null
+
+function classifyMedia(filePath: string): MediaKind {
   const ext = extname(filePath).toLowerCase()
-  return SUPPORTED_EXTENSIONS.has(ext)
+  if (SUPPORTED_IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (SUPPORTED_VIDEO_EXTENSIONS.has(ext)) return 'video'
+  return null
 }
 
 export class FileWatcher {
@@ -108,7 +117,13 @@ export class FileWatcher {
   }
 
   private async handleAdd(folderId: number, filePath: string): Promise<void> {
-    if (!isSupportedImage(filePath)) return
+    const kind = classifyMedia(filePath)
+    if (kind === null) return
+
+    if (kind === 'video') {
+      await this.handleAddVideo(folderId, filePath)
+      return
+    }
 
     try {
       const stats = await stat(filePath)
@@ -139,8 +154,36 @@ export class FileWatcher {
     }
   }
 
+  /**
+   * 视频不入 photos 直接走 thumbnail pipeline，
+   * 而是先登记到 videos 表 + queue 一个 'extract_frames' 任务；
+   * indexer 抽完帧后才把每帧作为 photo 行 + 缩略图/embed/face/ocr 排队。
+   */
+  private async handleAddVideo(folderId: number, filePath: string): Promise<void> {
+    try {
+      const stats = await stat(filePath)
+      const fileName = basename(filePath)
+
+      // 视频的 file_hash 用 (size, mtime, path) 的轻量哈希避免全文件读取——
+      // 视频文件大，纯内容哈希会显著拖慢导入。等抽出帧后，每帧再用真正的
+      // 内容 hash（PR11.3 indexer 里完成）。
+      const lightHash = await getHasher().then((h) =>
+        h(new TextEncoder().encode(`${filePath}|${stats.size}|${stats.mtimeMs}`))
+      )
+
+      const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash)
+
+      // 同步抽帧太慢；用 indexer 队列异步处理。约定：task_type='extract_frames'
+      // 时，photo_id 字段携带的是 videos.id 而非 photos.id（schema 不变）。
+      this.db.addToQueue(videoId, 'extract_frames', 15)
+      this.indexer.processNext()
+    } catch (error) {
+      console.error(`Error handling add for video ${filePath}:`, error)
+    }
+  }
+
   private async handleChange(filePath: string): Promise<void> {
-    if (!isSupportedImage(filePath)) return
+    if (classifyMedia(filePath) === null) return
 
     try {
       const existing = this.db.getPhotoByPath(filePath)
@@ -167,10 +210,17 @@ export class FileWatcher {
   }
 
   private handleRemove(filePath: string): void {
-    if (!isSupportedImage(filePath)) return
+    const kind = classifyMedia(filePath)
+    if (kind === null) return
 
     try {
-      this.db.softDeletePhoto(filePath)
+      if (kind === 'video') {
+        // 视频删除：标记 videos.deleted_at；它的帧 photos 仍按文件路径自己被
+        // chokidar unlink 触发处理（如果对应的 frame JPEG 也被删了）。
+        this.db.softDeleteVideo(filePath)
+      } else {
+        this.db.softDeletePhoto(filePath)
+      }
     } catch (error) {
       console.error(`Error handling remove for ${filePath}:`, error)
     }

@@ -205,4 +205,4 @@ export interface Person {
 }
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'
-export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face' | 'ocr'
+export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face' | 'ocr' | 'extract_frames'
