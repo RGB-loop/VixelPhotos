@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type DownloadProgress, type EmbeddingApiConfig, type CaptionConfig, type Person, type FaceRecord } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingApiConfig, type Person, type FaceRecord } from '../shared/types'
 
-// 暴露给渲染进程的 API
 const api = {
   // 搜索
   search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }): Promise<SearchResult[]> => {
@@ -51,20 +50,18 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTO_LOCATIONS, photoId)
   },
 
-  // 进度监听
+  // 进度
   onIndexProgress: (callback: (progress: IndexProgress) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: IndexProgress): void => {
       callback(progress)
     }
     ipcRenderer.on(IPC_CHANNELS.INDEX_PROGRESS, handler)
-
-    // 返回取消订阅函数
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.INDEX_PROGRESS, handler)
     }
   },
 
-  // 系统
+  // 系统 / 模型状态
   getAppPath: (): Promise<string> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_APP_PATH)
   },
@@ -72,50 +69,22 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_MODEL_STATUS)
   },
 
-  // 下载管理
-  downloadModel: (type: 'model' | 'mmproj'): Promise<{ success: boolean; error?: string }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.DOWNLOAD_MODEL, type)
-  },
-  downloadLlamaServer: (): Promise<{ success: boolean; error?: string }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.DOWNLOAD_LLAMA_SERVER)
-  },
-  cancelDownload: (fileName: string): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.CANCEL_DOWNLOAD, fileName)
-  },
-  onDownloadProgress: (callback: (progress: DownloadProgress) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, progress: DownloadProgress): void => {
-      callback(progress)
-    }
-    ipcRenderer.on(IPC_CHANNELS.DOWNLOAD_PROGRESS, handler)
-    return () => {
-      ipcRenderer.removeListener(IPC_CHANNELS.DOWNLOAD_PROGRESS, handler)
-    }
-  },
-  initCaptionGenerator: (): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.INIT_CAPTION_GENERATOR)
-  },
-
-  // Embedding API 配置
+  // Embedding provider 配置（onnx-local 默认 / api 高级）
   getEmbeddingConfig: (): Promise<EmbeddingApiConfig | null> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_EMBEDDING_CONFIG)
   },
-  setEmbeddingConfig: (config: EmbeddingApiConfig): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
+  /**
+   * config === null → 切回本地 ONNX
+   * config 为对象 → 切到外部 API
+   */
+  setEmbeddingConfig: (config: EmbeddingApiConfig | null): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SET_EMBEDDING_CONFIG, config)
   },
   testEmbeddingApi: (): Promise<{ success: boolean; dimension?: number; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.TEST_EMBEDDING_API)
   },
 
-  // Caption 配置与操作
-  getCaptionConfig: (): Promise<CaptionConfig> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.GET_CAPTION_CONFIG)
-  },
-  setCaptionConfig: (config: CaptionConfig): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.SET_CAPTION_CONFIG, config)
-  },
-  regenerateCaption: (photoId: number): Promise<{ success: boolean; caption?: string; error?: string }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.REGENERATE_CAPTION, photoId)
-  },
+  // Caption（手动编辑）
   updateCaption: (photoId: number, text: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CAPTION, photoId, text)
   },
@@ -144,8 +113,6 @@ const api = {
   },
 }
 
-// 将 API 暴露到 window 对象
 contextBridge.exposeInMainWorld('api', api)
 
-// 类型声明
 export type Api = typeof api

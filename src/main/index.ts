@@ -7,11 +7,9 @@ import { initDatabase } from '../core/db'
 import { FileWatcher } from '../core/watcher'
 import { Indexer } from '../core/indexer'
 import { SearchEngine } from '../core/search'
-import { getDownloadManager, MODEL_FILES } from './services/downloadManager'
-import { getLlamaServerManager } from '../core/llama/serverManager'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
 import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
-import { IPC_CHANNELS, type WatchedFolder, type IndexProgress, type DownloadProgress, type CaptionConfig, type FaceBbox } from '../shared/types'
+import { IPC_CHANNELS, type IndexProgress, type FaceBbox } from '../shared/types'
 
 // 全局服务实例
 let db: ReturnType<typeof initDatabase>
@@ -19,6 +17,7 @@ let watcher: FileWatcher
 let indexer: Indexer
 let searchEngine: SearchEngine
 let mainWindow: BrowserWindow | null = null
+let bundledModelsDir: string = ''
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -47,7 +46,6 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // 开发环境加载 dev server，生产环境加载打包文件
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -55,97 +53,59 @@ function createWindow(): void {
   }
 }
 
-// 初始化服务
 async function initServices(): Promise<void> {
   const userDataPath = app.getPath('userData')
   const dbPath = join(userDataPath, 'library.db')
 
   console.log('Initializing Vixel services...')
 
-  // 初始化路径依赖
-  initEmbeddingServicePath(userDataPath)
-  // Face 模型：生产环境在 extraResources/models/，开发环境在 resources/models/
+  // 模型目录：生产用 extraResources，开发用 resources/models
   const prodModelsDir = join(process.resourcesPath, 'models')
   const devModelsDir = join(process.cwd(), 'resources', 'models')
-  setFaceModelsDir(existsSync(prodModelsDir) ? prodModelsDir : devModelsDir)
+  bundledModelsDir = existsSync(prodModelsDir) ? prodModelsDir : devModelsDir
 
-  // 初始化数据库
+  initEmbeddingServicePath(userDataPath, bundledModelsDir)
+  setFaceModelsDir(bundledModelsDir)
+
   db = initDatabase(dbPath)
-
-  // 恢复上次运行时卡住的任务（程序被强制关闭时可能发生）
   db.recoverStuckTasks()
-
-  // 重新队列缺失 embedding 的照片（模型之前不可用时可能发生）
   db.requeueMissingEmbeddings()
 
-  // 初始化索引器
   indexer = new Indexer(db, userDataPath)
-
-  // 监听索引进度
   indexer.on('progress', (progress: IndexProgress) => {
     mainWindow?.webContents.send(IPC_CHANNELS.INDEX_PROGRESS, progress)
   })
 
-  // 初始化文件监听器
   watcher = new FileWatcher(db, indexer)
-
-  // 初始化搜索引擎
   searchEngine = new SearchEngine(db)
 
-  // 恢复监控已有的文件夹
   const folders = db.getFolders()
   for (const folder of folders) {
     watcher.watchFolder(folder.id, folder.path)
   }
 
-  // 初始化 llama server manager（配置模型路径）
-  const llamaManager = getLlamaServerManager(userDataPath)
-  const modelsDir = join(userDataPath, 'models')
-
-  // 配置 embedding 模型
-  llamaManager.setModelConfig('embedding', {
-    type: 'embedding',
-    modelPath: join(modelsDir, 'Qwen3-VL-Embedding-2B-Q4_K_M.gguf'),
-    mmprojPath: join(modelsDir, 'mmproj-Qwen3-VL-Embedding-2B.gguf'),
-    embeddingMode: true,
-    poolingType: 'last',
-    contextSize: 8192,
-  })
-
-  // 配置 caption 模型 (Qwen3.5-4B 多模态，原生支持 262K context)
-  llamaManager.setModelConfig('caption', {
-    type: 'caption',
-    modelPath: join(modelsDir, 'Qwen3.5-4B-Q4_K_M.gguf'),
-    mmprojPath: join(modelsDir, 'mmproj-Qwen3.5-4B-F16.gguf'),
-    contextSize: 32768,
-  })
-
-  // 后台预加载 embedding 模型（用于搜索）
+  // 后台预加载 SigLIP 2（首次推理可能 2-5s 慢启动）
   setTimeout(() => {
     indexer.preloadModels().catch(() => {})
   }, 2000)
 }
 
-// 注册 IPC 处理器
 function registerIpcHandlers(): void {
-  // 搜索（支持时间过滤）
+  // 搜索
   ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }) => {
     return searchEngine.search(query, limit, options)
   })
 
-  // 有 GPS 的照片
   ipcMain.handle(IPC_CHANNELS.GET_PHOTOS_WITH_GPS, async () => {
     return db.getPhotosWithGPS()
   })
 
-  // 相似照片
   ipcMain.handle(IPC_CHANNELS.FIND_SIMILAR, async (_event, photoId: number, limit?: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return searchEngine.findSimilar(photo.fileHash, limit || 12)
   })
 
-  // 选择文件夹对话框
   ipcMain.handle(IPC_CHANNELS.SELECT_FOLDER, async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       properties: ['openDirectory'],
@@ -154,24 +114,17 @@ function registerIpcHandlers(): void {
     return result.filePaths[0]
   })
 
-  // 添加监控文件夹
   ipcMain.handle(IPC_CHANNELS.ADD_FOLDER, async (_event, folderPath: string) => {
     const folder = db.addFolder(folderPath)
     watcher.watchFolder(folder.id, folder.path)
     return folder
   })
 
-  // 移除监控文件夹（包括删除所有索引数据）
   ipcMain.handle(IPC_CHANNELS.REMOVE_FOLDER, async (_event, folderId: number) => {
     const folder = db.getFolder(folderId)
     if (folder) {
-      // 1. 停止监听
       watcher.unwatchFolder(folderId)
-
-      // 2. 删除照片数据，返回孤立的 hash（没有其他文件夹有副本）
       const orphanedHashes = db.deletePhotosByFolder(folderId)
-
-      // 3. 删除孤立 hash 的缩略图文件
       const thumbnailsDir = join(app.getPath('userData'), 'thumbnails')
       for (const hash of orphanedHashes) {
         const thumbnailPath = join(thumbnailsDir, `${hash}.webp`)
@@ -183,55 +136,45 @@ function registerIpcHandlers(): void {
           console.warn(`Failed to delete thumbnail: ${thumbnailPath}`, e)
         }
       }
-
-      // 4. 删除文件夹记录
       db.removeFolder(folderId)
-
     }
     return true
   })
 
-  // 获取所有监控文件夹（包含照片数量统计）
   ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {
     return db.getFoldersWithStats()
   })
 
-  // 获取文件夹统计信息
   ipcMain.handle(IPC_CHANNELS.GET_FOLDER_STATS, async (_event, folderId: number) => {
     return db.getFolderStats(folderId)
   })
 
-  // 获取照片详情
   ipcMain.handle(IPC_CHANNELS.GET_PHOTO_DETAIL, async (_event, photoId: number) => {
     return db.getPhotoDetail(photoId)
   })
 
-  // 获取缩略图路径（按 hash）
   ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return null
     return indexer.getThumbnailPath(photo.fileHash)
   })
 
-  // 获取缩略图数据（base64，按 hash）
   ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return null
     try {
-    const thumbnailPath = indexer.getThumbnailPath(photo.fileHash)
-    const buffer = await readFile(thumbnailPath)
-    return `data:image/webp;base64,${buffer.toString('base64')}`
+      const thumbnailPath = indexer.getThumbnailPath(photo.fileHash)
+      const buffer = await readFile(thumbnailPath)
+      return `data:image/webp;base64,${buffer.toString('base64')}`
     } catch { return null }
   })
 
-  // 获取照片所有位置（按 hash 查重复）
   ipcMain.handle(IPC_CHANNELS.GET_PHOTO_LOCATIONS, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return db.getPhotoLocations(photo.fileHash)
   })
 
-  // 获取原图数据（base64）
   ipcMain.handle(IPC_CHANNELS.GET_FULL_IMAGE_DATA, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo || !photo.filePath || !existsSync(photo.filePath)) {
@@ -243,158 +186,74 @@ function registerIpcHandlers(): void {
     return `data:${mimeType};base64,${buffer.toString('base64')}`
   })
 
-  // 在 Finder 中显示
   ipcMain.handle(IPC_CHANNELS.SHOW_IN_FINDER, async (_event, filePath: string) => {
     shell.showItemInFolder(filePath)
     return true
   })
 
-  // 获取应用路径
   ipcMain.handle(IPC_CHANNELS.GET_APP_PATH, async () => {
     return app.getPath('userData')
   })
 
-  // 获取模型状态
+  // 模型状态（v0.2：SigLIP 2 本地模型 + 可选 API 兜底）
   ipcMain.handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
-    const downloadManager = getDownloadManager()
-    const modelsDir = downloadManager.getModelsDir()
-
-    // 检查 Caption 模型文件是否存在
-    const captionModelExists = existsSync(join(modelsDir, MODEL_FILES.caption.name))
-    const captionMmprojExists = existsSync(join(modelsDir, MODEL_FILES.captionMmproj.name))
-
-    const llamaManager = getLlamaServerManager()
-    const embeddingService = getEmbeddingService()
-    const embeddingConfig = embeddingService.getConfig()
-
-    return {
-      modelsDir,
-      // Caption 模型状态
-      captionModelExists,
-      captionMmprojExists,
-      captionReady: captionModelExists && captionMmprojExists,
-      // Embedding API 状态（使用外部 API，不使用本地模型）
-      embeddingApiConfigured: embeddingService.isConfigured(),
-      embeddingApiEndpoint: embeddingConfig?.endpoint,
-      embeddingReady: embeddingService.isReady(),
-      // llama-server
-      llamaServerExists: downloadManager.isLlamaServerInstalled(),
-      serverReady: llamaManager.isServerReady(),
-      currentModel: llamaManager.getCurrentModel() === 'caption' ? 'caption' : null,
-    }
-  })
-
-  // 下载模型
-  ipcMain.handle(
-    IPC_CHANNELS.DOWNLOAD_MODEL,
-    async (_event, type: 'caption' | 'captionMmproj' | 'embedding' | 'embeddingMmproj') => {
-      const downloadManager = getDownloadManager()
-      const progressCallback = (progress: DownloadProgress): void => {
-        mainWindow?.webContents.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, progress)
-      }
-
-      try {
-        await downloadManager.downloadModel(type, progressCallback)
-        return { success: true }
-      } catch (error) {
-        return { success: false, error: String(error) }
-      }
-    }
-  )
-
-  // 下载 llama-server
-  ipcMain.handle(IPC_CHANNELS.DOWNLOAD_LLAMA_SERVER, async () => {
-    const downloadManager = getDownloadManager()
-    const progressCallback = (progress: DownloadProgress): void => {
-      mainWindow?.webContents.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, progress)
-    }
-
-    try {
-      await downloadManager.installLlamaServer(progressCallback)
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: String(error) }
-    }
-  })
-
-  // 取消下载
-  ipcMain.handle(IPC_CHANNELS.CANCEL_DOWNLOAD, async (_event, fileName: string) => {
-    const downloadManager = getDownloadManager()
-    downloadManager.cancelDownload(fileName)
-    return { success: true }
-  })
-
-  // 初始化 Caption 模型（Qwen3.5-4B）
-  ipcMain.handle(IPC_CHANNELS.INIT_CAPTION_GENERATOR, async () => {
-    try {
-      const llamaManager = getLlamaServerManager()
-      await llamaManager.ensureModel('caption')
-      return { success: true, ready: llamaManager.isModelLoaded('caption') }
-    } catch (error) {
-      return { success: false, error: String(error) }
-    }
-  })
-
-  // 获取 Embedding API 配置
-  ipcMain.handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
     const embeddingService = getEmbeddingService()
     const config = embeddingService.getConfig()
-    return config ? { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model } : null
+    const siglipDir = join(bundledModelsDir, 'siglip2')
+    const localModelExists = existsSync(siglipDir)
+
+    return {
+      modelsDir: bundledModelsDir,
+      providerType: config.type, // 'onnx-local' | 'api'
+      localModelExists,
+      embeddingReady: embeddingService.isReady(),
+      apiConfigured: config.type === 'api' && !!config.endpoint,
+      apiEndpoint: config.type === 'api' ? config.endpoint : undefined,
+      initError: embeddingService.getInitError(),
+    }
   })
 
-  // 设置 Embedding API 配置
+  // Embedding 配置：切到 API 后端（高级选项）
+  ipcMain.handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
+    const config = getEmbeddingService().getConfig()
+    if (config.type === 'api') {
+      return { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model }
+    }
+    return null
+  })
+
   ipcMain.handle(
     IPC_CHANNELS.SET_EMBEDDING_CONFIG,
-    async (_event, config: { endpoint: string; apiKey?: string; model?: string }) => {
+    async (_event, config: { endpoint: string; apiKey?: string; model?: string } | null) => {
       try {
-        const embeddingService = getEmbeddingService()
-        embeddingService.setConfig(config)
-        await embeddingService.init()
-        return { success: true, ready: embeddingService.isReady() }
+        const svc = getEmbeddingService()
+        if (config === null) {
+          svc.useLocal()
+        } else {
+          svc.setApiConfig(config)
+        }
+        await svc.init()
+        return { success: true, ready: svc.isReady() }
       } catch (error) {
         return { success: false, error: String(error) }
       }
     }
   )
 
-  // 测试 Embedding API
   ipcMain.handle(IPC_CHANNELS.TEST_EMBEDDING_API, async () => {
     try {
-      const embeddingService = getEmbeddingService()
-      if (!embeddingService.isConfigured()) {
-        return { success: false, error: 'API not configured' }
+      const svc = getEmbeddingService()
+      if (!svc.isConfigured()) {
+        return { success: false, error: 'Provider not configured' }
       }
-      // 尝试编码一个简单文本
-      const testVec = await embeddingService.encodeText('test')
+      const testVec = await svc.encodeText('test')
       return { success: true, dimension: testVec.length }
     } catch (error) {
       return { success: false, error: String(error) }
     }
   })
 
-  // Caption 配置
-  ipcMain.handle(IPC_CHANNELS.GET_CAPTION_CONFIG, async () => {
-    return indexer.getCaptionConfig()
-  })
-
-  ipcMain.handle(IPC_CHANNELS.SET_CAPTION_CONFIG, async (_event, config: CaptionConfig) => {
-    indexer.setCaptionConfig(config)
-    return { success: true }
-  })
-
-  // 重新生成 caption
-  ipcMain.handle(IPC_CHANNELS.REGENERATE_CAPTION, async (_event, photoId: number) => {
-    try {
-      const photo = db.getPhoto(photoId)
-      if (!photo?.fileHash) return { success: false, error: 'Photo not found' }
-      const caption = await indexer.regenerateCaption(photo.fileHash, photo.filePath)
-      return { success: true, caption }
-    } catch (error) {
-      return { success: false, error: String(error) }
-    }
-  })
-
-  // 手动更新 caption
+  // 手动更新 caption（用户编辑）
   ipcMain.handle(IPC_CHANNELS.UPDATE_CAPTION, async (_event, photoId: number, text: string) => {
     try {
       const photo = db.getPhoto(photoId)
@@ -438,7 +297,6 @@ function registerIpcHandlers(): void {
     try {
       const info = db.getFaceCoverInfo(faceId)
       if (!info) return null
-      // 找到该 hash 对应的文件路径
       const photo = db.getRepresentativeByHash(info.fileHash)
       if (!photo) return null
       const imageBuffer = await readFile(photo.filePath)
@@ -457,12 +315,9 @@ function registerIpcHandlers(): void {
   })
 }
 
-// 应用启动
 app.whenReady().then(async () => {
-  // 设置应用 ID (macOS)
   electronApp.setAppUserModelId('com.vixel.app')
 
-  // 开发环境优化
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -476,7 +331,6 @@ app.whenReady().then(async () => {
   })
 })
 
-// 退出处理
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
@@ -484,8 +338,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  // 清理资源
   watcher?.stopAll()
-  getLlamaServerManager().stop()
   db?.close()
 })

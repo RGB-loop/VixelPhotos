@@ -109,22 +109,12 @@ export const IPC_CHANNELS = {
   GET_APP_PATH: 'get-app-path',
   GET_MODEL_STATUS: 'get-model-status',
 
-  // 下载管理
-  DOWNLOAD_MODEL: 'download-model',
-  DOWNLOAD_LLAMA_SERVER: 'download-llama-server',
-  CANCEL_DOWNLOAD: 'cancel-download',
-  DOWNLOAD_PROGRESS: 'download-progress',
-  INIT_CAPTION_GENERATOR: 'init-caption-generator',
-
-  // Embedding API 配置
+  // Embedding（默认本地 SigLIP 2；可切外部 API 兜底）
   GET_EMBEDDING_CONFIG: 'get-embedding-config',
   SET_EMBEDDING_CONFIG: 'set-embedding-config',
   TEST_EMBEDDING_API: 'test-embedding-api',
 
-  // Caption 配置与操作
-  GET_CAPTION_CONFIG: 'get-caption-config',
-  SET_CAPTION_CONFIG: 'set-caption-config',
-  REGENERATE_CAPTION: 'regenerate-caption',
+  // Caption（v0.2：仅手动编辑，无自动生成）
   UPDATE_CAPTION: 'update-caption',
 
   // 相似照片
@@ -145,18 +135,12 @@ export const IPC_CHANNELS = {
 
 export interface ModelStatus {
   modelsDir: string
-  // Caption 模型 (Qwen3.5-4B)
-  captionModelExists: boolean
-  captionMmprojExists: boolean
-  captionReady: boolean
-  // Embedding API（使用外部 API，不使用本地模型）
-  embeddingApiConfigured: boolean
-  embeddingApiEndpoint?: string
+  providerType: 'onnx-local' | 'api'
+  localModelExists: boolean   // resources/models/siglip2/ 是否存在
   embeddingReady: boolean
-  // llama-server
-  llamaServerExists: boolean
-  serverReady: boolean
-  currentModel: 'caption' | null  // embedding 不再使用本地 llama-server
+  apiConfigured: boolean
+  apiEndpoint?: string
+  initError: string | null
 }
 
 export interface EmbeddingApiConfig {
@@ -164,6 +148,9 @@ export interface EmbeddingApiConfig {
   apiKey?: string
   model?: string
 }
+
+// Embedding provider 选项（renderer 用来切换 UI 状态）
+export type EmbeddingProviderType = 'onnx-local' | 'api'
 
 // 人脸检测
 export interface FaceBbox {
@@ -194,18 +181,3 @@ export interface Person {
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'
 export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face'
-export type CaptionLanguage = 'en' | 'zh'
-
-export interface CaptionConfig {
-  language: CaptionLanguage
-}
-
-export interface DownloadProgress {
-  file: string
-  downloaded: number
-  total: number
-  percent: number
-  speed: number
-}
-
-export type ModelDownloadType = 'caption' | 'captionMmproj' | 'embedding' | 'embeddingMmproj'
