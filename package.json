@@ -1,6 +1,6 @@
 {
   "name": "vixel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local AI-powered photo search app",
   "main": "./out/main/index.js",
   "author": "Vixel Team",
@@ -35,12 +35,14 @@
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit",
     "build:cli": "tsc -p tsconfig.cli.json",
-    "cli": "npm run build:cli && npx electron dist/cli/cli/index.js"
+    "cli": "npm run build:cli && npx electron dist/cli/cli/index.js",
+    "models:download": "node scripts/download-models.mjs"
   },
   "bin": {
     "vixel": "./dist/cli/cli/index.js"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.5.0",
     "@types/leaflet": "^1.9.21",
     "@types/leaflet.markercluster": "^1.5.6",
     "better-sqlite3": "^11.7.0",
@@ -54,7 +56,6 @@
     "react-leaflet-cluster": "^4.0.0",
     "sharp": "^0.34.0",
     "sqlite-vec": "^0.1.7",
-    "unzip-stream": "^0.3.4",
     "xxhash-wasm": "^1.1.0"
   },
   "overrides": {
@@ -68,7 +69,6 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/react-window": "^1.8.8",
-    "@types/unzip-stream": "^0.3.4",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "electron": "^33.4.0",

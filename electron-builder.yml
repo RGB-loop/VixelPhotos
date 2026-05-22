@@ -7,6 +7,7 @@ directories:
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  - '!scripts/*'
   - '!electron.vite.config.*'
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
@@ -14,18 +15,24 @@ asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/**
   - node_modules/sharp/**
+  - node_modules/onnxruntime-node/**
+  - node_modules/sqlite-vec/**
+# 本地模型作为 extraResources（运行时通过 process.resourcesPath 访问）
+extraResources:
+  - from: resources/models
+    to: models
+    filter:
+      - '**/*'
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
+  # 单架构 DMG（按当前 build 机器架构）— CI 上分别跑 arm64/x64
   target:
     - target: dmg
       arch:
-        - x64
         - arm64
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}

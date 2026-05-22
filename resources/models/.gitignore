@@ -1,0 +1,7 @@
+# 大模型文件不入仓库；通过 `node scripts/download-models.mjs` 拉取
+# 仅保留 README 与 face 模型（已有的小文件）
+*
+!.gitignore
+!README.md
+!scrfd_*.onnx
+!mobilefacenet.onnx
