@@ -1053,25 +1053,39 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     saveImageVec: (fileHash: string, embedding: Float32Array): void => {
       // vec0 要求: rowid 必须是 BigInt, embedding 必须是 Float32Array（不是 Buffer）
-      let mapRowid: bigint | undefined
-      try {
-        const info = stmts.insertVecMap.run(fileHash)
+      //
+      // 失败语义：image_vec_map 和 image_vecs 必须保持一致 — 要么两表都有
+      // 这个 hash，要么都没有。我们用事务包住 INSERT/UPDATE 两步；任何
+      // 一步抛错就回滚，避免 vec_map 出现孤立 rowid（要等 cleanupStaleVecMap
+      // 下次启动才回收）。
+      const tx = db.transaction((hash: string, vec: Float32Array) => {
+        // 1. 拿到 map rowid（新建或复用）
+        let mapRowid: bigint
+        const info = stmts.insertVecMap.run(hash)
         if (info.changes > 0) {
           mapRowid = BigInt(info.lastInsertRowid)
+        } else {
+          const existing = stmts.getVecMapRowid.get(hash) as { rowid: bigint | number } | undefined
+          if (!existing) throw new Error(`Vec map row missing for hash ${hash}`)
+          mapRowid = BigInt(existing.rowid)
         }
-      } catch { /* conflict */ }
-      if (mapRowid === undefined) {
-        const existing = stmts.getVecMapRowid.get(fileHash) as { rowid: bigint | number } | undefined
-        if (existing) mapRowid = BigInt(existing.rowid)
-      }
-      if (mapRowid !== undefined) {
+        // 2. INSERT；冲突走 UPDATE
         try {
-          stmts.insertVec.run(mapRowid, embedding)
+          stmts.insertVec.run(mapRowid, vec)
         } catch {
-          try { stmts.updateVec.run(embedding, mapRowid) } catch { /* ignore */ }
+          stmts.updateVec.run(vec, mapRowid)
         }
+      })
+
+      try {
+        tx(fileHash, embedding)
+        stmts.updateEmbedStatusByHash.run(fileHash)
+      } catch (err) {
+        console.warn(`saveImageVec failed for ${fileHash}:`, err)
+        // 兜底：万一事务部分成功（理论上不该），也把可能的孤立 map 行清掉
+        try { stmts.deleteVecMapByHash.run(fileHash) } catch { /* ignore */ }
+        throw err
       }
-      stmts.updateEmbedStatusByHash.run(fileHash)
     },
     updateEmbedStatusByHash: (fileHash: string): void => {
       stmts.updateEmbedStatusByHash.run(fileHash)
