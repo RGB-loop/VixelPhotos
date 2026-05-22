@@ -148,6 +148,10 @@ export const IPC_CHANNELS = {
   // OCR
   START_OCR_SCAN: 'start-ocr-scan',
 
+  // 备份
+  TRIGGER_BACKUP: 'trigger-backup',
+  GET_BACKUP_STATUS: 'get-backup-status',
+
   // 人脸识别
   START_FACE_SCAN: 'start-face-scan',
   GET_PEOPLE: 'get-people',
@@ -176,6 +180,15 @@ export interface EmbeddingApiConfig {
 
 // Embedding provider 选项（renderer 用来切换 UI 状态）
 export type EmbeddingProviderType = 'onnx-local' | 'api'
+
+export interface BackupStatus {
+  lastBackupAt: number | null    // epoch ms
+  intervalMs: number             // 自动备份周期
+  keepCount: number              // 滚动保留份数
+  currentCount: number           // 当前磁盘上的备份数量
+  inProgress: boolean
+  backupsDir: string
+}
 
 // 人脸检测
 export interface FaceBbox {

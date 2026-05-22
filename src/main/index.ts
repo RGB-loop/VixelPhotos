@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { readFile, unlink } from 'fs/promises'
+import { readFile, unlink, mkdir, readdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase } from '../core/db'
@@ -11,7 +11,15 @@ import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding
 import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
+import { formatBackupName, selectExpired } from '../core/backup'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox } from '../shared/types'
+
+// 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
+const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
+const BACKUP_KEEP_COUNT = 3
+const META_KEY_LAST_BACKUP = 'last_backup_at'
+let backupTimer: NodeJS.Timeout | null = null
+let backupInFlight = false
 
 // 全局服务实例
 let db: ReturnType<typeof initDatabase>
@@ -95,6 +103,71 @@ async function initServices(): Promise<void> {
   setTimeout(() => {
     indexer.preloadModels().catch(() => {})
   }, 2000)
+
+  // 启动备份调度器
+  scheduleBackups()
+}
+
+/**
+ * 备份调度：启动时检查上次备份距今 ≥ 24h 就立刻跑一次，
+ * 之后每 24h 周期触发。重启不丢节奏 —— last_backup_at 在 meta_state。
+ *
+ * backupTo 走 SQLite Online Backup API，不阻塞读写，所以可以与 indexer 并行。
+ */
+function scheduleBackups(): void {
+  // 启动时延后 60s 先做检查，避免抢启动期 IO
+  setTimeout(() => {
+    runBackupIfDue().catch((err) => console.warn('Initial backup check failed:', err))
+  }, 60_000)
+
+  if (backupTimer) clearInterval(backupTimer)
+  backupTimer = setInterval(() => {
+    runBackupIfDue().catch((err) => console.warn('Periodic backup failed:', err))
+  }, 60 * 60 * 1000) // 每小时检查一次"是否到点"，真正动作受 last_backup_at 节流
+}
+
+async function runBackupIfDue(): Promise<void> {
+  const last = parseInt(db.getMetaState(META_KEY_LAST_BACKUP) || '0', 10)
+  const now = Date.now()
+  if (now - last < BACKUP_INTERVAL_MS) return
+  await runBackup()
+}
+
+async function runBackup(): Promise<{ path: string; sizeBytes: number }> {
+  if (backupInFlight) {
+    throw new Error('A backup is already in progress')
+  }
+  backupInFlight = true
+  try {
+    const backupsDir = join(app.getPath('userData'), 'backups')
+    if (!existsSync(backupsDir)) {
+      await mkdir(backupsDir, { recursive: true })
+    }
+    const name = formatBackupName(new Date())
+    const dest = join(backupsDir, name)
+
+    await db.backupTo(dest)
+
+    // 写时间戳到 meta_state
+    db.setMetaState(META_KEY_LAST_BACKUP, String(Date.now()))
+
+    // 轮换：删除多余的旧备份（保留最近 BACKUP_KEEP_COUNT 份）
+    const entries = await readdir(backupsDir)
+    const expired = selectExpired(entries, BACKUP_KEEP_COUNT)
+    for (const old of expired) {
+      try {
+        await unlink(join(backupsDir, old))
+      } catch (err) {
+        console.warn(`Failed to delete old backup ${old}:`, err)
+      }
+    }
+
+    const { stat } = await import('fs/promises')
+    const sizeBytes = (await stat(dest)).size
+    return { path: dest, sizeBytes }
+  } finally {
+    backupInFlight = false
+  }
 }
 
 function registerIpcHandlers(): void {
@@ -329,6 +402,34 @@ function registerIpcHandlers(): void {
     if (!photo?.fileHash) return []
     return db.getFacesByHash(photo.fileHash)
   })
+
+  // 备份：手动触发 + 状态查询
+  ipcMain.handle(IPC_CHANNELS.TRIGGER_BACKUP, async () => {
+    try {
+      const result = await runBackup()
+      return { success: true, ...result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_BACKUP_STATUS, async () => {
+    const last = parseInt(db.getMetaState(META_KEY_LAST_BACKUP) || '0', 10)
+    const backupsDir = join(app.getPath('userData'), 'backups')
+    let count = 0
+    if (existsSync(backupsDir)) {
+      const entries = await readdir(backupsDir)
+      count = entries.filter((n) => n.startsWith('library.db.bak.')).length
+    }
+    return {
+      lastBackupAt: last || null,
+      intervalMs: BACKUP_INTERVAL_MS,
+      keepCount: BACKUP_KEEP_COUNT,
+      currentCount: count,
+      inProgress: backupInFlight,
+      backupsDir,
+    }
+  })
 }
 
 app.whenReady().then(async () => {
@@ -355,5 +456,9 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   watcher?.stopAll()
+  if (backupTimer) {
+    clearInterval(backupTimer)
+    backupTimer = null
+  }
   db?.close()
 })

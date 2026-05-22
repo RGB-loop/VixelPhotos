@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingApiConfig, type Person, type FaceRecord } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingApiConfig, type Person, type FaceRecord, type BackupStatus } from '../shared/types'
 
 const api = {
   // 搜索
@@ -92,6 +92,14 @@ const api = {
   // OCR
   startOcrScan: (): Promise<{ queued?: number; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.START_OCR_SCAN)
+  },
+
+  // 备份
+  triggerBackup: (): Promise<{ success: boolean; path?: string; sizeBytes?: number; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TRIGGER_BACKUP)
+  },
+  getBackupStatus: (): Promise<BackupStatus> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_BACKUP_STATUS)
   },
 
   // 人脸识别

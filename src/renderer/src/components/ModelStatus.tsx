@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { ModelStatus as ModelStatusType, EmbeddingApiConfig } from '../../../shared/types'
+import type { ModelStatus as ModelStatusType, EmbeddingApiConfig, BackupStatus } from '../../../shared/types'
 
 /**
  * 模型状态面板（v0.2）
@@ -23,6 +23,9 @@ export function ModelStatus(): JSX.Element {
     scanning: false,
     message: null,
   })
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupMessage, setBackupMessage] = useState<string | null>(null)
 
   const loadStatus = useCallback(async () => {
     try {
@@ -34,6 +37,9 @@ export function ModelStatus(): JSX.Element {
         setApiConfig(existing)
         setShowAdvanced(true)
       }
+
+      const bs = await window.api.getBackupStatus()
+      setBackupStatus(bs)
     } catch (error) {
       console.error('Failed to get model status:', error)
     } finally {
@@ -44,6 +50,26 @@ export function ModelStatus(): JSX.Element {
   useEffect(() => {
     loadStatus()
   }, [loadStatus])
+
+  const triggerBackup = async (): Promise<void> => {
+    setBackupBusy(true)
+    setBackupMessage(null)
+    try {
+      const r = await window.api.triggerBackup()
+      if (r.success) {
+        const mb = r.sizeBytes ? (r.sizeBytes / 1024 / 1024).toFixed(1) : '?'
+        setBackupMessage(`已生成备份（${mb} MB）`)
+      } else {
+        setBackupMessage(`失败: ${r.error}`)
+      }
+      const bs = await window.api.getBackupStatus()
+      setBackupStatus(bs)
+    } catch (e) {
+      setBackupMessage(`失败: ${String(e)}`)
+    } finally {
+      setBackupBusy(false)
+    }
+  }
 
   const switchToLocal = async (): Promise<void> => {
     setSaving(true)
@@ -180,6 +206,38 @@ export function ModelStatus(): JSX.Element {
         {ocrScanState.message && (
           <p className={`text-[11px] mt-1.5 ${ocrScanState.message.startsWith('失败') ? 'text-red-400' : 'text-green-400'}`}>
             {ocrScanState.message}
+          </p>
+        )}
+      </div>
+
+      {/* 数据库备份 */}
+      <div className="pt-4 border-t border-white/5">
+        <h3 className="text-xs font-semibold text-white/80 mb-0.5">数据库备份</h3>
+        <p className="text-[11px] text-white/30 mb-2">
+          每 24 小时自动备份一次 library.db（保留最近 3 份），可在此手动触发。
+        </p>
+        {backupStatus && (
+          <div className="text-[10px] text-white/40 mb-2 space-y-0.5">
+            <div>
+              上次备份：{backupStatus.lastBackupAt
+                ? new Date(backupStatus.lastBackupAt).toLocaleString('zh-CN')
+                : '从未'}
+            </div>
+            <div>
+              当前已保留：{backupStatus.currentCount} / {backupStatus.keepCount}
+            </div>
+          </div>
+        )}
+        <button
+          onClick={triggerBackup}
+          disabled={backupBusy || backupStatus?.inProgress}
+          className="w-full py-1.5 px-3 bg-white/5 hover:bg-white/10 disabled:opacity-30 text-white/60 text-xs rounded-md"
+        >
+          {backupBusy ? '备份中...' : '立即备份'}
+        </button>
+        {backupMessage && (
+          <p className={`text-[11px] mt-1.5 ${backupMessage.startsWith('失败') ? 'text-red-400' : 'text-green-400'}`}>
+            {backupMessage}
           </p>
         )}
       </div>
