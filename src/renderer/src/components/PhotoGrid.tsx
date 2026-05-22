@@ -1,4 +1,5 @@
-import { useCallback, useState, useEffect, useRef } from 'react'
+import { useCallback, useState, useEffect, useRef, useMemo, memo } from 'react'
+import { FixedSizeGrid, type GridChildComponentProps } from 'react-window'
 import type { SearchResult, Photo } from '../../../shared/types'
 
 interface PhotoGridProps {
@@ -12,54 +13,40 @@ interface PhotoCardProps {
   onClick: () => void
   showScore?: boolean
   rank?: number
-  index: number
+}
+
+/**
+ * 按容器宽度选列数。和原来 Tailwind 响应式断点对齐
+ * (grid-cols-3 sm:4 md:5 lg:6 xl:8)。
+ */
+function columnsForWidth(w: number): number {
+  if (w >= 1280) return 8
+  if (w >= 1024) return 6
+  if (w >= 768) return 5
+  if (w >= 640) return 4
+  return 3
 }
 
 function StatusBadge({ photo }: { photo: Photo }): JSX.Element | null {
-  const embedDone = photo.embedStatus === 'done'
-  const captionDone = photo.captionStatus === 'done'
-
-  // 全部完成则不显示
-  if (embedDone && captionDone) return null
-
+  // v0.2：caption 不再自动生成，badge 仅对未完成的 embedding 显示
+  if (photo.embedStatus === 'done') return null
   return (
     <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 pointer-events-none">
-      {!embedDone && (
-        <span className="flex items-center gap-0.5 px-1 py-0.5 rounded bg-black/60 text-[9px] text-amber-300/80">
-          <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />
-          Embedding
-        </span>
-      )}
-      {embedDone && !captionDone && (
-        <span className="flex items-center gap-0.5 px-1 py-0.5 rounded bg-black/60 text-[9px] text-purple-300/80">
-          <span className="w-1 h-1 rounded-full bg-purple-400 animate-pulse" />
-          Caption
-        </span>
-      )}
+      <span className="flex items-center gap-0.5 px-1 py-0.5 rounded bg-black/60 text-[9px] text-amber-300/80">
+        <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />
+        Embedding
+      </span>
     </div>
   )
 }
 
-function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps): JSX.Element {
+const PhotoCard = memo(function PhotoCard({
+  result, onClick, showScore, rank,
+}: PhotoCardProps): JSX.Element {
   const [thumbnailUrl, setThumbnailUrl] = useState<string>('')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(false)
   const retried = useRef(false)
-  const cardRef = useRef<HTMLDivElement>(null)
-  const [isVisible, setIsVisible] = useState(false)
-
-  // IntersectionObserver 追踪可见性
-  useEffect(() => {
-    const el = cardRef.current
-    if (!el) return
-
-    const observer = new IntersectionObserver(
-      ([entry]) => setIsVisible(entry.isIntersecting),
-      { rootMargin: '100px' }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -100,13 +87,9 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
     }
 
     loadThumbnail()
-
-    return () => {
-      mounted = false
-    }
+    return () => { mounted = false }
   }, [result.photo.id])
 
-  // 缩略图从 error 状态恢复（photo 数据更新时重试）
   useEffect(() => {
     if (error && result.photo.width) {
       setError(false)
@@ -126,10 +109,8 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
 
   return (
     <div
-      ref={cardRef}
       className="photo-card relative aspect-square overflow-hidden cursor-pointer bg-surface-2"
       onClick={onClick}
-      style={{ animationDelay: `${Math.min(index * 30, 300)}ms` }}
     >
       {isLoading ? (
         <div className="absolute inset-0 image-placeholder" />
@@ -155,7 +136,7 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
         </div>
       )}
 
-      {/* 搜索排名和相关性 — 常驻显示 */}
+      {/* 搜索排名和相关性 */}
       {showScore && rank && (
         <div className="absolute top-1.5 left-1.5 right-1.5 flex justify-between items-start pointer-events-none">
           <div className="px-1.5 py-0.5 rounded bg-accent/80 text-white text-[10px] font-semibold">
@@ -173,10 +154,10 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
         </div>
       )}
 
-      {/* 处理状态 — 仅对可视区域内未完成的照片显示 */}
-      {isVisible && <StatusBadge photo={result.photo} />}
+      {/* 处理状态 —— 已经只在可视区域才 render，无需再做 IntersectionObserver */}
+      <StatusBadge photo={result.photo} />
 
-      {/* 视频徽章 —— 该照片是某个视频抽出的帧 */}
+      {/* 视频徽章 */}
       {result.photo.videoId != null && (
         <div
           className="absolute top-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/55 backdrop-blur-sm text-white text-[10px] font-medium pointer-events-none"
@@ -189,7 +170,7 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
         </div>
       )}
 
-      {/* Hover overlay — 文件名和 caption */}
+      {/* Hover overlay — 文件名 + caption（用户手写则显示） */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 hover:opacity-100 transition-opacity duration-200">
         <div className="absolute bottom-0 left-0 right-0 p-2.5">
           <p className="text-white text-xs truncate font-medium">{result.photo.fileName}</p>
@@ -200,9 +181,8 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
       </div>
     </div>
   )
-}
+})
 
-/** 把毫秒转 "M:SS" 或 "H:MM:SS"；缺时间显示 ▶ 单字符 */
 function formatFrameTime(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return 'video'
   const totalSec = Math.floor(ms / 1000)
@@ -214,32 +194,72 @@ function formatFrameTime(ms: number | null | undefined): string {
 }
 
 export function PhotoGrid({ results, onSelect, isSearching }: PhotoGridProps): JSX.Element {
-  const handleSelect = useCallback(
-    (photo: Photo) => {
-      onSelect(photo)
-    },
-    [onSelect]
-  )
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ w: 0, h: 0 })
 
-  return (
-    <div className="h-full overflow-auto p-0.5">
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-0.5">
-        {results.map((result, index) => (
+  // 测量容器宽高；ResizeObserver 比 window.resize 更稳健（侧栏开合也能感知）
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => {
+      const cr = entry.contentRect
+      setSize({ w: Math.floor(cr.width), h: Math.floor(cr.height) })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const handleSelect = useCallback((photo: Photo) => onSelect(photo), [onSelect])
+
+  const cols = useMemo(() => columnsForWidth(size.w), [size.w])
+  // 减 2px 给 gap 留点空间；列宽必须是整数否则 react-window 会出现亚像素抖动
+  const cellSize = useMemo(() => (size.w > 0 ? Math.floor(size.w / cols) : 0), [size.w, cols])
+  const rowCount = Math.ceil(results.length / cols)
+
+  // 单元渲染：从 grid 坐标反算线性 index
+  const Cell = useCallback(
+    ({ columnIndex, rowIndex, style }: GridChildComponentProps) => {
+      const idx = rowIndex * cols + columnIndex
+      if (idx >= results.length) return null
+      const result = results[idx]
+      return (
+        <div style={style}>
           <PhotoCard
-            key={result.photo.id}
             result={result}
             onClick={() => handleSelect(result.photo)}
             showScore={isSearching}
-            rank={index + 1}
-            index={index}
+            rank={idx + 1}
           />
-        ))}
-      </div>
-
-      {results.length > 0 && (
-        <div className="text-center text-white/20 py-4 text-xs">
-          {results.length} 张照片
         </div>
+      )
+    },
+    [results, cols, handleSelect, isSearching]
+  )
+
+  return (
+    <div ref={containerRef} className="h-full overflow-hidden p-0.5 flex flex-col">
+      {size.w > 0 && size.h > 0 && (
+        <>
+          <FixedSizeGrid
+            // key 让 cols 变化时强制重新挂载，避免内部缓存把错位单元留在原位
+            key={`${cols}-${cellSize}`}
+            columnCount={cols}
+            columnWidth={cellSize}
+            rowCount={rowCount}
+            rowHeight={cellSize}
+            width={size.w}
+            // 留出底部 24 px 显示总数
+            height={Math.max(0, size.h - 24)}
+            overscanRowCount={2}
+          >
+            {Cell}
+          </FixedSizeGrid>
+          {results.length > 0 && (
+            <div className="h-6 text-center text-white/20 text-xs flex items-center justify-center flex-shrink-0">
+              {results.length} 张照片
+            </div>
+          )}
+        </>
       )}
     </div>
   )
