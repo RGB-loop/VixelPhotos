@@ -1,15 +1,20 @@
 import { EventEmitter } from 'events'
 import { join } from 'path'
 import { mkdir, readFile } from 'fs/promises'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync } from 'fs'
 import sharp from 'sharp'
 import exifr from 'exifr'
 import type { DatabaseInstance } from './db'
-import type { IndexProgress, CaptionLanguage, CaptionConfig } from '../shared/types'
+import type { IndexProgress } from '../shared/types'
 import { getEmbeddingService } from './embedding'
-import { getLlamaServerManager } from './llama/serverManager'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 
+/**
+ * Indexer 流水线（v0.2，纯本地，无 LLM）：
+ *   thumbnail → embed (SigLIP 2) → face (按需)
+ *
+ * caption 由用户手动编辑或后续 OCR (PR3) 填充；此处不再生成。
+ */
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
   private userDataPath: string
@@ -26,80 +31,8 @@ export class Indexer extends EventEmitter {
     this.ensureThumbnailDir()
   }
 
-  /** 读取 caption 语言配置 */
-  getCaptionConfig(): CaptionConfig {
-    try {
-      const configPath = join(this.userDataPath, 'caption-config.json')
-      if (existsSync(configPath)) {
-        return JSON.parse(readFileSync(configPath, 'utf-8'))
-      }
-    } catch { /* ignore */ }
-    return { language: 'en' }
-  }
-
-  /** 保存 caption 语言配置 */
-  setCaptionConfig(config: CaptionConfig): void {
-    const configPath = join(this.userDataPath, 'caption-config.json')
-    writeFileSync(configPath, JSON.stringify(config, null, 2))
-  }
-
-  private getCaptionPrompt(lang: CaptionLanguage): { system: string; user: string } {
-    if (lang === 'zh') {
-      return {
-        system: '你是一个图片描述助手。只输出描述内容，不要解释。',
-        user: '用一句详细的中文描述这张图片。',
-      }
-    }
-    return {
-      system: 'You are an image captioning assistant. Respond with only the caption, no explanations.',
-      user: 'Describe this image in one detailed sentence.',
-    }
-  }
-
-  /** 为指定 hash 重新生成 caption（公开方法，供 IPC 调用） */
-  async regenerateCaption(fileHash: string, filePath: string): Promise<string | null> {
-    const manager = getLlamaServerManager()
-    await manager.ensureModel('caption')
-
-    const imageBuffer = await readFile(filePath)
-    const base64Image = imageBuffer.toString('base64')
-    const mimeType = this.detectMimeType(imageBuffer)
-    const { language } = this.getCaptionConfig()
-    const prompt = this.getCaptionPrompt(language)
-
-    const response = await manager.chatCompletion({
-      model: 'qwen3.5-4b',
-      messages: [
-        { role: 'system', content: prompt.system },
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } },
-            { type: 'text', text: prompt.user },
-          ],
-        },
-      ],
-      max_tokens: 512,
-      temperature: 0.3,
-    })
-
-    const message = response.choices[0]?.message
-    let caption = message?.content?.trim()
-    if (!caption && message?.reasoning_content) {
-      caption = this.extractCaptionFromReasoning(message.reasoning_content)
-    }
-    if (caption) {
-      caption = this.stripThinkingContent(caption)
-    }
-    if (!caption) return null
-
-    this.db.saveCaption(fileHash, caption)
-    return caption
-  }
-
   /** 手动触发人脸扫描 */
   async startFaceScan(): Promise<{ queued: number }> {
-    // 初始化人脸模型
     const ready = await initFaceService()
     if (!ready) {
       throw new Error('Face models not available')
@@ -117,7 +50,6 @@ export class Indexer extends EventEmitter {
     return { queued: pending.length }
   }
 
-  /** 处理单张照片的人脸检测 */
   private async processFace(fileHash: string, filePath: string): Promise<void> {
     try {
       if (this.db.hasFacesForHash(fileHash)) {
@@ -133,7 +65,6 @@ export class Indexer extends EventEmitter {
       const faces = await processPhotoFaces(imageBuffer)
 
       for (const face of faces) {
-        // 保存人脸数据
         const faceId = this.db.saveFace(
           fileHash,
           face.faceIndex,
@@ -142,7 +73,6 @@ export class Indexer extends EventEmitter {
           face.embedding
         )
 
-        // 增量匹配：立即为这张脸分配 person
         assignFaceToPerson(this.db, faceId, face.embedding)
       }
 
@@ -169,14 +99,6 @@ export class Indexer extends EventEmitter {
       // ignore preload failure
     } finally {
       this.modelsLoading = false
-    }
-  }
-
-  private isCaptionModelReady(): boolean {
-    try {
-      return getLlamaServerManager().isModelLoaded('caption')
-    } catch {
-      return false
     }
   }
 
@@ -217,24 +139,13 @@ export class Indexer extends EventEmitter {
       } else if (task.taskType === 'embed') {
         this.emitProgress('indexing', photo.fileName)
         await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
-        if (photo.captionStatus !== 'done') {
-          this.db.addToQueue(task.photoId, 'caption', 5)
-        }
         this.db.completeTask(task.id)
       } else if (task.taskType === 'face') {
         this.emitProgress('detecting_faces', photo.fileName)
         await this.processFace(photo.fileHash, photo.filePath)
         this.db.completeTask(task.id)
       } else if (task.taskType === 'caption') {
-        const nextTask = this.db.peekNextTask()
-        if (nextTask && nextTask.taskType === 'embed') {
-          this.db.resetTask(task.id)
-          this.isProcessing = false
-          setImmediate(() => this.processNext())
-          return
-        }
-        this.emitProgress('captioning', photo.fileName)
-        await this.processCaption(photo.fileHash, photo.filePath)
+        // legacy 队列条目：直接 drop（v0.2 不再生成 caption）
         this.db.completeTask(task.id)
       }
     } catch (error) {
@@ -249,10 +160,8 @@ export class Indexer extends EventEmitter {
 
   private async processThumbnail(fileHash: string, filePath: string, photoId: number): Promise<void> {
     try {
-      // 如果该 hash 的缩略图已存在，跳过
       const thumbnailPath = this.getThumbnailPath(fileHash)
       if (existsSync(thumbnailPath)) {
-        // 但仍需解析 EXIF 更新当前 photo 的元数据
         const imageBuffer = await readFile(filePath)
         await this.parseAndUpdateMeta(photoId, imageBuffer)
         return
@@ -289,7 +198,6 @@ export class Indexer extends EventEmitter {
 
   private async processEmbedding(fileHash: string, filePath: string, photoId: number): Promise<void> {
     try {
-      // 如果该 hash 已有 embedding，跳过
       const { hasEmbedding } = this.db.hasContentForHash(fileHash)
       if (hasEmbedding) {
         this.db.updateEmbedStatusByHash(fileHash)
@@ -317,95 +225,10 @@ export class Indexer extends EventEmitter {
     }
   }
 
-  private async processCaption(fileHash: string, filePath: string): Promise<void> {
-    try {
-      // 如果该 hash 已有 caption，跳过
-      const { hasCaption } = this.db.hasContentForHash(fileHash)
-      if (hasCaption) {
-        this.db.updateCaptionStatusByHash(fileHash)
-        return
-      }
-
-      const manager = getLlamaServerManager()
-      await manager.ensureModel('caption')
-
-      const imageBuffer = await readFile(filePath)
-      const base64Image = imageBuffer.toString('base64')
-      const mimeType = this.detectMimeType(imageBuffer)
-      const { language } = this.getCaptionConfig()
-      const prompt = this.getCaptionPrompt(language)
-
-      const response = await manager.chatCompletion({
-        model: 'qwen3.5-4b',
-        messages: [
-          { role: 'system', content: prompt.system },
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } },
-              { type: 'text', text: prompt.user },
-            ],
-          },
-        ],
-        max_tokens: 512,
-        temperature: 0.3,
-      })
-
-      const message = response.choices[0]?.message
-      let caption = message?.content?.trim()
-
-      if (!caption && message?.reasoning_content) {
-        caption = this.extractCaptionFromReasoning(message.reasoning_content)
-      }
-
-      if (!caption) {
-        console.warn(`No caption generated for ${filePath}`)
-        return
-      }
-
-      caption = this.stripThinkingContent(caption)
-      if (!caption) {
-        console.warn(`No caption after stripping thinking for ${filePath}`)
-        return
-      }
-
-      this.db.saveCaption(fileHash, caption)
-    } catch (error) {
-      console.error(`Error processing caption for ${filePath}:`, error)
-      throw error
-    }
-  }
-
-  private stripThinkingContent(content: string): string {
-    return content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-  }
-
-  private extractCaptionFromReasoning(reasoning: string): string {
-    const lines = reasoning.split('\n')
-    const descriptions: string[] = []
-    for (const line of lines) {
-      if (line.includes('subject:') || line.includes('outfit:') ||
-          line.includes('setting:') || line.includes('background:')) {
-        const match = line.match(/:\s*(.+)/)
-        if (match && match[1]) descriptions.push(match[1].trim())
-      }
-    }
-    if (descriptions.length > 0) return descriptions.join(' ').replace(/\*\*/g, '').trim()
-    const cleaned = reasoning.replace(/\*\*/g, '').replace(/\n+/g, ' ').trim()
-    return cleaned.length > 200 ? cleaned.substring(0, 200) + '...' : cleaned
-  }
-
-  private detectMimeType(buffer: Buffer): string {
-    if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'image/png'
-    if (buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
-    if (buffer[8] === 0x57 && buffer[9] === 0x45) return 'image/webp'
-    if (buffer[0] === 0x47 && buffer[1] === 0x49) return 'image/gif'
-    return 'image/jpeg'
-  }
-
   private async generateThumbnail(fileHash: string, imageBuffer: Buffer): Promise<void> {
     const thumbnailPath = this.getThumbnailPath(fileHash)
     await sharp(imageBuffer)
+      .rotate() // 按 EXIF orientation 自动旋转（修复 iPhone 竖拍）
       .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 80 })
       .toFile(thumbnailPath)
@@ -417,7 +240,7 @@ export class Indexer extends EventEmitter {
       totalPhotos: photoStats.uniqueTotal,
       thumbnailedPhotos: photoStats.thumbnailed,
       indexedPhotos: photoStats.indexed,
-      captionedPhotos: photoStats.captioned,
+      captionedPhotos: photoStats.captioned, // 字段保留为 0（未来 OCR 填）
       stage,
       currentFile,
       aiModelReady: getEmbeddingService().isReady(),

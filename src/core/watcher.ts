@@ -121,21 +121,15 @@ export class FileWatcher {
 
       const photoId = this.db.addPhoto(folderId, filePath, fileName, stats.size, stats.mtimeMs, fileHash)
 
-      // 检查该 hash 是否已有内容（缩略图/embedding/caption）
-      const { hasEmbedding, hasCaption } = this.db.hasContentForHash(fileHash)
+      // v0.2：流水线是 thumbnail → embed（caption 不再自动生成）
+      const { hasEmbedding } = this.db.hasContentForHash(fileHash)
 
-      if (hasEmbedding && hasCaption) {
-        // 重复照片：资源已存在，直接标记完成
-        this.db.markDuplicateProcessed(photoId)
-        this.indexer.emitProgressPublic()
-      } else if (hasEmbedding) {
-        // 有 embedding 但无 caption
+      if (hasEmbedding) {
+        // 同内容已有 embedding，仅补缩略图（如缺）
         this.db.updateEmbedStatusByHash(fileHash)
         this.db.addToQueue(photoId, 'thumbnail', 20)
-        this.db.addToQueue(photoId, 'caption', 5)
         this.indexer.processNext()
       } else {
-        // 全新内容：需要完整处理
         this.db.addToQueue(photoId, 'thumbnail', 20)
         this.db.addToQueue(photoId, 'embed', 10)
         this.indexer.processNext()
