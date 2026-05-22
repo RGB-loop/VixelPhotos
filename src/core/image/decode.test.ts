@@ -25,4 +25,37 @@ describe('decodeImage routing logic', () => {
     // 只检查 helper 与实际 platform 一致，不硬编码期望值
     expect(__internal.isPlatformSupportedForRaw()).toBe(process.platform === 'darwin')
   })
+
+  it('classifies only HEIC/HEIF as heic-convert formats (RAW does not go through libheif)', () => {
+    expect(__internal.isHeicConvertFormat('.heic')).toBe(true)
+    expect(__internal.isHeicConvertFormat('.HEIF')).toBe(true)
+    for (const ext of ['.cr2', '.nef', '.arw', '.dng', '.raf']) {
+      expect(__internal.isHeicConvertFormat(ext)).toBe(false)
+    }
+  })
+
+  it('supportedFallbacks: HEIC has both paths on macOS, only heic-convert on Linux/Win', () => {
+    const heicFallbacks = __internal.supportedFallbacks('.heic')
+    if (process.platform === 'darwin') {
+      // sips 比 heic-convert 快，应排第一
+      expect(heicFallbacks).toEqual(['sips', 'heic-convert'])
+    } else {
+      expect(heicFallbacks).toEqual(['heic-convert'])
+    }
+  })
+
+  it('supportedFallbacks: RAW only has sips path on macOS, empty on Linux/Win', () => {
+    const cr2Fallbacks = __internal.supportedFallbacks('.cr2')
+    if (process.platform === 'darwin') {
+      expect(cr2Fallbacks).toEqual(['sips'])
+    } else {
+      expect(cr2Fallbacks).toEqual([])
+    }
+  })
+
+  it('supportedFallbacks: formats sharp handles directly need no fallback', () => {
+    for (const ext of ['.jpg', '.png', '.webp', '.gif', '.tiff', '.bmp', '.avif']) {
+      expect(__internal.supportedFallbacks(ext)).toEqual([])
+    }
+  })
 })
