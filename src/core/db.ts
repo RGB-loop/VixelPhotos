@@ -150,6 +150,12 @@ CREATE TABLE IF NOT EXISTS people (
   face_count  INTEGER DEFAULT 0,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 内部状态 / 一次性迁移标记
+CREATE TABLE IF NOT EXISTS meta_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `
 
 export interface DatabaseInstance {
@@ -300,6 +306,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   if (options?.runCleanup !== false) {
     cleanupStaleVecMap(db)
   }
+
+  // 历史数据：把 unicode61-切的 FTS5 内容用 jieba 重切一遍
+  rebuildFtsIndicesIfNeeded(db)
 
   const stmts = {
     addFolder: db.prepare(`
@@ -1047,6 +1056,50 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     close: (): void => { db.close() },
+  }
+}
+
+/**
+ * 把 captions_fts / image_ocr_fts 里的旧（unicode61 字符级）内容用
+ * jiebatok() 重切一遍。仅在首次发现迁移未完成时执行；标志写入 meta_state。
+ *
+ * 操作以事务包裹，避免半完成状态。
+ */
+function rebuildFtsIndicesIfNeeded(db: Database.Database): void {
+  try {
+    const FLAG = 'fts5_jieba_rebuilt_v1'
+    const row = db
+      .prepare(`SELECT value FROM meta_state WHERE key = ?`)
+      .get(FLAG) as { value?: string } | undefined
+    if (row?.value === '1') return // already done
+
+    const captionCount = (db
+      .prepare(`SELECT COUNT(*) as n FROM captions`)
+      .get() as { n: number }).n
+    const ocrCount = (db
+      .prepare(`SELECT COUNT(*) as n FROM image_ocr`)
+      .get() as { n: number }).n
+    if (captionCount === 0 && ocrCount === 0) {
+      // 没数据要重建；直接打标记
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
+      return
+    }
+
+    console.log(`[migrate] rebuilding FTS5 indices with jieba (captions=${captionCount}, ocr=${ocrCount})`)
+    const tx = db.transaction(() => {
+      // captions
+      db.exec(`DELETE FROM captions_fts`)
+      db.exec(`INSERT INTO captions_fts(rowid, text) SELECT id, jiebatok(text) FROM captions`)
+      // image_ocr
+      db.exec(`DELETE FROM image_ocr_fts`)
+      db.exec(`INSERT INTO image_ocr_fts(rowid, text) SELECT id, jiebatok(text) FROM image_ocr`)
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
+    })
+    tx()
+    console.log('[migrate] FTS5 rebuild done')
+  } catch (err) {
+    // 失败不致命：搜索仍按旧 token 工作；下次启动会再试
+    console.warn('[migrate] FTS5 jieba rebuild failed:', err)
   }
 }
 
