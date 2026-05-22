@@ -326,6 +326,17 @@ export interface DatabaseInstance {
   softDeleteVideo: (path: string) => void
   getFramePhotosByVideo: (videoId: number) => Photo[]
 
+  // 备份
+  /**
+   * 用 SQLite online backup API 将 library.db 复制到 destPath。
+   * better-sqlite3 的 .backup() 是异步、安全 — 不阻塞读写，WAL 模式兼容。
+   */
+  backupTo: (destPath: string) => Promise<void>
+  /** 读取 meta_state 任一键（备份时间戳等小状态） */
+  getMetaState: (key: string) => string | undefined
+  /** 写入 meta_state 任一键 */
+  setMetaState: (key: string, value: string) => void
+
   // 关闭
   close: () => void
 }
@@ -1264,6 +1275,20 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     getFramePhotosByVideo: (videoId) => {
       return stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+    },
+
+    backupTo: async (destPath: string): Promise<void> => {
+      // 复用 better-sqlite3 的 Online Backup（不阻塞读写、安全跨进程）
+      await db.backup(destPath)
+    },
+    getMetaState: (key: string): string | undefined => {
+      const row = db.prepare(`SELECT value FROM meta_state WHERE key = ?`).get(key) as
+        | { value?: string }
+        | undefined
+      return row?.value
+    },
+    setMetaState: (key: string, value: string): void => {
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, ?)`).run(key, value)
     },
 
     close: (): void => { db.close() },
