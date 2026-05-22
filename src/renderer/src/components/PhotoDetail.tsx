@@ -1,13 +1,15 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import type { Photo, PhotoDetail as PhotoDetailType, PhotoLocation, SearchResult } from '../../../shared/types'
 
 interface PhotoDetailProps {
   photo: Photo
+  /** 当前结果集，用于 ← → 键翻浏览 */
+  siblings?: SearchResult[]
   onSelect: (photo: Photo) => void
   onClose: () => void
 }
 
-export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX.Element {
+export function PhotoDetail({ photo, siblings, onSelect, onClose }: PhotoDetailProps): JSX.Element {
   const [detail, setDetail] = useState<PhotoDetailType | null>(null)
   const [imageUrl, setImageUrl] = useState<string>('')
   const [locations, setLocations] = useState<PhotoLocation[]>([])
@@ -50,6 +52,32 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
     }
   }, [])
 
+  // 当前照片在 siblings 中的位置，决定 ← → 是否可用
+  const currentIndex = useMemo(() => {
+    if (!siblings) return -1
+    return siblings.findIndex((r) => r.photo.id === photo.id)
+  }, [siblings, photo.id])
+  const hasPrev = currentIndex > 0
+  const hasNext = siblings != null && currentIndex >= 0 && currentIndex < siblings.length - 1
+
+  // 键盘导航：← / → 在 siblings 中切换；忽略输入框中的按键
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent): void => {
+      // 编辑 caption 时不抢键盘
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+      if (e.key === 'ArrowLeft' && hasPrev && siblings) {
+        e.preventDefault()
+        onSelect(siblings[currentIndex - 1].photo)
+      } else if (e.key === 'ArrowRight' && hasNext && siblings) {
+        e.preventDefault()
+        onSelect(siblings[currentIndex + 1].photo)
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [siblings, currentIndex, hasPrev, hasNext, onSelect])
+
   const handleBackdropClick = (e: React.MouseEvent): void => {
     if (e.target === e.currentTarget) {
       onClose()
@@ -62,13 +90,44 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
       onClick={handleBackdropClick}
     >
       {/* 图片预览区域 */}
-      <div className="flex-1 flex items-center justify-center p-8">
+      <div className="flex-1 flex items-center justify-center p-8 relative">
         {imageUrl && (
           <img
             src={imageUrl}
             alt={photo.fileName}
             className="max-w-full max-h-full object-contain animate-fade-in"
           />
+        )}
+
+        {/* ← → 翻浏览按钮（仅当 siblings 提供且不在边缘时显示） */}
+        {hasPrev && siblings && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(siblings[currentIndex - 1].photo) }}
+            className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-sm flex items-center justify-center transition-colors"
+            title="上一张 (←)"
+          >
+            <svg className="w-5 h-5 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+        {hasNext && siblings && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(siblings[currentIndex + 1].photo) }}
+            className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-sm flex items-center justify-center transition-colors"
+            title="下一张 (→)"
+          >
+            <svg className="w-5 h-5 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+
+        {/* 位置指示 "3 / 50" */}
+        {siblings && currentIndex >= 0 && (
+          <div className="absolute top-4 left-4 px-2 py-1 rounded bg-black/40 backdrop-blur-sm text-white/70 text-[11px] tabular-nums pointer-events-none">
+            {currentIndex + 1} / {siblings.length}
+          </div>
         )}
       </div>
 

@@ -297,7 +297,12 @@ function App(): JSX.Element {
 
       {/* 照片详情 */}
       {selectedPhoto && (
-        <PhotoDetail photo={selectedPhoto} onSelect={handleSelectPhoto} onClose={handleCloseDetail} />
+        <PhotoDetail
+          photo={selectedPhoto}
+          siblings={viewMode === 'grid' ? searchResults : undefined}
+          onSelect={handleSelectPhoto}
+          onClose={handleCloseDetail}
+        />
       )}
 
       {/* 设置面板 */}
