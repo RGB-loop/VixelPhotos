@@ -120,49 +120,75 @@ export async function processPhotoFaces(
  * 增量匹配：为一张新脸找到最合适的 person，或创建新 person
  *
  * 算法（Immich 风格）：
- * 1. 加载所有已有 face embeddings
- * 2. 计算新脸与所有已有脸的余弦距离
- * 3. 找到距离最近的已有脸
- * 4. 如果距离 ≤ MAX_DISTANCE 且该脸有 person_id → 归入同一 person
- * 5. 否则 → 创建新 person
+ * 1. 用 sqlite-vec ANN 取 top-K 最近的已有脸（O(log N)）
+ * 2. 取第一个 distance ≤ 阈值且带 person_id 的候选
+ * 3. 找不到则创建新 person
+ *
+ * 如 ANN 返回空（旧库未 backfill / 维度不匹配），退回 JS 全量扫。
+ *
+ * 阈值说明：sqlite-vec 默认对 L2-normalized 向量返回 L2 距离；
+ *   ||a - b||² = 2(1 - cos(a,b))   →   d_L2 = √(2(1 - cos))
+ * 对 cos=0.4（旧阈值对应的相似度），d_L2 ≈ 1.095 — 我们仍沿用 0.6
+ * 作为 cosine 距离阈值，对 ANN 候选先按 L2 升序取，再换算到 cos
+ * 距离比较，保持与历史行为一致。
  */
 export function assignFaceToPerson(
   db: DatabaseInstance,
   faceId: number,
   embedding: Float32Array
 ): number {
-  const allFaces = db.getAllFaceEmbeddings()
+  const candidates = db.searchFaceKnn(embedding, 10, faceId)
 
-  let bestPersonId: number | null = null
-  let bestDistance = Infinity
+  let best: { personId: number | null; cosDistance: number } | null = null
 
-  for (const existing of allFaces) {
-    if (existing.id === faceId) continue // 跳过自身
-
-    // 余弦距离 = 1 - dot(a, b)（已 L2 归一化）
-    let dot = 0
-    for (let i = 0; i < embedding.length && i < existing.embedding.length; i++) {
-      dot += embedding[i] * existing.embedding[i]
+  if (candidates.length > 0) {
+    // 把 vec0 的 L2 距离换成 cos 距离：cos_dist = (L2² / 2)
+    for (const c of candidates) {
+      const cosDistance = (c.distance * c.distance) / 2
+      if (cosDistance > MAX_DISTANCE) break // 已按 L2 升序，余下只会更远
+      if (c.personId != null) {
+        best = { personId: c.personId, cosDistance }
+        break
+      }
     }
-    const distance = 1 - dot
-
-    if (distance < bestDistance) {
-      bestDistance = distance
-      bestPersonId = existing.personId ?? null
-    }
+  } else {
+    // ANN 不可用 → 退回原始 JS 全量扫
+    best = bruteForceNearest(db, faceId, embedding)
   }
 
-  if (bestPersonId !== null && bestDistance <= MAX_DISTANCE) {
-    // 归入已有人物
-    db.setFacePersonId(faceId, bestPersonId)
-    db.updatePersonFaceCount(bestPersonId)
-    return bestPersonId
+  if (best && best.personId != null && best.cosDistance <= MAX_DISTANCE) {
+    db.setFacePersonId(faceId, best.personId)
+    db.updatePersonFaceCount(best.personId)
+    return best.personId
   }
 
-  // 创建新人物
   const personId = db.createPerson(faceId)
   db.setFacePersonId(faceId, personId)
   return personId
+}
+
+/** O(N) 兜底路径：仅在 face_vecs 不可用时触发。 */
+function bruteForceNearest(
+  db: DatabaseInstance,
+  faceId: number,
+  embedding: Float32Array
+): { personId: number | null; cosDistance: number } | null {
+  const allFaces = db.getAllFaceEmbeddings()
+  let bestPersonId: number | null = null
+  let bestCos = Infinity
+  for (const existing of allFaces) {
+    if (existing.id === faceId) continue
+    let dot = 0
+    const n = Math.min(embedding.length, existing.embedding.length)
+    for (let i = 0; i < n; i++) dot += embedding[i] * existing.embedding[i]
+    const cosDistance = 1 - dot
+    if (cosDistance < bestCos) {
+      bestCos = cosDistance
+      bestPersonId = existing.personId ?? null
+    }
+  }
+  if (bestPersonId === null) return null
+  return { personId: bestPersonId, cosDistance: bestCos }
 }
 
 /**
