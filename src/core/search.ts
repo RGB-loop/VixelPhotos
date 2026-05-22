@@ -99,12 +99,22 @@ export class SearchEngine {
   }
 
   findSimilar(fileHash: string, limit: number = 12): SearchResult[] {
-    const results = this.db.findSimilar(fileHash, limit)
+    // 取超采，因为下面会按 hash + video 去重，可能丢一部分
+    const results = this.db.findSimilar(fileHash, limit * 3)
     const photos: SearchResult[] = []
+    const seenHashes = new Set<string>([fileHash]) // 排除查询本身
+    const seenVideos = new Set<number>()
     for (const { fileHash: hash, distance } of results) {
+      if (seenHashes.has(hash)) continue
+      seenHashes.add(hash)
       const photo = this.db.getRepresentativeByHash(hash)
       if (photo && !photo.deletedAt) {
+        if (photo.videoId != null) {
+          if (seenVideos.has(photo.videoId)) continue
+          seenVideos.add(photo.videoId)
+        }
         photos.push({ photo, score: 1 - distance })
+        if (photos.length >= limit) break
       }
     }
     return photos
