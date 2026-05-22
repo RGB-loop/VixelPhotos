@@ -72,6 +72,7 @@ export class SearchEngine {
 
       const results: SearchResult[] = []
       const seenHashes = new Set<string>()
+      const seenVideos = new Set<number>()
       for (const { fileHash, score } of mergedResults) {
         if (seenHashes.has(fileHash)) continue
         seenHashes.add(fileHash)
@@ -80,6 +81,11 @@ export class SearchEngine {
         if (photo && !photo.deletedAt) {
           if (dateFrom && photo.takenAt && photo.takenAt < dateFrom) continue
           if (dateTo && photo.takenAt && photo.takenAt > dateTo) continue
+          // 视频去重：同一视频的多个帧只保留首个（已按 score 降序，所以是最佳帧）
+          if (photo.videoId != null) {
+            if (seenVideos.has(photo.videoId)) continue
+            seenVideos.add(photo.videoId)
+          }
           results.push({ photo, score })
           if (results.length >= limit) break
         }
