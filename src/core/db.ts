@@ -198,12 +198,15 @@ export interface DatabaseInstance {
   getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number }
 
   // 内容操作（按 file_hash 共享）
-  hasContentForHash: (fileHash: string) => { hasEmbedding: boolean; hasCaption: boolean }
+  hasContentForHash: (fileHash: string) => { hasEmbedding: boolean; hasCaption: boolean; hasOcr: boolean }
   saveImageVec: (fileHash: string, embedding: Float32Array) => void
   updateEmbedStatusByHash: (fileHash: string) => void
   saveCaption: (fileHash: string, text: string) => void
   updateCaptionStatusByHash: (fileHash: string) => void
   getCaption: (fileHash: string) => string | undefined
+  saveOcrText: (fileHash: string, text: string) => void
+  getOcrText: (fileHash: string) => string | undefined
+  getPendingOcrPhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
   deleteContentByHash: (fileHash: string) => void
 
   // 搜索
@@ -219,6 +222,10 @@ export interface DatabaseInstance {
     query: string,
     limit: number
   ) => Array<{ fileHash: string }>
+  searchByOcr: (
+    query: string,
+    limit: number
+  ) => Array<{ fileHash: string; score: number }>
   getRepresentativeByHash: (fileHash: string) => Photo | undefined
   getRepresentativePhotosFiltered: (
     limit: number,
@@ -483,6 +490,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       WHERE m.file_hash = ?
     `),
     hasCaptionForHash: db.prepare(`SELECT 1 FROM captions WHERE file_hash = ?`),
+    hasOcrForHash: db.prepare(`SELECT 1 FROM image_ocr WHERE file_hash = ?`),
     insertVecMap: db.prepare(`
       INSERT OR IGNORE INTO image_vec_map (file_hash) VALUES (?)
     `),
@@ -507,6 +515,23 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       UPDATE photos SET caption_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
     `),
     getCaption: db.prepare(`SELECT text FROM captions WHERE file_hash = ?`),
+    saveOcrText: db.prepare(`
+      INSERT INTO image_ocr (file_hash, text) VALUES (?, ?)
+      ON CONFLICT(file_hash) DO UPDATE SET text = excluded.text, detected_at = CURRENT_TIMESTAMP
+    `),
+    getOcrText: db.prepare(`SELECT text FROM image_ocr WHERE file_hash = ?`),
+    deleteOcrByHash: db.prepare(`DELETE FROM image_ocr WHERE file_hash = ?`),
+    // 等待 OCR 的照片：已有 embedding 但还没 OCR 结果
+    getPendingOcrPhotos: db.prepare(`
+      SELECT p.id, p.file_hash as fileHash, p.file_path as filePath
+      FROM photos p
+      WHERE p.deleted_at IS NULL
+        AND p.file_hash IS NOT NULL
+        AND p.embed_status = 'done'
+        AND p.file_hash NOT IN (SELECT file_hash FROM image_ocr)
+        AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'ocr' AND status IN ('pending', 'processing'))
+      GROUP BY p.file_hash
+    `),
     deleteImageVecByHash: db.prepare(`SELECT rowid FROM image_vec_map WHERE file_hash = ?`), // used to get rowid for vec deletion
     deleteCaptionByHash: db.prepare(`DELETE FROM captions WHERE file_hash = ?`),
 
@@ -539,6 +564,15 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     searchByFileName: db.prepare(`
       SELECT DISTINCT file_hash FROM photos
       WHERE deleted_at IS NULL AND (file_name LIKE ? OR file_path LIKE ?)
+      LIMIT ?
+    `),
+    // OCR 全文搜索（FTS5 BM25）
+    searchByOcr: db.prepare(`
+      SELECT o.file_hash, bm25(image_ocr_fts) as score
+      FROM image_ocr_fts
+      JOIN image_ocr o ON image_ocr_fts.rowid = o.id
+      WHERE image_ocr_fts MATCH ?
+      ORDER BY score
       LIMIT ?
     `),
     // 带时间过滤的代表照片查询
@@ -800,6 +834,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return {
         hasEmbedding: !!stmts.hasEmbeddingForHash.get(fileHash),
         hasCaption: !!stmts.hasCaptionForHash.get(fileHash),
+        hasOcr: !!stmts.hasOcrForHash.get(fileHash),
       }
     },
     saveImageVec: (fileHash: string, embedding: Float32Array): void => {
@@ -838,6 +873,16 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       const result = stmts.getCaption.get(fileHash) as { text: string } | undefined
       return result?.text
     },
+    saveOcrText: (fileHash: string, text: string): void => {
+      stmts.saveOcrText.run(fileHash, text)
+    },
+    getOcrText: (fileHash: string): string | undefined => {
+      const result = stmts.getOcrText.get(fileHash) as { text: string } | undefined
+      return result?.text
+    },
+    getPendingOcrPhotos: () => {
+      return stmts.getPendingOcrPhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
+    },
     deleteContentByHash: (fileHash: string): void => {
       // 删除向量：先查 rowid，再删 vec0 行和映射
       const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: bigint | number } | undefined
@@ -846,6 +891,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         stmts.deleteVecMapByHash.run(fileHash)
       }
       stmts.deleteCaptionByHash.run(fileHash)
+      stmts.deleteOcrByHash.run(fileHash)
     },
 
     searchByVec: (queryVec, limit) => {
@@ -877,6 +923,16 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       const pattern = `%${query}%`
       const results = stmts.searchByFileName.all(pattern, pattern, limit) as Array<{ file_hash: string }>
       return results.map((r) => ({ fileHash: r.file_hash }))
+    },
+    searchByOcr: (query, limit) => {
+      try {
+        const ftsQuery = query.trim().split(/\s+/).map((w) => `"${w}"`).join(' OR ')
+        const results = stmts.searchByOcr.all(ftsQuery, limit) as Array<{ file_hash: string; score: number }>
+        return results.map((row) => ({ fileHash: row.file_hash, score: Math.abs(row.score) }))
+      } catch (error) {
+        console.error('OCR search error:', error)
+        return []
+      }
     },
     getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo) => {
       return stmts.getRepresentativePhotosFiltered.all(
