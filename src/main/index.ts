@@ -10,6 +10,7 @@ import { SearchEngine } from '../core/search'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
 import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
+import { preloadJieba } from '../core/text/tokenize'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox } from '../shared/types'
 
 // 全局服务实例
@@ -86,7 +87,11 @@ async function initServices(): Promise<void> {
     watcher.watchFolder(folder.id, folder.path)
   }
 
-  // 后台预加载 SigLIP 2（首次推理可能 2-5s 慢启动）
+  // 后台预加载：
+  //   - jieba 首次切词约 150 ms，提前热掉避免第一次写入/搜索阻塞 SQLite 触发器
+  //   - SigLIP 2 首次推理 2-5 s，预拉模型权重到内存
+  // 都是 fire-and-forget，失败不阻塞应用。
+  preloadJieba().catch(() => {})
   setTimeout(() => {
     indexer.preloadModels().catch(() => {})
   }, 2000)
