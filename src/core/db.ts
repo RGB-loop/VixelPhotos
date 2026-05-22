@@ -3,6 +3,7 @@ import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
 import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../shared/types'
+import { tokenizeForFtsSync } from './text/tokenize'
 
 // 向量维度 - SigLIP 2 base/16-256
 // 旧版用 2048 (Qwen3-VL-Embedding API)；migrateVectorDimension 会自动迁移
@@ -86,15 +87,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS captions_fts USING fts5(
 );
 
 -- FTS5 同步触发器（standalone FTS5 用普通 INSERT/DELETE）
+-- jiebatok(text) UDF 在 better-sqlite3 启动时注册，做 CJK 分词，
+-- ASCII 文本透传，jieba 不可用时回退为原文。
 CREATE TRIGGER IF NOT EXISTS captions_ai AFTER INSERT ON captions BEGIN
-  INSERT INTO captions_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
 END;
 CREATE TRIGGER IF NOT EXISTS captions_ad AFTER DELETE ON captions BEGIN
   DELETE FROM captions_fts WHERE rowid = old.id;
 END;
 CREATE TRIGGER IF NOT EXISTS captions_au AFTER UPDATE ON captions BEGIN
   DELETE FROM captions_fts WHERE rowid = old.id;
-  INSERT INTO captions_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
 END;
 
 -- OCR 文本表（按 file_hash 去重共享）
@@ -113,14 +116,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS image_ocr_fts USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS image_ocr_ai AFTER INSERT ON image_ocr BEGIN
-  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
 END;
 CREATE TRIGGER IF NOT EXISTS image_ocr_ad AFTER DELETE ON image_ocr BEGIN
   DELETE FROM image_ocr_fts WHERE rowid = old.id;
 END;
 CREATE TRIGGER IF NOT EXISTS image_ocr_au AFTER UPDATE ON image_ocr BEGIN
   DELETE FROM image_ocr_fts WHERE rowid = old.id;
-  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
 END;
 
 -- 人脸表
@@ -274,10 +277,18 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   sqliteVec.load(db)
   console.log('sqlite-vec loaded:', (db.prepare('select vec_version()').get() as Record<string, string>)['vec_version()'])
 
+  // 注册 jiebatok(text) UDF —— FTS5 触发器调用它做 CJK 分词。
+  // deterministic: true 允许 SQLite 缓存结果（同一文本只切一次）。
+  db.function('jiebatok', { deterministic: true, varargs: false }, (text: unknown): string => {
+    if (typeof text !== 'string' || text.length === 0) return ''
+    return tokenizeForFtsSync(text)
+  })
+
   // 检测旧 schema 并迁移
   migrateIfNeeded(db)
   migrateToVec0(db)
   migrateVectorDimension(db, EMBEDDING_DIM)
+  migrateFtsTriggersToJieba(db)
 
   db.exec(SCHEMA)
 
@@ -1034,6 +1045,31 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     close: (): void => { db.close() },
+  }
+}
+
+/**
+ * 升级旧库的 FTS5 触发器：把 `new.text` 替换成 `jiebatok(new.text)`。
+ *
+ * 通过 sqlite_master.sql 的内容判断触发器是否已经包含 jiebatok 字串；
+ * 已包含则视为已迁移；否则 DROP+CREATE 写入新版本。
+ *
+ * 注意：这一步只换触发器，不重建已有 FTS5 行。PR4.4 会按需 rebuild。
+ */
+function migrateFtsTriggersToJieba(db: Database.Database): void {
+  const triggers = ['captions_ai', 'captions_au', 'image_ocr_ai', 'image_ocr_au']
+  for (const name of triggers) {
+    try {
+      const row = db
+        .prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`)
+        .get(name) as { sql?: string } | undefined
+      if (row?.sql && !row.sql.includes('jiebatok')) {
+        db.exec(`DROP TRIGGER IF EXISTS ${name}`)
+        // 让 SCHEMA 的 CREATE TRIGGER IF NOT EXISTS 在下游 db.exec(SCHEMA) 时创建新版
+      }
+    } catch (err) {
+      console.warn(`[migrate] could not migrate trigger ${name}:`, err)
+    }
   }
 }
 
