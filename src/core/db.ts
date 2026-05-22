@@ -924,7 +924,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     searchByText: (query, limit) => {
       try {
-        const ftsQuery = query.trim().split(/\s+/).map((w) => `"${w}"`).join(' OR ')
+        const ftsQuery = buildFtsQuery(query)
+        if (!ftsQuery) return []
         const results = stmts.searchByText.all(ftsQuery, limit) as Array<{ file_hash: string; score: number }>
         return results.map((row) => ({ fileHash: row.file_hash, score: Math.abs(row.score) }))
       } catch (error) {
@@ -939,7 +940,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     searchByOcr: (query, limit) => {
       try {
-        const ftsQuery = query.trim().split(/\s+/).map((w) => `"${w}"`).join(' OR ')
+        const ftsQuery = buildFtsQuery(query)
+        if (!ftsQuery) return []
         const results = stmts.searchByOcr.all(ftsQuery, limit) as Array<{ file_hash: string; score: number }>
         return results.map((row) => ({ fileHash: row.file_hash, score: Math.abs(row.score) }))
       } catch (error) {
@@ -1046,6 +1048,36 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     close: (): void => { db.close() },
   }
+}
+
+/**
+ * 把用户 query 转成 FTS5 安全的表达式：
+ *   1. 先经 jieba 切词（与写入侧使用相同 token 边界）
+ *   2. 过滤纯 FTS5 保留字符（NEAR/AND/OR/NOT 等）和 quote 字符，避免语法错
+ *   3. 每个 token 用双引号包裹，OR 拼接，纯空 query 返回 ''
+ *
+ * 例：
+ *   "iPhone 15"        → "iPhone" OR "15"
+ *   "海边日落"          → "海边" OR "日落"
+ *   "salary 2024-Q3"   → "salary" OR "2024" OR "Q3"        // - 被过滤
+ */
+function buildFtsQuery(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  const tokenized = tokenizeForFtsSync(trimmed)
+  const tokens = tokenized
+    .split(/\s+/)
+    .map((t) =>
+      t
+        // 去掉 FTS5 语法字符，防止 syntax error
+        .replace(/["()*+:<>{}^~-]/g, '')
+        // 去掉单独的 NEAR/AND/OR/NOT（FTS5 关键字）
+        .replace(/^(NEAR|AND|OR|NOT)$/i, '')
+        .trim()
+    )
+    .filter((t) => t.length > 0)
+  if (tokens.length === 0) return ''
+  return tokens.map((t) => `"${t}"`).join(' OR ')
 }
 
 /**
