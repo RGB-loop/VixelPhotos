@@ -257,12 +257,12 @@ return createNewPerson()
 
 ## 3. 数据存储设计
 
-### 3.1 数据库 Schema
+### 3.1 数据库 Schema（v0.2 实际）
 
 ```sql
--- library.db (SQLite + sqlite-vec, WAL mode)
+-- library.db (SQLite + sqlite-vec, WAL mode, busy_timeout=5000)
 
--- 监控文件夹表
+-- 监控文件夹
 CREATE TABLE watched_folders (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   path          TEXT NOT NULL UNIQUE,
@@ -271,7 +271,7 @@ CREATE TABLE watched_folders (
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 照片主表
+-- 照片主表（视频抽出的帧也是一行 photos，video_id 反向引用）
 CREATE TABLE photos (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   folder_id       INTEGER REFERENCES watched_folders(id),
@@ -287,113 +287,201 @@ CREATE TABLE photos (
   lng             REAL,
   embed_status    TEXT DEFAULT 'pending',
   caption_status  TEXT DEFAULT 'pending',
+  face_status     TEXT DEFAULT 'pending',     -- ALTER 加入
+  video_id        INTEGER REFERENCES videos(id), -- ALTER 加入；null=独立照片
+  frame_time_ms   INTEGER,                    -- ALTER 加入；视频帧时间戳
   deleted_at      DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX idx_photos_hash ON photos(file_hash);
-CREATE INDEX idx_photos_folder ON photos(folder_id);
-CREATE INDEX idx_photos_status ON photos(embed_status, caption_status);
+CREATE INDEX idx_photos_folder    ON photos(folder_id);
+CREATE INDEX idx_photos_status    ON photos(embed_status, caption_status);
+CREATE INDEX idx_photos_deleted   ON photos(deleted_at);
+CREATE INDEX idx_photos_file_hash ON photos(file_hash);
+CREATE INDEX idx_photos_video     ON photos(video_id);
 
 -- 索引任务队列
 CREATE TABLE index_queue (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  photo_id    INTEGER REFERENCES photos(id),
-  task_type   TEXT NOT NULL,
+  photo_id    INTEGER REFERENCES photos(id),  -- task_type='extract_frames' 时是 videos.id
+  task_type   TEXT NOT NULL,                  -- thumbnail/embed/face/ocr/extract_frames/caption(legacy)
   priority    INTEGER DEFAULT 0,
   status      TEXT DEFAULT 'pending',
   retry_count INTEGER DEFAULT 0,
   error_msg   TEXT,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX idx_queue_status ON index_queue(status, priority DESC);
 
--- 图像向量表（sqlite-vec 虚表）
-CREATE VIRTUAL TABLE image_vecs USING vec0(
-  photo_id    INTEGER PRIMARY KEY,
-  embedding   FLOAT[512]
-);
-
--- Caption 表
+-- Caption（用户手写；保留 schema 但 v0.2 indexer 不再自动写）
 CREATE TABLE captions (
-  photo_id    INTEGER PRIMARY KEY REFERENCES photos(id),
-  lang        TEXT DEFAULT 'zh',
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL UNIQUE,
+  lang        TEXT DEFAULT 'en',
   text        TEXT,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Caption 向量表
-CREATE VIRTUAL TABLE caption_vecs USING vec0(
-  photo_id    INTEGER PRIMARY KEY,
-  embedding   FLOAT[768]
+-- 图像向量（SigLIP 2，768d）
+-- vec0 要求 rowid 是整数；image_vec_map 把 file_hash → rowid 映射
+CREATE TABLE image_vec_map (
+  rowid     INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash TEXT NOT NULL UNIQUE
+);
+CREATE VIRTUAL TABLE image_vecs USING vec0(embedding FLOAT[768]);
+
+-- OCR 文本（按 file_hash 去重共享；独立于 captions）
+CREATE TABLE image_ocr (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL UNIQUE,
+  text        TEXT NOT NULL,
+  detected_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 全文搜索（FTS5）
-CREATE VIRTUAL TABLE captions_fts USING fts5(
-  text,
-  content=captions,
-  content_rowid=photo_id
+-- FTS5（unicode61，但插入/查询前由 jiebatok UDF 切词；中英都好）
+CREATE VIRTUAL TABLE captions_fts  USING fts5(text, tokenize='unicode61');
+CREATE VIRTUAL TABLE image_ocr_fts USING fts5(text, tokenize='unicode61');
+
+-- INSERT/UPDATE 触发器调用 jiebatok(new.text)
+CREATE TRIGGER captions_ai AFTER INSERT ON captions BEGIN
+  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
+END;
+-- (... 对应 _ad / _au；image_ocr 三份同型)
+
+-- 人脸
+CREATE TABLE faces (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL,
+  face_index  INTEGER NOT NULL,
+  bbox        TEXT NOT NULL,        -- JSON {x,y,w,h} 归一化
+  confidence  REAL NOT NULL,
+  embedding   BLOB NOT NULL,         -- source-of-truth；face_vecs 是 ANN 索引
+  person_id   INTEGER REFERENCES people(id),
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(file_hash, face_index)
 );
+CREATE INDEX idx_faces_file_hash ON faces(file_hash);
+CREATE INDEX idx_faces_person    ON faces(person_id);
+
+-- 人脸 ANN 索引（rowid == faces.id；无需 map 表）
+CREATE VIRTUAL TABLE face_vecs USING vec0(embedding FLOAT[128]);
+
+-- 人物
+CREATE TABLE people (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT,
+  cover_face_id INTEGER,
+  face_count    INTEGER DEFAULT 0,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 视频
+CREATE TABLE videos (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  folder_id    INTEGER REFERENCES watched_folders(id),
+  file_path    TEXT NOT NULL UNIQUE,
+  file_name    TEXT NOT NULL,
+  file_size    INTEGER NOT NULL,
+  file_mtime   INTEGER NOT NULL,
+  file_hash    TEXT,                -- 轻量哈希 (path|size|mtime)
+  duration_ms  INTEGER,
+  width        INTEGER,
+  height       INTEGER,
+  frame_count  INTEGER DEFAULT 0,
+  deleted_at   DATETIME,
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_videos_folder ON videos(folder_id);
+CREATE INDEX idx_videos_hash   ON videos(file_hash);
+
+-- 一次性迁移标记 / 内部状态
+CREATE TABLE meta_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+-- 已记录的 keys:
+--   fts5_jieba_rebuilt_v1            (PR4.4)
+--   face_vecs_backfilled_dim128_v1   (PR5.4)
 ```
 
-### 3.2 better-sqlite3 + sqlite-vec 集成
+### 3.2 中文分词 UDF：`jiebatok(text)`
 
 ```typescript
-// main/db/index.ts
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
-
-export function createDatabase(dbPath: string): Database.Database {
-  const db = new Database(dbPath);
-
-  // 启用 WAL 模式
-  db.pragma('journal_mode = WAL');
-
-  // 加载 sqlite-vec 扩展
-  sqliteVec.load(db);
-
-  return db;
-}
-
-// 向量搜索示例
-export function searchByVector(
-  db: Database.Database,
-  queryVec: Float32Array,
-  limit: number = 50
-): SearchResult[] {
-  const stmt = db.prepare(`
-    SELECT p.id, p.file_path, v.distance
-    FROM image_vecs v
-    JOIN photos p ON p.id = v.photo_id
-    WHERE v.embedding MATCH ?
-      AND v.k = ?
-    ORDER BY v.distance
-  `);
-
-  return stmt.all(queryVec, limit);
-}
+db.function('jiebatok', { deterministic: true, varargs: false }, (text) => {
+  if (typeof text !== 'string' || text.length === 0) return ''
+  return tokenizeForFtsSync(text)
+})
 ```
 
-### 3.3 文件布局
+`tokenizeForFtsSync` 内部：
+- 纯 ASCII：去多余空白返回
+- 含 CJK：交给 @node-rs/jieba `cutForSearch`（更宽召回）
+- jieba 加载失败：返回原文（FTS5 退化为 char-level，至少不丢数据）
+
+`deterministic: true` 让 SQLite 缓存重复输入的结果，触发器密集写入时显著省 CPU。
+
+### 3.3 向量搜索（4-way RRF）
+
+```typescript
+// src/core/search.ts （简化）
+const [vec, captionBm25, ocrBm25, fileName] = await Promise.all([
+  searchByVector(query, limit * 2),                // SigLIP 2 文本 → KNN
+  db.searchByText(query, limit * 2),               // captions_fts BM25
+  db.searchByOcr(query, limit * 2),                // image_ocr_fts BM25
+  db.searchByFileName(query, limit * 2),           // photos.file_name LIKE
+])
+const fused = rrfFuse([vec, captionBm25, ocrBm25, fileName], 60)
+```
+
+`rrfFuse` 是 `src/core/fusion.ts` 里的纯函数（带 7 个单测）。
+
+### 3.4 文件布局
 
 ```
-# macOS
+# macOS（生产）
+/Applications/Vixel.app/Contents/Resources/models/
+├── siglip2/         (~190 MB, q8 ONNX, 打进 DMG)
+├── paddleocr/       (~12 MB, 4 个 ONNX + ppocr_keys_v1.txt)
+├── scrfd_2.5g_kps.onnx
+└── mobilefacenet.onnx
+
+# 用户态
 ~/Library/Application Support/Vixel/
-├── library.db                     ← 主数据库
-├── models/
-│   ├── siglip2-vit-b16.onnx      ← 330MB
-│   ├── embedding-gemma-300m.onnx  ← 280MB
-│   └── qwen3.5-4b.Q4_K_M.gguf    ← 2.5GB
+├── library.db                     ← 主数据库 (WAL)
+├── library.db-wal
+├── library.db-shm
 ├── thumbnails/
-│   └── {photo_id}.webp
-└── logs/
-    └── app.log
-
-# Windows
-C:\Users\{user}\AppData\Roaming\Vixel\
+│   └── {file_hash}.webp           ← 共享去重缩略图
+├── video_frames/
+│   └── {videoHash}/{ms}.jpg       ← 每个视频的关键帧
+└── embedding-config.json          ← 仅当用户切到外部 API 兜底时存在
 ```
+
+> 注：模型权重**不在用户目录**，因此卸载应用 = 删除模型；只删用户数据
+> 不会影响搜索能力。
+
+### 3.5 迁移与启动顺序
+
+```
+initDatabase(dbPath)
+  1. open DB + WAL + busy_timeout
+  2. sqlite-vec.load
+  3. db.function('jiebatok', ...)        ← 注册 UDF
+  4. migrateIfNeeded                     ← v0.0 → v0.1 旧 schema 兜底
+  5. migrateToVec0                       ← 普通表 → vec0 虚表
+  6. migrateVectorDimension(768)         ← 旧 2048 (Qwen3-VL) → 768 (SigLIP 2)
+  7. migrateFtsTriggersToJieba           ← 触发器替换为带 jiebatok 的版本
+  8. db.exec(SCHEMA)                     ← 创建所有缺失的表 / 触发器
+  9. wal_checkpoint(PASSIVE)
+ 10. ensureFaceStatusColumn              ← face_status 列若缺则 ALTER
+ 11. ensureVideoFrameColumns             ← video_id / frame_time_ms 若缺则 ALTER
+ 12. cleanupStaleVecMap                  ← image_vec_map 孤立条目清理
+ 13. rebuildFtsIndicesIfNeeded           ← 旧 FTS5 数据用 jieba 重切一遍
+ 14. backfillFaceVecsIfNeeded            ← faces.embedding BLOB → face_vecs
+```
+
+每一步都是 **idempotent**，靠 `meta_state` flag 或 `IF NOT EXISTS`/`PRAGMA table_info` 检测。
+失败统一软降级（搜索仍工作）+ 下次启动重试。
 
 ---
 
