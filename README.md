@@ -1,19 +1,40 @@
 # Vixel
 
-AI-powered local photo search. Private. Fast. No cloud.
+AI-powered local photo & video search. Private. Fast. No cloud.
 
-Vixel is a desktop photo manager that uses on-device AI to understand your photos. Search with natural language, browse by location on a map, or find photos by the people in them — all without sending a single byte to the cloud.
+Vixel is a desktop photo manager that uses on-device AI to understand your
+photos and videos. Search with natural language, find text inside images,
+browse by location on a map, or find photos by the people in them — all
+without sending a single byte to the cloud.
 
 ## Features
 
-- **Semantic Search** — Type "sunset over the ocean" and find matching photos. Hybrid search combines vector similarity, caption text matching, and filename search with RRF fusion.
-- **AI Captions** — Local Qwen3.5-4B generates descriptions for every photo via llama.cpp. Configurable language (English / Chinese).
-- **Face Recognition** — SCRFD detection + InsightFace embedding + Chinese Whispers clustering. Automatic person grouping with manual merge and naming.
-- **Map View** — Photos with GPS data displayed on an interactive dark map (Leaflet + CartoDB). Marker clustering for large collections.
-- **Deduplication** — xxHash64 file hashing. Duplicate photos across folders share thumbnails, embeddings, and captions. Delete a folder, shared resources survive.
-- **Time Filtering** — Date range picker for browsing photos by period.
-- **Similar Photos** — Click any photo to see visually similar ones ranked by embedding distance.
-- **Dark Immersive UI** — Photo-first design. Compact grid, glass effects, minimal chrome.
+- **Semantic Search** — Type "sunset over the ocean" and find matching
+  photos. Four-way hybrid: SigLIP 2 image-text vectors + caption BM25 +
+  OCR text BM25 + filename, fused with RRF. Works in 30+ languages
+  out of the box.
+- **OCR (image text search)** — Local PaddleOCR v5 scans screenshots,
+  receipts, posters, and signs. Find "2024 财报" inside a screenshot
+  even if no one labelled it.
+- **Face Recognition** — SCRFD detection + MobileFaceNet embedding +
+  sqlite-vec ANN clustering. Automatic person grouping, scales to
+  50k+ faces. Manual merge and naming.
+- **Video Search** — Drop in `.mp4 / .mov / .webm / .mkv / .avi` and
+  Vixel extracts keyframes (every 5s, max 20 frames per video) and
+  runs them through the full image pipeline. Videos appear in search
+  results with a ▶ time-code badge.
+- **HEIC / RAW** — On macOS, HEIC + CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
+  are decoded via system `sips`. EXIF (timestamps, GPS) preserved.
+- **Map View** — Photos with GPS data on an interactive dark map
+  (Leaflet + CartoDB). Marker clustering for large collections.
+- **Deduplication** — xxHash64 content hashing. Same photo in two
+  folders shares thumbnail / embedding / OCR / face. Delete a folder,
+  shared resources survive.
+- **Time Filtering** — Date range picker.
+- **Similar Photos** — Click any photo to find visually similar ones
+  ranked by embedding distance.
+- **Dark Immersive UI** — Photo-first design. Compact grid, glass
+  effects, minimal chrome.
 
 ## Quick Start
 
@@ -21,32 +42,30 @@ Vixel is a desktop photo manager that uses on-device AI to understand your photo
 # Install dependencies
 npm install
 
-# Run in development mode
+# Download local models (~210 MB total — SigLIP 2 + PaddleOCR)
+npm run models:download
+
+# Run in development
 npm run dev
 
-# Build for production
-npm run build
+# Production package
+npm run build && npm run package
 ```
 
 ### First Launch
 
-1. **Download the local model** (~190 MB):
-   ```bash
-   npm run models:download
-   ```
-   This pulls SigLIP 2 base/16-256 (multilingual image-text CLIP) into `resources/models/siglip2/`.
-2. Add photo folders in the **Photo Folders** tab.
-3. Photos are indexed automatically (thumbnail → embedding).
+1. Add photo folders in the **Photo Folders** tab.
+2. Photos are indexed automatically (thumbnail → embedding).
+3. (Optional) Open Settings → click **开始扫描图内文字** to run OCR.
+4. (Optional) Switch to **People** view → **Start Face Scan**.
 
-That's it — no cloud, no API keys. Face models (SCRFD + MobileFaceNet, ~8 MB) are committed to the repo.
-
-### Face Recognition
-
-Switch to the **People** view (person icon in title bar) and click **Start Face Scan**.
+No cloud, no API keys. All models live inside the app bundle.
 
 ### Advanced: External Embedding API (optional fallback)
 
-If the bundled model cannot run on your hardware, Settings → "高级：外部 Embedding API" lets you point Vixel at an OpenAI-compatible multimodal embedding endpoint (e.g. a self-hosted Qwen3-VL-Embedding server).
+If the bundled SigLIP 2 cannot run on your hardware, Settings →
+"高级：外部 Embedding API" lets you point Vixel at an OpenAI-compatible
+multimodal embedding endpoint (e.g. a self-hosted Qwen3-VL-Embedding).
 
 ## Architecture
 
@@ -54,69 +73,106 @@ If the bundled model cannot run on your hardware, Settings → "高级：外部 
 Electron App (single Node.js process)
 ├── Main Process
 │   ├── SQLite + sqlite-vec (better-sqlite3)
-│   │     • photos, faces, people, embeddings, captions
-│   │     • image_vecs (vec0 ANN, 768-dim)
-│   │     • FTS5 captions full-text
-│   ├── File Watcher (chokidar)
-│   ├── Indexer (thumbnail → embedding → face)
-│   ├── Search Engine (vector + BM25 + filename, RRF fusion)
-│   └── ONNX Runtime
-│         • SigLIP 2 (image + text embedding, via @huggingface/transformers)
-│         • SCRFD (face detection)
-│         • MobileFaceNet (face embedding)
+│   │   ├─ photos, faces, people, videos
+│   │   ├─ image_vecs   (vec0 ANN, 768d)
+│   │   ├─ face_vecs    (vec0 ANN, 128d)
+│   │   ├─ captions     + captions_fts   (FTS5 + jiebatok UDF)
+│   │   └─ image_ocr    + image_ocr_fts  (FTS5 + jiebatok UDF)
+│   ├── File Watcher (chokidar)              ← images + videos
+│   ├── Indexer pipeline
+│   │   thumbnail → embed → face → ocr + extract_frames
+│   ├── Search Engine (4-way RRF)
+│   ├── ONNX Runtime (onnxruntime-node + @huggingface/transformers)
+│   │   ├─ SigLIP 2 base/16-256             (image + text, ~190 MB)
+│   │   ├─ PaddleOCR v5 (det + cls + rec)   (~12 MB)
+│   │   ├─ SCRFD-2.5G-KPS                   (face detection, ~3 MB)
+│   │   └─ MobileFaceNet                    (face embedding, ~5 MB)
+│   └── ffmpeg-static (subprocess)           ← video keyframe extraction
 └── Renderer Process (React)
-    ├── Photo Grid · Map · People · Photo Detail
+    └── PhotoGrid · MapView · PeopleView · PhotoDetail
 ```
 
 ### Data Storage
 
 ```
-~/Library/Application Support/vixel/   # macOS
-├── library.db              # SQLite: photos, faces, people, embeddings, captions
-├── thumbnails/             # WebP thumbnails keyed by file hash
-└── embedding-config.json   # Only present if user opted into API fallback
-```
+# Inside the app bundle (read-only, ships with DMG)
+Vixel.app/Contents/Resources/models/
+├── siglip2/             # ~190 MB ONNX (q8)
+├── paddleocr/           # ~12 MB ONNX + charset
+├── scrfd_2.5g_kps.onnx
+└── mobilefacenet.onnx
 
-The actual model weights live inside the app bundle at
-`Vixel.app/Contents/Resources/models/`, not in user data.
+# User data
+~/Library/Application Support/vixel/   # macOS
+├── library.db                # SQLite (WAL)
+├── thumbnails/<hash>.webp    # shared, hash-keyed
+├── video_frames/<vh>/<ms>.jpg
+└── embedding-config.json     # only when user opts into API fallback
+```
 
 ### Tech Stack
 
-- **Framework**: Electron + electron-vite + React + TypeScript + Tailwind CSS
-- **Database**: better-sqlite3 + sqlite-vec (vector ANN) + FTS5 (full-text)
-- **Image Processing**: sharp (libvips, EXIF auto-rotate)
-- **AI**: onnxruntime-node + @huggingface/transformers (SigLIP 2, SCRFD, MobileFaceNet)
+- **Framework**: Electron + electron-vite + React + TypeScript + Tailwind
+- **Database**: better-sqlite3 + sqlite-vec (vec0 ANN) + FTS5
+- **Chinese segmentation**: @node-rs/jieba via a `jiebatok` SQL UDF
+- **Image processing**: sharp (libvips, EXIF auto-rotate) + system `sips`
+  fallback for HEIC/RAW on macOS
+- **AI**: onnxruntime-node + @huggingface/transformers
+  (SigLIP 2, PaddleOCR v5, SCRFD, MobileFaceNet)
+- **Video**: ffmpeg-static (per-platform prebuilt binary)
 - **Maps**: Leaflet + leaflet.markercluster
-- **File Hashing**: xxhash-wasm
+- **File hashing**: xxhash-wasm
+
+### Format Support Matrix
+
+| Platform | JPG/PNG/WebP/GIF/TIFF/BMP/AVIF | HEIC/HEIF | RAW | Video |
+|---|---|---|---|---|
+| macOS | ✅ sharp | ✅ sips | ✅ sips | ✅ ffmpeg |
+| Linux / Win | ✅ sharp | ⚠️ v0.3 | ⚠️ v0.3 | ✅ ffmpeg |
 
 ## Development
 
 ```
 src/
-├── main/                        # Electron main process
-│   ├── db/index.ts              # Database schema and queries
-│   ├── index.ts                 # App entry, IPC handlers
-│   └── services/
-│       ├── watcher.ts           # File system monitoring
-│       ├── indexer.ts           # Processing pipeline
-│       ├── search.ts            # Hybrid search engine
-│       ├── embedding/           # External embedding API client
-│       ├── llama/               # llama.cpp server manager
-│       ├── face/                # Face detection, embedding, clustering
-│       └── downloadManager.ts   # Model download manager
-├── renderer/src/                # React frontend
-│   ├── App.tsx                  # Main app with view switching
+├── main/index.ts              # Electron entry, IPC handlers
+├── preload/index.ts           # contextBridge surface
+├── shared/types.ts            # IPC types shared by main + renderer
+├── core/
+│   ├── db.ts                  # SQLite schema + all queries
+│   ├── watcher.ts             # chokidar; classifyMedia(image/video)
+│   ├── indexer.ts             # Task queue + per-stage handlers
+│   ├── search.ts              # 4-way RRF
+│   ├── fusion.ts              # Pure rrfFuse()  (7 unit tests)
+│   ├── embedding/             # SigLIP 2 (onnx) + optional API provider
+│   ├── face/                  # SCRFD + MobileFaceNet + ANN matcher
+│   ├── ocr/                   # PaddleOCR det / cls / rec / orchestrator
+│   ├── video/                 # ffmpeg-static keyframe extractor
+│   ├── image/decode.ts        # sharp + sips fallback decoder
+│   └── text/
+│       ├── tokenize.ts        # jieba helper (4 tests)
+│       └── fts-query.ts       # FTS5 query escape (9 tests)
+├── renderer/src/
+│   ├── App.tsx
 │   └── components/
-│       ├── PhotoGrid.tsx        # Photo grid with status badges
-│       ├── PhotoDetail.tsx      # Detail view with EXIF, caption, similar
-│       ├── MapView.tsx          # Leaflet map with GPS photos
-│       ├── PeopleView.tsx       # Face clustering and person management
-│       ├── SearchBar.tsx        # Search input with debounce
-│       ├── IndexProgress.tsx    # Status bar with progress
-│       ├── FolderManager.tsx    # Folder and settings management
-│       └── ModelStatus.tsx      # AI model download and config
-└── shared/types.ts              # Shared TypeScript types
+│       ├── PhotoGrid.tsx      # Virtualized grid + ▶ video badge
+│       ├── PhotoDetail.tsx    # EXIF + caption + video provenance
+│       ├── MapView.tsx        # Leaflet map
+│       ├── PeopleView.tsx     # Face clusters
+│       ├── SearchBar.tsx
+│       ├── IndexProgress.tsx  # Status bar
+│       ├── FolderManager.tsx
+│       └── ModelStatus.tsx    # Settings + OCR scan trigger
+└── cli/index.ts               # `vixel` CLI for scripting
 ```
+
+### Tests
+
+```bash
+npm test         # 24 unit tests in vitest, <1s
+```
+
+Covered: RRF fusion ranking, jieba tokenizer, FTS5 query escaping,
+image decoder routing.
 
 ## License
 
