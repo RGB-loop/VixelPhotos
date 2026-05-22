@@ -1,6 +1,5 @@
 /**
- * 搜索引擎
- * 结合向量搜索、BM25 文本搜索和文件名搜索
+ * 搜索引擎 — 4-way RRF（vector + caption BM25 + ocr BM25 + filename）
  */
 
 import type { DatabaseInstance } from './db'
@@ -46,32 +45,30 @@ export class SearchEngine {
     }
 
     try {
-      // 并行执行三种搜索
-      const [vecResults, textResults, fileNameResults] = await Promise.all([
+      // 并行四路：vec 语义 / caption FTS5 / ocr FTS5 / 文件名 LIKE
+      const [vecResults, captionResults, ocrResults, fileNameResults] = await Promise.all([
         this.searchByVector(trimmedQuery, limit * 2),
-        this.searchByBM25(trimmedQuery, limit * 2),
+        Promise.resolve(this.searchByBM25(trimmedQuery, limit * 2)),
+        Promise.resolve(this.searchByOcr(trimmedQuery, limit * 2)),
         Promise.resolve(this.db.searchByFileName(trimmedQuery, limit * 2)),
       ])
 
-      // RRF 融合排序
-      const mergedResults = this.rrfMerge(vecResults, textResults, fileNameResults, 60)
+      // RRF 融合
+      const mergedResults = this.rrfMerge(vecResults, captionResults, ocrResults, fileNameResults, 60)
 
       const maxScore = mergedResults.length > 0 ? mergedResults[0].score : 1
       for (const r of mergedResults) {
         r.score = r.score / maxScore
       }
 
-      // 映射到代表照片（加时间过滤）
       const results: SearchResult[] = []
       const seenHashes = new Set<string>()
-
       for (const { fileHash, score } of mergedResults) {
         if (seenHashes.has(fileHash)) continue
         seenHashes.add(fileHash)
 
         const photo = this.db.getRepresentativeByHash(fileHash)
         if (photo && !photo.deletedAt) {
-          // 时间过滤
           if (dateFrom && photo.takenAt && photo.takenAt < dateFrom) continue
           if (dateTo && photo.takenAt && photo.takenAt > dateTo) continue
           results.push({ photo, score })
@@ -86,7 +83,6 @@ export class SearchEngine {
     }
   }
 
-  /** 查找相似照片 */
   findSimilar(fileHash: string, limit: number = 12): SearchResult[] {
     const results = this.db.findSimilar(fileHash, limit)
     const photos: SearchResult[] = []
@@ -120,9 +116,28 @@ export class SearchEngine {
     }
   }
 
+  private searchByOcr(query: string, limit: number): TextSearchResult[] {
+    try {
+      return this.db.searchByOcr(query, limit)
+    } catch (error) {
+      console.error('OCR search failed:', error)
+      return []
+    }
+  }
+
+  /**
+   * RRF (Reciprocal Rank Fusion) 4 路融合。
+   *
+   * 各路 weight 设计：
+   * - vec / caption / ocr / filename 等权（都是 1/(k+rank+1)）
+   *
+   * 不区分权重的原因：OCR 是精确匹配，BM25 已经偏严；语义向量是宽召回；
+   * 文件名是用户主动命名的信号。让 rank 衰减自然决定哪个胜出。
+   */
   private rrfMerge(
     vecResults: VecSearchResult[],
-    textResults: TextSearchResult[],
+    captionResults: TextSearchResult[],
+    ocrResults: TextSearchResult[],
     fileNameResults: Array<{ fileHash: string }>,
     k: number = 60
   ): Array<{ fileHash: string; score: number }> {
@@ -134,13 +149,18 @@ export class SearchEngine {
         scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
       })
 
-    textResults
+    captionResults
       .sort((a, b) => b.score - a.score)
       .forEach((r, rank) => {
         scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
       })
 
-    // 文件名匹配权重较高（直接给固定分数，不按排名递减）
+    ocrResults
+      .sort((a, b) => b.score - a.score)
+      .forEach((r, rank) => {
+        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
+      })
+
     fileNameResults.forEach((r, rank) => {
       scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
     })
