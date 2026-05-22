@@ -2,19 +2,20 @@
 /**
  * 模型下载脚本（开发 / CI 用）
  *
- * 从 Hugging Face 下载 SigLIP 2 ONNX 权重到 resources/models/siglip2/
+ * 下载 Vixel 所需的全部本地模型到 resources/models/：
+ *
+ *   resources/models/
+ *     ├── siglip2/                          (~190 MB)  图文 CLIP
+ *     └── paddleocr/                        (~12 MB)   OCR
+ *         ├── ppocr_v5_det.onnx
+ *         ├── ppocr_v5_rec.onnx
+ *         ├── ppocr_v5_cls.onnx             (可选)
+ *         └── ppocr_keys_v1.txt
  *
  * 用法：
- *   node scripts/download-models.mjs
- *
- * 模型来源：onnx-community/siglip2-base-patch16-256
- *   - 多语言（含中日韩英）
- *   - 视觉 + 文本编码器同空间
- *   - q8 量化 ONNX：~190 MB
- *
- * 备选：若上述仓库不可用，可改为
- *   - Xenova/siglip-base-patch16-256-multilingual (v1, 仍然可用)
- *   - onnx-community/clip-vit-base-patch16 (英文为主)
+ *   node scripts/download-models.mjs              # 全部
+ *   node scripts/download-models.mjs siglip       # 仅 SigLIP 2
+ *   node scripts/download-models.mjs paddleocr    # 仅 PaddleOCR
  */
 
 import { createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs'
@@ -25,27 +26,7 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const ROOT = resolve(__dirname, '..')
-
-const HF_REPO = process.env.SIGLIP_REPO || 'onnx-community/siglip2-base-patch16-256'
-const HF_REVISION = process.env.SIGLIP_REVISION || 'main'
-const TARGET_DIR = join(ROOT, 'resources', 'models', 'siglip2')
-
-// Transformers.js 期望的最小文件集
-const FILES = [
-  'config.json',
-  'tokenizer.json',
-  'tokenizer_config.json',
-  'preprocessor_config.json',
-  'special_tokens_map.json',
-  'onnx/model_quantized.onnx',
-  'onnx/model.onnx_data',     // 大模型可能拆分到 .onnx_data 文件
-]
-
-// 这些文件可能不存在（视具体导出而定），缺失不视作错误
-const OPTIONAL = new Set([
-  'special_tokens_map.json',
-  'onnx/model.onnx_data',
-])
+const MODELS_ROOT = join(ROOT, 'resources', 'models')
 
 const colors = {
   reset: '\x1b[0m',
@@ -54,6 +35,53 @@ const colors = {
   yellow: '\x1b[33m',
   red: '\x1b[31m',
   cyan: '\x1b[36m',
+}
+
+const MODEL_GROUPS = {
+  // ─── 图文 CLIP ───────────────────────────────────────────────────
+  siglip: {
+    label: 'SigLIP 2 base/16-256 (multilingual)',
+    targetDir: join(MODELS_ROOT, 'siglip2'),
+    sources: [
+      {
+        baseUrl: `https://huggingface.co/${process.env.SIGLIP_REPO || 'onnx-community/siglip2-base-patch16-256'}/resolve/${process.env.SIGLIP_REVISION || 'main'}/`,
+        files: [
+          { path: 'config.json', optional: false },
+          { path: 'tokenizer.json', optional: false },
+          { path: 'tokenizer_config.json', optional: false },
+          { path: 'preprocessor_config.json', optional: false },
+          { path: 'special_tokens_map.json', optional: true },
+          { path: 'onnx/model_quantized.onnx', optional: false },
+          { path: 'onnx/model.onnx_data', optional: true },
+        ],
+      },
+    ],
+  },
+
+  // ─── OCR ────────────────────────────────────────────────────────
+  paddleocr: {
+    label: 'PaddleOCR v5 (det + cls + rec + charset)',
+    targetDir: join(MODELS_ROOT, 'paddleocr'),
+    sources: [
+      // RapidAI 维护着社区导出的 PaddleOCR ONNX 包，许可与 Paddle 上游一致 (Apache 2.0)。
+      // 如官方仓库改名，可通过 PADDLEOCR_REPO 环境变量覆盖。
+      {
+        baseUrl: `https://huggingface.co/${process.env.PADDLEOCR_REPO || 'RapidAI/RapidOCR'}/resolve/${process.env.PADDLEOCR_REVISION || 'main'}/onnx/PP-OCRv5/`,
+        files: [
+          { path: 'ch_PP-OCRv5_det_infer.onnx', rename: 'ppocr_v5_det.onnx', optional: false },
+          { path: 'ch_PP-OCRv5_rec_infer.onnx', rename: 'ppocr_v5_rec.onnx', optional: false },
+          { path: 'ch_ppocr_mobile_v2.0_cls_infer.onnx', rename: 'ppocr_v5_cls.onnx', optional: true },
+        ],
+      },
+      // PaddleOCR 上游的字符表（也可用社区镜像）
+      {
+        baseUrl: 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/',
+        files: [
+          { path: 'ppocr_keys_v1.txt', optional: false },
+        ],
+      },
+    ],
+  },
 }
 
 function fmtSize(bytes) {
@@ -68,26 +96,22 @@ function fmtSize(bytes) {
   return `${val.toFixed(1)} ${units[i]}`
 }
 
-async function downloadFile(relPath) {
-  const url = `https://huggingface.co/${HF_REPO}/resolve/${HF_REVISION}/${relPath}`
-  const target = join(TARGET_DIR, relPath)
+async function downloadFile(url, target, optional) {
   const tempPath = target + '.tmp'
-
   mkdirSync(dirname(target), { recursive: true })
 
   if (existsSync(target)) {
     const size = statSync(target).size
-    process.stdout.write(`${colors.dim}✓ ${relPath} (cached, ${fmtSize(size)})${colors.reset}\n`)
-    return
+    process.stdout.write(`${colors.dim}✓ ${target.replace(MODELS_ROOT + '/', '')} (cached, ${fmtSize(size)})${colors.reset}\n`)
+    return true
   }
 
-  process.stdout.write(`${colors.cyan}↓ ${relPath}${colors.reset} ${colors.dim}from ${HF_REPO}${colors.reset}\n`)
-
+  process.stdout.write(`${colors.cyan}↓ ${target.replace(MODELS_ROOT + '/', '')}${colors.reset}\n`)
   const resp = await fetch(url)
   if (!resp.ok) {
-    if (OPTIONAL.has(relPath) && resp.status === 404) {
+    if (optional && (resp.status === 404 || resp.status === 403)) {
       process.stdout.write(`${colors.dim}  (optional, skipped: ${resp.status})${colors.reset}\n`)
-      return
+      return true
     }
     throw new Error(`HTTP ${resp.status} for ${url}`)
   }
@@ -97,7 +121,6 @@ async function downloadFile(relPath) {
   const out = createWriteStream(tempPath)
   let downloaded = 0
   let lastReport = 0
-
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -114,32 +137,62 @@ async function downloadFile(relPath) {
   await new Promise((res, rej) => { out.on('finish', res); out.on('error', rej) })
   process.stdout.write('\n')
   await rename(tempPath, target)
+  return true
 }
 
-async function main() {
-  console.log(`${colors.green}Downloading SigLIP 2 model${colors.reset}`)
-  console.log(`  repo:     ${HF_REPO}`)
-  console.log(`  revision: ${HF_REVISION}`)
-  console.log(`  target:   ${TARGET_DIR}\n`)
+async function downloadGroup(groupKey) {
+  const group = MODEL_GROUPS[groupKey]
+  if (!group) {
+    console.error(`${colors.red}Unknown group: ${groupKey}${colors.reset}`)
+    return false
+  }
 
-  mkdirSync(TARGET_DIR, { recursive: true })
+  console.log(`\n${colors.green}▸ ${group.label}${colors.reset}`)
+  console.log(`  ${colors.dim}→ ${group.targetDir}${colors.reset}`)
 
-  for (const file of FILES) {
-    try {
-      await downloadFile(file)
-    } catch (err) {
-      const optional = OPTIONAL.has(file)
-      if (optional) {
-        console.warn(`${colors.yellow}  warn: ${file} skipped (${err.message})${colors.reset}`)
-      } else {
-        console.error(`${colors.red}  fail: ${file} - ${err.message}${colors.reset}`)
-        try { await rm(join(TARGET_DIR, file + '.tmp'), { force: true }) } catch {}
-        process.exit(1)
+  mkdirSync(group.targetDir, { recursive: true })
+
+  let ok = true
+  for (const source of group.sources) {
+    for (const file of source.files) {
+      const url = source.baseUrl + file.path
+      const targetName = file.rename || file.path
+      const target = join(group.targetDir, targetName.includes('/') ? targetName.split('/').pop() : targetName)
+      try {
+        await downloadFile(url, target, file.optional === true)
+      } catch (err) {
+        if (file.optional) {
+          console.warn(`${colors.yellow}  warn: ${file.path} skipped (${err.message})${colors.reset}`)
+        } else {
+          console.error(`${colors.red}  fail: ${file.path} - ${err.message}${colors.reset}`)
+          try { await rm(target + '.tmp', { force: true }) } catch {}
+          ok = false
+        }
       }
     }
   }
+  return ok
+}
 
-  console.log(`\n${colors.green}✓ done${colors.reset}`)
+async function main() {
+  const args = process.argv.slice(2)
+  const targets = args.length > 0 ? args : Object.keys(MODEL_GROUPS)
+
+  console.log(`${colors.green}Vixel model downloader${colors.reset}`)
+  console.log(`  target groups: ${targets.join(', ')}`)
+
+  let allOk = true
+  for (const t of targets) {
+    const ok = await downloadGroup(t)
+    if (!ok) allOk = false
+  }
+
+  if (allOk) {
+    console.log(`\n${colors.green}✓ all done${colors.reset}`)
+  } else {
+    console.error(`\n${colors.red}some downloads failed${colors.reset}`)
+    process.exit(1)
+  }
 }
 
 main().catch((err) => {

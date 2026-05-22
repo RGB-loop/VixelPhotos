@@ -48,17 +48,17 @@ function App(): JSX.Element {
   useEffect(() => {
     let lastThumbnailedCount = 0
     let lastIndexedCount = 0
-    let lastCaptionedCount = 0
+    let lastOcrCount = 0
 
     const unsubscribe = window.api.onIndexProgress(async (progress) => {
       setIndexProgress(progress)
       const thumbnailChanged = progress.thumbnailedPhotos > lastThumbnailedCount
       const indexedChanged = progress.indexedPhotos > lastIndexedCount
-      const captionChanged = progress.captionedPhotos > lastCaptionedCount
+      const ocrChanged = (progress.ocrPhotos || 0) > lastOcrCount
       lastThumbnailedCount = progress.thumbnailedPhotos
       lastIndexedCount = progress.indexedPhotos
-      lastCaptionedCount = progress.captionedPhotos
-      if (thumbnailChanged || indexedChanged || captionChanged) {
+      lastOcrCount = progress.ocrPhotos || 0
+      if (thumbnailChanged || indexedChanged || ocrChanged) {
         setHasPhotos(true)
         if (!hasSearchQuery && viewMode === 'grid') {
           const results = await doSearch('')

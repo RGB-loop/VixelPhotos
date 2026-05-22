@@ -19,6 +19,10 @@ export function ModelStatus(): JSX.Element {
   })
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [ocrScanState, setOcrScanState] = useState<{ scanning: boolean; message: string | null }>({
+    scanning: false,
+    message: null,
+  })
 
   const loadStatus = useCallback(async () => {
     try {
@@ -66,6 +70,25 @@ export function ModelStatus(): JSX.Element {
       await loadStatus()
     } finally {
       setSaving(false)
+    }
+  }
+
+  const startOcrScan = async (): Promise<void> => {
+    setOcrScanState({ scanning: true, message: null })
+    try {
+      const r = await window.api.startOcrScan()
+      if (r.error) {
+        setOcrScanState({ scanning: false, message: `失败: ${r.error}` })
+      } else {
+        setOcrScanState({
+          scanning: false,
+          message: r.queued && r.queued > 0
+            ? `已加入 ${r.queued} 张照片到 OCR 队列`
+            : '没有需要 OCR 的照片',
+        })
+      }
+    } catch (e) {
+      setOcrScanState({ scanning: false, message: `失败: ${String(e)}` })
     }
   }
 
@@ -139,6 +162,26 @@ export function ModelStatus(): JSX.Element {
         <code className="text-[10px] bg-white/5 px-2 py-1 rounded block break-all text-white/30 mt-1">
           {status.modelsDir}
         </code>
+      </div>
+
+      {/* OCR */}
+      <div className="pt-4 border-t border-white/5">
+        <h3 className="text-xs font-semibold text-white/80 mb-0.5">图内文字搜索 (OCR)</h3>
+        <p className="text-[11px] text-white/30 mb-2">
+          扫描相册里的图片文字（截图、票据、海报等），扫完后可直接搜文字。
+        </p>
+        <button
+          onClick={startOcrScan}
+          disabled={ocrScanState.scanning}
+          className="w-full py-1.5 px-3 bg-white/5 hover:bg-white/10 disabled:opacity-30 text-white/60 text-xs rounded-md"
+        >
+          {ocrScanState.scanning ? '排队中...' : '开始扫描图内文字'}
+        </button>
+        {ocrScanState.message && (
+          <p className={`text-[11px] mt-1.5 ${ocrScanState.message.startsWith('失败') ? 'text-red-400' : 'text-green-400'}`}>
+            {ocrScanState.message}
+          </p>
+        )}
       </div>
 
       {/* 高级：外部 API */}

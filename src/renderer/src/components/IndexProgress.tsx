@@ -8,30 +8,31 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
   const totalPhotos = progress?.totalPhotos || 0
   const thumbnailedPhotos = progress?.thumbnailedPhotos || 0
   const indexedPhotos = progress?.indexedPhotos || 0
-  const captionedPhotos = progress?.captionedPhotos || 0
+  const ocrPhotos = progress?.ocrPhotos || 0
 
   const isIndexing = progress?.stage === 'indexing'
-  const isCaptioning = progress?.stage === 'captioning'
-  const isWorking = isIndexing || isCaptioning
+  const isOcring = progress?.stage === 'ocr'
+  const isFacing = progress?.stage === 'detecting_faces'
+  const isWorking = isIndexing || isOcring || isFacing
 
-  // 当前阶段的进度
   const pendingThumbnails = totalPhotos - thumbnailedPhotos
   const pendingEmbeddings = thumbnailedPhotos - indexedPhotos
-  const pendingCaptions = indexedPhotos - captionedPhotos
 
-  // 当前正在做什么
   let statusText = ''
   let progressPercent = 0
 
-  if (pendingThumbnails > 0 && isWorking) {
+  if (pendingThumbnails > 0 && isIndexing) {
     statusText = `生成缩略图 ${thumbnailedPhotos}/${totalPhotos}`
     progressPercent = totalPhotos > 0 ? Math.round((thumbnailedPhotos / totalPhotos) * 100) : 0
-  } else if (pendingEmbeddings > 0 && isWorking) {
+  } else if (pendingEmbeddings > 0 && isIndexing) {
     statusText = `生成索引 ${indexedPhotos}/${thumbnailedPhotos}`
     progressPercent = thumbnailedPhotos > 0 ? Math.round((indexedPhotos / thumbnailedPhotos) * 100) : 0
-  } else if (isCaptioning) {
-    statusText = `生成描述 ${captionedPhotos}/${indexedPhotos}`
-    progressPercent = indexedPhotos > 0 ? Math.round((captionedPhotos / indexedPhotos) * 100) : 0
+  } else if (isOcring) {
+    statusText = `识别图内文字 ${ocrPhotos}/${indexedPhotos}`
+    progressPercent = indexedPhotos > 0 ? Math.round((ocrPhotos / indexedPhotos) * 100) : 0
+  } else if (isFacing) {
+    statusText = '检测人脸…'
+    progressPercent = 0
   }
 
   return (
@@ -59,8 +60,8 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
           {indexedPhotos < totalPhotos && (
             <span className="text-white/15">· {indexedPhotos} 已索引</span>
           )}
-          {captionedPhotos > 0 && captionedPhotos < indexedPhotos && (
-            <span className="text-white/15">· {captionedPhotos} 有描述</span>
+          {ocrPhotos > 0 && (
+            <span className="text-white/15">· {ocrPhotos} 已识字</span>
           )}
         </div>
       ) : (
