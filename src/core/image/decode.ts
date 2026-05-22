@@ -141,15 +141,32 @@ async function decodeWithHeicConvert(input: Buffer): Promise<Buffer | null> {
   }
 }
 
+// 30s 上限对单张 HEIC/RAW 解码足够；卡住一般意味着文件损坏或 sips bug
+const SIPS_TIMEOUT_MS = 30_000
+
 function runSips(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('sips', args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
+    let timedOut = false
+    const killTimer = setTimeout(() => {
+      timedOut = true
+      try { child.kill('SIGKILL') } catch { /* already dead */ }
+    }, SIPS_TIMEOUT_MS)
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      clearTimeout(killTimer)
+      reject(err)
+    })
     child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`sips exited ${code}: ${stderr.trim() || 'no stderr'}`))
+      clearTimeout(killTimer)
+      if (timedOut) {
+        reject(new Error(`sips timed out after ${SIPS_TIMEOUT_MS}ms`))
+      } else if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`sips exited ${code}: ${stderr.trim() || 'no stderr'}`))
+      }
     })
   })
 }

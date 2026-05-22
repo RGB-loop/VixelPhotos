@@ -96,15 +96,33 @@ export async function extractKeyframes(
   }
 }
 
+// 5 分钟硬上限：长视频 + 20 帧抽样在 4K H.265 上偶尔接近这个，
+// 但卡住的视频（损坏 / 编解码 deadlock）必须给 indexer 一个逃生窗口
+const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000
+
 function runFfmpeg(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
+    let timedOut = false
+    const killTimer = setTimeout(() => {
+      timedOut = true
+      try { child.kill('SIGKILL') } catch { /* already dead */ }
+    }, FFMPEG_TIMEOUT_MS)
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      clearTimeout(killTimer)
+      reject(err)
+    })
     child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(0, 500) || 'no stderr'}`))
+      clearTimeout(killTimer)
+      if (timedOut) {
+        reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS / 1000}s`))
+      } else if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(0, 500) || 'no stderr'}`))
+      }
     })
   })
 }
