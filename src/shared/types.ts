@@ -21,9 +21,29 @@ export interface Photo {
   faceStatus?: 'pending' | 'done' | 'error'
   faceCount?: number
   duplicateCount?: number
+  /** 若是视频抽出的帧：来源视频在 videos 表里的 id */
+  videoId?: number | null
+  /** 若是视频抽出的帧：该帧对应的视频时间戳（毫秒） */
+  frameTimeMs?: number | null
   deletedAt?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface VideoRecord {
+  id: number
+  folderId: number
+  filePath: string
+  fileName: string
+  fileSize: number
+  fileMtime: number
+  fileHash: string
+  durationMs?: number
+  width?: number
+  height?: number
+  frameCount?: number
+  deletedAt?: string
+  createdAt: string
 }
 
 export interface PhotoLocation {

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
-import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../shared/types'
+import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord } from '../shared/types'
 import { tokenizeForFtsSync } from './text/tokenize'
 import { buildFtsQuery } from './text/fts-query'
 
@@ -167,6 +167,26 @@ CREATE TABLE IF NOT EXISTS meta_state (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- 视频文件主表
+-- 视频本身不索引；indexer 抽出来的帧作为 photos 行存储，photos.video_id 反向引用这条
+CREATE TABLE IF NOT EXISTS videos (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  folder_id    INTEGER REFERENCES watched_folders(id),
+  file_path    TEXT NOT NULL UNIQUE,
+  file_name    TEXT NOT NULL,
+  file_size    INTEGER NOT NULL,
+  file_mtime   INTEGER NOT NULL,
+  file_hash    TEXT,
+  duration_ms  INTEGER,
+  width        INTEGER,
+  height       INTEGER,
+  frame_count  INTEGER DEFAULT 0,
+  deleted_at   DATETIME,
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_videos_folder ON videos(folder_id);
+CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(file_hash);
 `
 
 export interface DatabaseInstance {
@@ -187,7 +207,9 @@ export interface DatabaseInstance {
     fileName: string,
     fileSize: number,
     fileMtime: number,
-    fileHash: string
+    fileHash: string,
+    /** 视频帧 provenance（可选）—— 若提供，该 photos 行就是该视频在某个时间戳的关键帧 */
+    videoCtx?: { videoId: number; frameTimeMs: number }
   ) => number
   getPhoto: (id: number) => Photo | undefined
   getPhotoByPath: (path: string) => Photo | undefined
@@ -286,6 +308,24 @@ export interface DatabaseInstance {
   getPendingFacePhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
   getFaceCoverInfo: (faceId: number) => { fileHash: string; bbox: string } | undefined
 
+  // 视频
+  addVideo: (
+    folderId: number,
+    filePath: string,
+    fileName: string,
+    fileSize: number,
+    fileMtime: number,
+    fileHash: string
+  ) => number
+  getVideoById: (id: number) => VideoRecord | undefined
+  getVideoByPath: (path: string) => VideoRecord | undefined
+  updateVideoMeta: (
+    id: number,
+    data: { durationMs?: number; width?: number; height?: number; frameCount?: number }
+  ) => void
+  softDeleteVideo: (path: string) => void
+  getFramePhotosByVideo: (videoId: number) => Photo[]
+
   // 关闭
   close: () => void
 }
@@ -325,6 +365,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
   // 确保新列存在
   ensureFaceStatusColumn(db)
+  ensureVideoFrameColumns(db)
   if (options?.runCleanup !== false) {
     cleanupStaleVecMap(db)
   }
@@ -375,15 +416,65 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     deleteQueueByPhotoIds: db.prepare(`DELETE FROM index_queue WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
 
     addPhoto: db.prepare(`
-      INSERT INTO photos (folder_id, file_path, file_name, file_size, file_mtime, file_hash)
+      INSERT INTO photos (folder_id, file_path, file_name, file_size, file_mtime, file_hash, video_id, frame_time_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(file_path) DO UPDATE SET
+        file_size = excluded.file_size,
+        file_mtime = excluded.file_mtime,
+        file_hash = excluded.file_hash,
+        video_id = COALESCE(excluded.video_id, photos.video_id),
+        frame_time_ms = COALESCE(excluded.frame_time_ms, photos.frame_time_ms),
+        deleted_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING id
+    `),
+
+    // 视频表 CRUD
+    addVideo: db.prepare(`
+      INSERT INTO videos (folder_id, file_path, file_name, file_size, file_mtime, file_hash)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_path) DO UPDATE SET
         file_size = excluded.file_size,
         file_mtime = excluded.file_mtime,
         file_hash = excluded.file_hash,
-        deleted_at = NULL,
-        updated_at = CURRENT_TIMESTAMP
+        deleted_at = NULL
       RETURNING id
+    `),
+    getVideoById: db.prepare(`
+      SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
+             file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
+             duration_ms as durationMs, width, height, frame_count as frameCount,
+             deleted_at as deletedAt, created_at as createdAt
+      FROM videos WHERE id = ?
+    `),
+    getVideoByPath: db.prepare(`
+      SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
+             file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
+             duration_ms as durationMs, width, height, frame_count as frameCount,
+             deleted_at as deletedAt, created_at as createdAt
+      FROM videos WHERE file_path = ?
+    `),
+    updateVideoMeta: db.prepare(`
+      UPDATE videos SET
+        duration_ms = COALESCE(?, duration_ms),
+        width       = COALESCE(?, width),
+        height      = COALESCE(?, height),
+        frame_count = COALESCE(?, frame_count)
+      WHERE id = ?
+    `),
+    softDeleteVideo: db.prepare(`
+      UPDATE videos SET deleted_at = CURRENT_TIMESTAMP WHERE file_path = ?
+    `),
+    getFramePhotosByVideo: db.prepare(`
+      SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
+             file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
+             width, height, taken_at as takenAt, lat, lng,
+             embed_status as embedStatus, caption_status as captionStatus,
+             video_id as videoId, frame_time_ms as frameTimeMs,
+             deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
+      FROM photos
+      WHERE video_id = ? AND deleted_at IS NULL
+      ORDER BY frame_time_ms ASC
     `),
 
     // 照片字段映射（复用）
@@ -795,8 +886,12 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return orphanedHashes // 调用方用于清理缩略图文件
     },
 
-    addPhoto: (folderId, filePath, fileName, fileSize, fileMtime, fileHash): number => {
-      const result = stmts.addPhoto.get(folderId, filePath, fileName, fileSize, fileMtime, fileHash) as { id: number }
+    addPhoto: (folderId, filePath, fileName, fileSize, fileMtime, fileHash, videoCtx): number => {
+      const result = stmts.addPhoto.get(
+        folderId, filePath, fileName, fileSize, fileMtime, fileHash,
+        videoCtx?.videoId ?? null,
+        videoCtx?.frameTimeMs ?? null,
+      ) as { id: number }
       return result.id
     },
     getPhoto: (id: number): Photo | undefined => {
@@ -1136,6 +1231,33 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return stmts.getFaceCoverInfo.get(faceId) as { fileHash: string; bbox: string } | undefined
     },
 
+    // 视频
+    addVideo: (folderId, filePath, fileName, fileSize, fileMtime, fileHash): number => {
+      const result = stmts.addVideo.get(folderId, filePath, fileName, fileSize, fileMtime, fileHash) as { id: number }
+      return result.id
+    },
+    getVideoById: (id) => {
+      return stmts.getVideoById.get(id) as VideoRecord | undefined
+    },
+    getVideoByPath: (path) => {
+      return stmts.getVideoByPath.get(path) as VideoRecord | undefined
+    },
+    updateVideoMeta: (id, data) => {
+      stmts.updateVideoMeta.run(
+        data.durationMs ?? null,
+        data.width ?? null,
+        data.height ?? null,
+        data.frameCount ?? null,
+        id,
+      )
+    },
+    softDeleteVideo: (path) => {
+      stmts.softDeleteVideo.run(path)
+    },
+    getFramePhotosByVideo: (videoId) => {
+      return stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+    },
+
     close: (): void => { db.close() },
   }
 }
@@ -1358,6 +1480,23 @@ function ensureFaceStatusColumn(db: Database.Database): void {
   } catch {
     db.exec('ALTER TABLE photos ADD COLUMN face_status TEXT DEFAULT \'pending\'')
   }
+}
+
+/** 确保 photos 上的 video_id / frame_time_ms 列存在（v0.3+ 视频帧 provenance） */
+function ensureVideoFrameColumns(db: Database.Database): void {
+  try {
+    db.prepare('SELECT video_id FROM photos LIMIT 0').get()
+  } catch {
+    db.exec('ALTER TABLE photos ADD COLUMN video_id INTEGER REFERENCES videos(id)')
+  }
+  try {
+    db.prepare('SELECT frame_time_ms FROM photos LIMIT 0').get()
+  } catch {
+    db.exec('ALTER TABLE photos ADD COLUMN frame_time_ms INTEGER')
+  }
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_photos_video ON photos(video_id)')
+  } catch { /* index may already exist */ }
 }
 
 /** 检测旧 schema 并迁移 */
