@@ -786,6 +786,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     deleteFaceVec: db.prepare(`
       DELETE FROM face_vecs WHERE rowid = ?
     `),
+    // 给 deleteContentByHash 用：先按 hash 找到 faces.id，再删 face_vecs + faces
+    getFaceIdsByHash: db.prepare(`SELECT id FROM faces WHERE file_hash = ?`),
+    deleteFacesByHash: db.prepare(`DELETE FROM faces WHERE file_hash = ?`),
     // KNN：rowid 即 faces.id；join faces 拿 person_id
     searchFaceKnnRaw: db.prepare(`
       SELECT v.rowid as faceId, f.person_id as personId, v.distance
@@ -896,11 +899,24 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       stmts.deleteQueueByPhotoIds.run(folderId)
       stmts.deletePhotosByFolderId.run(folderId)
 
-      // 删除孤立 hash 的内容
-      for (const hash of orphanedHashes) {
-        stmts.deleteImageVecByHash.run(hash)
-        stmts.deleteCaptionByHash.run(hash)
-      }
+      // 孤立 hash 全套内容清理：vec0 / 人脸 ANN / 人脸 BLOB / captions / OCR / FTS5
+      // 透过 deleteContentByHash 走同一套逻辑，避免日后再分叉
+      const finalize = db.transaction(() => {
+        for (const hash of orphanedHashes) {
+          // 内联 deleteContentByHash 的实现（这里不能调外层 instance 方法 — 还没构造完）
+          const row = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
+          if (row) {
+            stmts.deleteVecByRowid.run(Number(row.rowid))
+            stmts.deleteVecMapByHash.run(hash)
+          }
+          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
+          for (const f of faceRows) stmts.deleteFaceVec.run(f.id)
+          stmts.deleteFacesByHash.run(hash)
+          stmts.deleteCaptionByHash.run(hash)
+          stmts.deleteOcrByHash.run(hash)
+        }
+      })
+      finalize()
 
       return orphanedHashes // 调用方用于清理缩略图文件
     },
@@ -1064,12 +1080,19 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return stmts.getPendingOcrPhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
     },
     deleteContentByHash: (fileHash: string): void => {
-      // 删除向量：先查 rowid，再删 vec0 行和映射
+      // 图像向量：先查 rowid，再删 vec0 行和映射
       const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: bigint | number } | undefined
       if (row) {
         stmts.deleteVecByRowid.run(Number(row.rowid))
         stmts.deleteVecMapByHash.run(fileHash)
       }
+      // 人脸：face_vecs rowid 与 faces.id 一致，按 id 逐个清
+      const faceRows = stmts.getFaceIdsByHash.all(fileHash) as Array<{ id: number }>
+      for (const f of faceRows) {
+        stmts.deleteFaceVec.run(f.id)
+      }
+      stmts.deleteFacesByHash.run(fileHash)
+      // FTS5 表通过触发器随 captions / image_ocr 的 DELETE 自动清
       stmts.deleteCaptionByHash.run(fileHash)
       stmts.deleteOcrByHash.run(fileHash)
     },
