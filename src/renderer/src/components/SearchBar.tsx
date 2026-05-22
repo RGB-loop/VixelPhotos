@@ -86,7 +86,7 @@ export function SearchBar({ onSearch, isSearching, resultCount }: SearchBarProps
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onKeyDown={handleKeyDown}
-        placeholder="搜索照片、文件名、描述..."
+        placeholder="搜索：物体、场景、图内文字、文件名…"
         className="w-full pl-9 pr-16 py-2 text-[13px] rounded-lg bg-surface-2 border border-white/10 text-white/90 placeholder-white/25 focus:outline-none focus:border-white/25 focus:bg-surface-3 transition-all"
       />
 

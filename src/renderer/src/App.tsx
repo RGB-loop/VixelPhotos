@@ -265,7 +265,7 @@ function App(): JSX.Element {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <p className="text-white/40 text-sm">没有找到匹配的照片</p>
-              <p className="text-white/20 text-xs mt-2">试试其他关键词，或检查是否已配置 Embedding API</p>
+              <p className="text-white/20 text-xs mt-2">试试其他关键词、图内的文字片段，或换种说法</p>
             </div>
           </div>
         ) : (
