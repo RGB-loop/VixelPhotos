@@ -33,6 +33,8 @@ extraResources:
       - '**/*'
 
 mac:
+  icon: build/icon.icns
+  category: public.app-category.photography
   # 加固运行时 + 自定义 entitlements；JIT/V8 + .node 加载所需
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -41,9 +43,10 @@ mac:
   extendInfo:
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
-  # 公证由环境变量驱动（CI 上注入 APPLE_ID 等才打开）；本地 dev 默认关闭。
-  # 设置 VIXEL_NOTARIZE=1 + 提供 APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID
-  notarize: ${env.VIXEL_NOTARIZE}
+  # 公证：默认 false（dev / 无证书机器）。CI release 用 CLI override 打开：
+  #   electron-builder --mac --c.mac.notarize=true
+  # 配合 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID 环境变量
+  notarize: false
   # 单架构 DMG（按当前 build 机器架构）— CI 上分别跑 arm64/x64
   target:
     - target: dmg
@@ -55,6 +58,7 @@ dmg:
   writeUpdateInfo: false # MVP 阶段未引入 auto-updater，避免误生成
 
 win:
+  icon: build/icon.png
   target:
     - target: nsis
       arch:
@@ -67,6 +71,7 @@ nsis:
   createDesktopShortcut: always
 
 linux:
+  icon: build/icon.png
   target:
     - target: AppImage
       arch:

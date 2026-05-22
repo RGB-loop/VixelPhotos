@@ -13,20 +13,6 @@
     "url": "https://github.com/vixel-app/vixel/issues"
   },
   "homepage": "https://github.com/vixel-app/vixel#readme",
-  "build": {
-    "appId": "com.vixel.app",
-    "productName": "Vixel",
-    "mac": {
-      "icon": "build/icon.icns",
-      "category": "public.app-category.photography"
-    },
-    "win": {
-      "icon": "build/icon.png"
-    },
-    "linux": {
-      "icon": "build/icon.png"
-    }
-  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
