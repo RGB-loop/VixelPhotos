@@ -94,7 +94,12 @@
 - 支持手动添加本地文件夹为「监控文件夹」
 - 实时监听文件夹变更：新增照片自动触发索引，删除/移动照片自动更新索引
 - 文件移动智能检测：同一照片换了位置不重新跑 AI，只更新路径
-- 支持格式：JPG / PNG / HEIC / WEBP / RAW（CR2, NEF, ARW）
+- 支持格式（实际矩阵）：
+  - **全平台**：JPG / PNG / WebP / GIF / TIFF / BMP / AVIF（sharp 直读）
+  - **macOS only**：HEIC / HEIF / CR2 / CR3 / NEF / ARW / DNG / RAF / ORF / RW2
+    （通过系统自带 `sips` 转 JPEG；EXIF/GPS 仍从原始文件读，不丢拍摄元数据）
+  - **Linux / Windows**：HEIC 与 RAW 当前不支持（v0.3 计划用 heic-convert
+    + libraw-wasm 兜底）
 - 照片原文件不复制、不移动、不修改，以只读方式引用
 - 显示索引进度（已处理 X / 共 Y 张，预计剩余时间）
 - 支持多个文件夹作为不同「相册」管理
