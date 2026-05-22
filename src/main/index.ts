@@ -1,4 +1,5 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron'
+import { pathToFileURL } from 'url'
 import { join } from 'path'
 import { readFile, unlink, mkdir, readdir } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -432,6 +433,59 @@ function registerIpcHandlers(): void {
   })
 }
 
+/**
+ * 注册 vixel:// 自定义协议。必须在 app.ready 之前调用 registerSchemesAsPrivileged，
+ * 否则渲染端 <img src="vixel://..."> 会被当作 opaque resource，CORS/CSP 阻塞。
+ *
+ *   vixel://thumb/<photoId>           → <userData>/thumbnails/<hash>.webp
+ *   vixel://image/<photoId>           → 原图文件路径
+ *   vixel://video-frame/<videoHash>/<ms>  → 视频帧 jpg
+ *
+ * 比 base64-over-IPC 显著省事：
+ *   - 主进程不必把文件读进字符串再 base64
+ *   - IPC 不必序列化数 MB 的 data URL
+ *   - 渲染端 <img> 直接走 Chromium 内置 file fetch，可被 GPU 解码
+ */
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'vixel', privileges: { secure: true, supportFetchAPI: true, stream: true, bypassCSP: false } },
+])
+
+function registerVixelProtocol(): void {
+  protocol.handle('vixel', async (request) => {
+    try {
+      const url = new URL(request.url)
+      const host = url.host
+      const pathParts = url.pathname.split('/').filter(Boolean)
+
+      if (host === 'thumb' && pathParts.length === 1) {
+        const id = parseInt(pathParts[0], 10)
+        if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
+        const photo = db.getPhoto(id)
+        if (!photo?.fileHash) return new Response('not found', { status: 404 })
+        return net.fetch(pathToFileURL(indexer.getThumbnailPath(photo.fileHash)).toString())
+      }
+
+      if (host === 'image' && pathParts.length === 1) {
+        const id = parseInt(pathParts[0], 10)
+        if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
+        const photo = db.getPhoto(id)
+        if (!photo || !existsSync(photo.filePath)) return new Response('not found', { status: 404 })
+        return net.fetch(pathToFileURL(photo.filePath).toString())
+      }
+
+      if (host === 'video-frame' && pathParts.length === 2) {
+        // 已废弃 — frame 现在以普通 photo 行存在，使用 thumb/<id>。
+        return new Response('use vixel://thumb/<photoId> for frames', { status: 410 })
+      }
+
+      return new Response('unknown vixel path', { status: 404 })
+    } catch (err) {
+      console.error('vixel:// handler error:', err)
+      return new Response(String(err), { status: 500 })
+    }
+  })
+}
+
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.vixel.app')
 
@@ -440,6 +494,7 @@ app.whenReady().then(async () => {
   })
 
   await initServices()
+  registerVixelProtocol()
   registerIpcHandlers()
   createWindow()
 

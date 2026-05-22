@@ -18,25 +18,22 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
 
   useEffect(() => {
     const loadDetail = async (): Promise<void> => {
-      const [data, imageData, locs, similar] = await Promise.all([
+      // 原图和相似照片缩略图都走 vixel:// 协议，<img> 自己 fetch；
+      // 这里只取元数据 / 位置 / 相似列表。
+      const [data, locs, similar] = await Promise.all([
         window.api.getPhotoDetail(photo.id),
-        window.api.getFullImageData(photo.id),
         window.api.getPhotoLocations(photo.id),
         window.api.findSimilar(photo.id, 6),
       ])
       setDetail(data)
-      if (imageData) setImageUrl(imageData)
+      setImageUrl(`vixel://image/${photo.id}`)
       setLocations(locs)
       setSimilarPhotos(similar)
-
-      // 加载相似照片的缩略图
+      // 相似缩略图也直接用 vixel:// 协议，无需预先 base64 fetch
       const thumbs = new Map<number, string>()
-      await Promise.all(
-        similar.map(async (r) => {
-          const thumb = await window.api.getThumbnailData(r.photo.id)
-          if (thumb) thumbs.set(r.photo.id, thumb)
-        })
-      )
+      for (const r of similar) {
+        thumbs.set(r.photo.id, `vixel://thumb/${r.photo.id}`)
+      }
       setSimilarThumbnails(thumbs)
     }
     loadDetail()

@@ -1,4 +1,6 @@
 import { useCallback, useState, useEffect, useRef, useMemo, memo } from 'react'
+// note: useRef + useEffect are still used by the outer PhotoGrid (ResizeObserver).
+// PhotoCard's old thumbnail-loading state has been replaced by <img> onLoad/onError.
 import { FixedSizeGrid, type GridChildComponentProps } from 'react-window'
 import type { SearchResult, Photo } from '../../../shared/types'
 
@@ -43,89 +45,37 @@ function StatusBadge({ photo }: { photo: Photo }): JSX.Element | null {
 const PhotoCard = memo(function PhotoCard({
   result, onClick, showScore, rank,
 }: PhotoCardProps): JSX.Element {
-  const [thumbnailUrl, setThumbnailUrl] = useState<string>('')
-  const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(false)
-  const retried = useRef(false)
-
-  useEffect(() => {
-    let mounted = true
-
-    const loadThumbnail = async (): Promise<void> => {
-      try {
-        const dataUrl = await window.api.getThumbnailData(result.photo.id)
-        if (mounted) {
-          if (dataUrl) {
-            setThumbnailUrl(dataUrl)
-            setIsLoading(false)
-          } else if (!retried.current) {
-            retried.current = true
-            setTimeout(async () => {
-              if (!mounted) return
-              const retry = await window.api.getThumbnailData(result.photo.id)
-              if (mounted) {
-                if (retry) {
-                  setThumbnailUrl(retry)
-                  setIsLoading(false)
-                } else {
-                  setError(true)
-                  setIsLoading(false)
-                }
-              }
-            }, 3000)
-          } else {
-            setError(true)
-            setIsLoading(false)
-          }
-        }
-      } catch {
-        if (mounted) {
-          setError(true)
-          setIsLoading(false)
-        }
-      }
-    }
-
-    loadThumbnail()
-    return () => { mounted = false }
-  }, [result.photo.id])
-
-  useEffect(() => {
-    if (error && result.photo.width) {
-      setError(false)
-      setIsLoading(true)
-      retried.current = false
-      window.api.getThumbnailData(result.photo.id).then((dataUrl) => {
-        if (dataUrl) {
-          setThumbnailUrl(dataUrl)
-          setIsLoading(false)
-        } else {
-          setError(true)
-          setIsLoading(false)
-        }
-      })
-    }
-  }, [result.photo.width, result.photo.id, error])
+  const [loaded, setLoaded] = useState(false)
+  // 走 vixel:// 自定义协议，Chromium 直接 fetch 缩略图文件 — 不再走
+  // base64-over-IPC。错误状态依靠 <img> 的 onError 监听。
+  // 加 photo.id 作为 cache-buster 的一部分：当照片重新生成缩略图（更新文件
+  // hash）时，<img> 自然会重新加载（key 变 → src 变）。
+  const thumbnailUrl = `vixel://thumb/${result.photo.id}`
 
   return (
     <div
       className="photo-card relative aspect-square overflow-hidden cursor-pointer bg-surface-2"
       onClick={onClick}
     >
-      {isLoading ? (
+      {!loaded && !error && (
         <div className="absolute inset-0 image-placeholder" />
-      ) : error ? (
+      )}
+      {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface-2">
           <svg className="w-6 h-6 text-white/10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
         </div>
-      ) : (
+      )}
+      {!error && (
         <img
           src={thumbnailUrl}
           alt={result.photo.fileName}
-          className="absolute inset-0 w-full h-full object-cover animate-fade-in"
+          className={`absolute inset-0 w-full h-full object-cover ${loaded ? 'animate-fade-in' : 'opacity-0'}`}
           loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
         />
       )}
 
