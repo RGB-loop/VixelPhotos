@@ -4,8 +4,9 @@ import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
 import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation } from '../shared/types'
 
-// 向量维度 - Qwen3-VL-Embedding
-const EMBEDDING_DIM = 2048
+// 向量维度 - SigLIP 2 base/16-256
+// 旧版用 2048 (Qwen3-VL-Embedding API)；migrateVectorDimension 会自动迁移
+const EMBEDDING_DIM = 768
 
 // 数据库 Schema
 const SCHEMA = `
@@ -243,6 +244,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   // 检测旧 schema 并迁移
   migrateIfNeeded(db)
   migrateToVec0(db)
+  migrateVectorDimension(db, EMBEDDING_DIM)
 
   db.exec(SCHEMA)
 
@@ -948,6 +950,39 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     close: (): void => { db.close() },
+  }
+}
+
+/**
+ * 检测 image_vecs 的当前维度，与目标维度不一致时丢弃并重建。
+ *
+ * 触发场景：从外部 API (Qwen3-VL-Embedding, dim=2048) 切换到本地
+ * SigLIP 2 (dim=768)。所有旧向量必须丢弃重做。
+ */
+function migrateVectorDimension(db: Database.Database, targetDim: number): void {
+  try {
+    const row = db
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='image_vecs'`)
+      .get() as { sql?: string } | undefined
+    if (!row?.sql) return // 表还不存在，新建时会用正确维度
+
+    // CREATE VIRTUAL TABLE image_vecs USING vec0(embedding float[2048])
+    const m = row.sql.match(/float\[(\d+)\]/)
+    if (!m) return
+    const currentDim = parseInt(m[1], 10)
+    if (currentDim === targetDim) return
+
+    console.log(
+      `[migrate] image_vecs dim ${currentDim} != target ${targetDim}, rebuilding`
+    )
+    db.exec(`
+      DROP TABLE IF EXISTS image_vecs;
+      DROP TABLE IF EXISTS image_vec_map;
+      UPDATE photos SET embed_status = 'pending' WHERE embed_status = 'done';
+      DELETE FROM index_queue WHERE task_type = 'embed';
+    `)
+  } catch (err) {
+    console.warn('[migrate] vector dimension migration failed:', err)
   }
 }
 
