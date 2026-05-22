@@ -585,9 +585,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.embed_status as embedStatus, p.caption_status as captionStatus,
              p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
-             c.text as caption
+             c.text as caption,
+             o.text as ocrText
       FROM photos p
       LEFT JOIN captions c ON p.file_hash = c.file_hash
+      LEFT JOIN image_ocr o ON p.file_hash = o.file_hash
       WHERE p.id = ?
     `),
     updatePhotoMeta: db.prepare(`

@@ -88,6 +88,8 @@ export interface IndexProgress {
 export interface PhotoDetail extends Photo {
   exif?: ExifData
   caption?: string
+  /** PaddleOCR 识别出的图内文字（多行用 \n 分隔），无则不设 */
+  ocrText?: string
 }
 
 export interface ExifData {
@@ -147,6 +149,9 @@ export const IPC_CHANNELS = {
 
   // OCR
   START_OCR_SCAN: 'start-ocr-scan',
+
+  // 视频源文件
+  OPEN_SOURCE_VIDEO: 'open-source-video',
 
   // 备份
   TRIGGER_BACKUP: 'trigger-backup',

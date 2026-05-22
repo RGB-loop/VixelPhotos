@@ -364,6 +364,21 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // 打开视频源文件（系统默认播放器）
+  ipcMain.handle(IPC_CHANNELS.OPEN_SOURCE_VIDEO, async (_event, videoId: number) => {
+    try {
+      const video = db.getVideoById(videoId)
+      if (!video || !existsSync(video.filePath)) {
+        return { success: false, error: '视频文件已不存在' }
+      }
+      const errMsg = await shell.openPath(video.filePath)
+      if (errMsg) return { success: false, error: errMsg }
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.GET_PEOPLE, async () => {
     return db.getPeople()
   })

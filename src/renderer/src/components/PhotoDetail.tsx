@@ -213,20 +213,37 @@ export function PhotoDetail({ photo, siblings, onSelect, onClose }: PhotoDetailP
           )}
         </div>
 
-        {/* 视频帧 provenance */}
+        {/* OCR 文本（PaddleOCR 扫出来的图内文字） */}
+        {detail?.ocrText && detail.ocrText.trim().length > 0 && (
+          <div className="mb-5">
+            <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-1.5">图内文字</h3>
+            <p className="text-white/70 text-xs leading-relaxed whitespace-pre-line break-words">
+              {detail.ocrText}
+            </p>
+          </div>
+        )}
+
+        {/* 视频帧 provenance + 一键打开源视频 */}
         {detail?.videoId != null && (
           <div className="mb-5">
             <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-1.5">视频帧</h3>
-            <dl className="space-y-1.5 text-xs">
-              <div className="flex justify-between">
-                <dt className="text-white/30">时间点</dt>
-                <dd className="text-white/60">{formatVideoTime(detail.frameTimeMs)}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-white/30">来源</dt>
-                <dd className="text-white/60 text-right truncate ml-3">videoId #{detail.videoId}</dd>
-              </div>
-            </dl>
+            <div className="flex items-center justify-between mb-2 text-xs">
+              <span className="text-white/30">时间点</span>
+              <span className="text-white/60 tabular-nums">{formatVideoTime(detail.frameTimeMs)}</span>
+            </div>
+            <button
+              onClick={async () => {
+                if (detail.videoId == null) return
+                await window.api.openSourceVideo(detail.videoId)
+              }}
+              className="w-full py-1.5 px-3 bg-accent/15 hover:bg-accent/25 text-accent text-xs rounded-md flex items-center justify-center gap-1.5 transition-colors"
+              title="在系统默认播放器中打开"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              在播放器中打开源视频
+            </button>
           </div>
         )}
 

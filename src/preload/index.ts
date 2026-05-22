@@ -94,6 +94,11 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.START_OCR_SCAN)
   },
 
+  // 打开视频源
+  openSourceVideo: (videoId: number): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.OPEN_SOURCE_VIDEO, videoId)
+  },
+
   // 备份
   triggerBackup: (): Promise<{ success: boolean; path?: string; sizeBytes?: number; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.TRIGGER_BACKUP)
