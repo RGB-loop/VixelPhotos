@@ -97,6 +97,32 @@ CREATE TRIGGER IF NOT EXISTS captions_au AFTER UPDATE ON captions BEGIN
   INSERT INTO captions_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+-- OCR 文本表（按 file_hash 去重共享）
+-- 与 captions 分离的原因：captions 是用户手写的描述，image_ocr 是机器识别的图内文字，
+-- 语义独立，搜索通道也分别打分（4-way RRF: vec + caption FTS5 + ocr FTS5 + filename）。
+CREATE TABLE IF NOT EXISTS image_ocr (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_hash   TEXT NOT NULL UNIQUE,
+  text        TEXT NOT NULL,
+  detected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS image_ocr_fts USING fts5(
+  text,
+  tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS image_ocr_ai AFTER INSERT ON image_ocr BEGIN
+  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS image_ocr_ad AFTER DELETE ON image_ocr BEGIN
+  DELETE FROM image_ocr_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS image_ocr_au AFTER UPDATE ON image_ocr BEGIN
+  DELETE FROM image_ocr_fts WHERE rowid = old.id;
+  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
 -- 人脸表
 CREATE TABLE IF NOT EXISTS faces (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
