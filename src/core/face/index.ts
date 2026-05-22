@@ -12,6 +12,7 @@ import { readFile } from 'fs/promises'
 import { initDetection, isDetectionReady, detectFaces } from './detection'
 import { initFaceEmbedding, isEmbeddingReady, embedFace } from './embedding'
 import { alignFace, cropFace } from './alignment'
+import { dot, l2ToCosineDistance } from './distance'
 import type { DatabaseInstance } from '../db'
 import type { FaceBbox } from '../../shared/types'
 import sharp from 'sharp'
@@ -142,9 +143,9 @@ export function assignFaceToPerson(
   let best: { personId: number | null; cosDistance: number } | null = null
 
   if (candidates.length > 0) {
-    // 把 vec0 的 L2 距离换成 cos 距离：cos_dist = (L2² / 2)
+    // 把 vec0 的 L2 距离换成 cos 距离（公式见 ./distance.ts）
     for (const c of candidates) {
-      const cosDistance = (c.distance * c.distance) / 2
+      const cosDistance = l2ToCosineDistance(c.distance)
       if (cosDistance > MAX_DISTANCE) break // 已按 L2 升序，余下只会更远
       if (c.personId != null) {
         best = { personId: c.personId, cosDistance }
@@ -178,10 +179,7 @@ function bruteForceNearest(
   let bestCos = Infinity
   for (const existing of allFaces) {
     if (existing.id === faceId) continue
-    let dot = 0
-    const n = Math.min(embedding.length, existing.embedding.length)
-    for (let i = 0; i < n; i++) dot += embedding[i] * existing.embedding[i]
-    const cosDistance = 1 - dot
+    const cosDistance = 1 - dot(embedding, existing.embedding)
     if (cosDistance < bestCos) {
       bestCos = cosDistance
       bestPersonId = existing.personId ?? null
