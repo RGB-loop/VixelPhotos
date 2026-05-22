@@ -433,8 +433,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         file_size = excluded.file_size,
         file_mtime = excluded.file_mtime,
         file_hash = excluded.file_hash,
-        video_id = COALESCE(excluded.video_id, photos.video_id),
-        frame_time_ms = COALESCE(excluded.frame_time_ms, photos.frame_time_ms),
+        -- 直接覆盖：调用方明确知道当前路径是不是视频帧，COALESCE 会导致
+        -- 旧的 video_id 在路径转身份（视频帧 → 普通照片）时残留，触发
+        -- search.ts 的 dedup-by-video 错误丢弃。
+        video_id = excluded.video_id,
+        frame_time_ms = excluded.frame_time_ms,
         deleted_at = NULL,
         updated_at = CURRENT_TIMESTAMP
       RETURNING id
