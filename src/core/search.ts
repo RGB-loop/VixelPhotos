@@ -5,6 +5,7 @@
 import type { DatabaseInstance } from './db'
 import type { SearchResult } from '../shared/types'
 import { getEmbeddingService } from './embedding'
+import { rrfFuse } from './fusion'
 
 interface VecSearchResult {
   fileHash: string
@@ -53,8 +54,16 @@ export class SearchEngine {
         Promise.resolve(this.db.searchByFileName(trimmedQuery, limit * 2)),
       ])
 
-      // RRF 融合
-      const mergedResults = this.rrfMerge(vecResults, captionResults, ocrResults, fileNameResults, 60)
+      // RRF 融合（各通道先按相关性排序好，再交给 fusion）
+      const mergedResults = rrfFuse(
+        [
+          [...vecResults].sort((a, b) => a.distance - b.distance),
+          [...captionResults].sort((a, b) => b.score - a.score),
+          [...ocrResults].sort((a, b) => b.score - a.score),
+          fileNameResults,
+        ],
+        60
+      )
 
       const maxScore = mergedResults.length > 0 ? mergedResults[0].score : 1
       for (const r of mergedResults) {
@@ -123,51 +132,6 @@ export class SearchEngine {
       console.error('OCR search failed:', error)
       return []
     }
-  }
-
-  /**
-   * RRF (Reciprocal Rank Fusion) 4 路融合。
-   *
-   * 各路 weight 设计：
-   * - vec / caption / ocr / filename 等权（都是 1/(k+rank+1)）
-   *
-   * 不区分权重的原因：OCR 是精确匹配，BM25 已经偏严；语义向量是宽召回；
-   * 文件名是用户主动命名的信号。让 rank 衰减自然决定哪个胜出。
-   */
-  private rrfMerge(
-    vecResults: VecSearchResult[],
-    captionResults: TextSearchResult[],
-    ocrResults: TextSearchResult[],
-    fileNameResults: Array<{ fileHash: string }>,
-    k: number = 60
-  ): Array<{ fileHash: string; score: number }> {
-    const scores = new Map<string, number>()
-
-    vecResults
-      .sort((a, b) => a.distance - b.distance)
-      .forEach((r, rank) => {
-        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
-      })
-
-    captionResults
-      .sort((a, b) => b.score - a.score)
-      .forEach((r, rank) => {
-        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
-      })
-
-    ocrResults
-      .sort((a, b) => b.score - a.score)
-      .forEach((r, rank) => {
-        scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
-      })
-
-    fileNameResults.forEach((r, rank) => {
-      scores.set(r.fileHash, (scores.get(r.fileHash) || 0) + 1 / (k + rank + 1))
-    })
-
-    return Array.from(scores.entries())
-      .map(([fileHash, score]) => ({ fileHash, score }))
-      .sort((a, b) => b.score - a.score)
   }
 
   private getRecentPhotos(limit: number): SearchResult[] {
