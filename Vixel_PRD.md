@@ -110,10 +110,13 @@
 - 文件移动智能检测：同一照片换了位置不重新跑 AI，只更新路径
 - 支持格式（实际矩阵）：
   - **全平台**：JPG / PNG / WebP / GIF / TIFF / BMP / AVIF（sharp 直读）
-  - **macOS only**：HEIC / HEIF / CR2 / CR3 / NEF / ARW / DNG / RAF / ORF / RW2
-    （通过系统自带 `sips` 转 JPEG；EXIF/GPS 仍从原始文件读，不丢拍摄元数据）
-  - **Linux / Windows**：HEIC 与 RAW 当前不支持（v0.3 计划用 heic-convert
-    + libraw-wasm 兜底）
+  - **全平台**：HEIC / HEIF —— macOS 走系统 `sips`（更快）；Linux / Windows
+    走 `heic-convert`（libheif WASM）兜底
+  - **macOS only**：CR2 / CR3 / NEF / ARW / DNG / RAF / ORF / RW2 等 RAW
+    格式（通过 `sips`；Linux / Windows 的 RAW 在 v0.4+ 评估 `libraw-wasm` 接入）
+  - **视频**：MP4 / MOV / M4V / WebM / MKV / AVI（ffmpeg-static 抽帧）
+  - EXIF / GPS 始终从原始文件字节读（不经过任何转码），所以拍摄时间、
+    地点等元数据在所有路径下都完整保留
 - 照片原文件不复制、不移动、不修改，以只读方式引用
 - 显示索引进度（已处理 X / 共 Y 张，预计剩余时间）
 - 支持多个文件夹作为不同「相册」管理

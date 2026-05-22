@@ -125,10 +125,10 @@ Vixel.app/Contents/Resources/models/
 
 ### Format Support Matrix
 
-| Platform | JPG/PNG/WebP/GIF/TIFF/BMP/AVIF | HEIC/HEIF | RAW | Video |
+| Platform | JPG/PNG/WebP/GIF/TIFF/BMP/AVIF | HEIC/HEIF | RAW (CR2/NEF/ARW/...) | Video (mp4/mov/...) |
 |---|---|---|---|---|
 | macOS | ✅ sharp | ✅ sips | ✅ sips | ✅ ffmpeg |
-| Linux / Win | ✅ sharp | ⚠️ v0.3 | ⚠️ v0.3 | ✅ ffmpeg |
+| Linux / Windows | ✅ sharp | ✅ heic-convert (libheif WASM) | ⚠️ v0.4+ (libraw-wasm under evaluation) | ✅ ffmpeg |
 
 ## Development
 

@@ -3,7 +3,10 @@
 
 > 本文档面向研发工程师，覆盖 Vixel **当前实际形态**（v0.2）的完整技术选型理由、系统架构、数据模型、核心模块实现指南与性能特征。
 >
-> **平台范围：** macOS first（HEIC/RAW、视频帧抽取走系统 `sips`/`ffmpeg`）；Linux/Windows 上图像与人脸/OCR 可用，HEIC/RAW 走 v0.3 计划的兜底路径。
+> **平台范围：** macOS first。HEIC 全平台可用（mac 走 `sips`，Linux/Win 走
+> `heic-convert` libheif WASM）；视频在全平台均可用（ffmpeg-static）。
+> RAW (CR2/NEF/ARW/...) 当前仍是 macOS only（`sips`），Linux/Windows 的
+> RAW 兜底（libraw-wasm）在 v0.4+ 评估。
 >
 > **重大变更（v0.1 → v0.2）：**
 > - 移除 Qwen3.5-4B caption 生成（3.4 GB LLM 下载已删除）
@@ -92,7 +95,7 @@
 | 中文分词 | **@node-rs/jieba**（UDF jiebatok） | FTS5 写入/查询两端对称切词 |
 | 文件监听 | **chokidar** | 图片 + 视频统一 add/change/unlink |
 | EXIF 解析 | **exifr** | 直接读 HEIC/RAW 元数据，不依赖解码 |
-| 图片处理 | **sharp**（libvips） | EXIF auto-rotate；HEIC/RAW 走 macOS sips |
+| 图片处理 | **sharp**（libvips） | EXIF auto-rotate；HEIC 走 sips(mac) / heic-convert(Linux/Win)；RAW 走 sips(mac only) |
 | 文件去重 | **xxhash-wasm** | photo 内容哈希（dedup 缩略图/embedding） |
 | 测试 | **vitest** | 24 个单测，<1s |
 
@@ -574,7 +577,7 @@ indexer.processNext() loop:
   task                    handler
   ─────────────────       ────────────────────────────────
   thumbnail               processThumbnail
-                            decodeImage()           ← sharp / sips fallback
+                            decodeImage()           ← sharp → sips(mac HEIC/RAW) → heic-convert(HEIC fallback)
                             parseAndUpdateMeta()    ← exifr on original bytes
                             sharp.rotate().resize(512).webp
                             → <userData>/thumbnails/<hash>.webp
@@ -676,7 +679,7 @@ async search(query, limit, options) {
 
 | 阶段 | 耗时 | 说明 |
 |---|---|---|
-| decodeImage | < 5 ms (JPEG) / ~200 ms (HEIC via sips) | |
+| decodeImage | < 5 ms (JPEG) / ~200 ms (HEIC via sips) / ~600 ms (HEIC via heic-convert WASM) | |
 | parseAndUpdateMeta | ~10 ms | exifr |
 | generateThumbnail | ~20 ms | sharp resize → webp 512px |
 | processEmbedding | ~80 ms CPU / ~25 ms CoreML | SigLIP 2 |
