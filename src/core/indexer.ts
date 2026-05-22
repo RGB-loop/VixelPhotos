@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
 import { join } from 'path'
-import { mkdir, readFile } from 'fs/promises'
+import { mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import sharp from 'sharp'
 import exifr from 'exifr'
@@ -9,6 +9,7 @@ import type { IndexProgress } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
+import { decodeImage } from './image/decode'
 
 /**
  * Indexer 流水线（v0.2，纯本地，无 LLM）：
@@ -80,8 +81,8 @@ export class Indexer extends EventEmitter {
         }
       }
 
-      const imageBuffer = await readFile(filePath)
-      const result = await processPhotoOcr(imageBuffer)
+      const decoded = await decodeImage(filePath)
+      const result = await processPhotoOcr(decoded.buffer)
       if (result.text.trim().length > 0) {
         this.db.saveOcrText(fileHash, result.text)
       } else {
@@ -105,8 +106,8 @@ export class Indexer extends EventEmitter {
         await initFaceService()
       }
 
-      const imageBuffer = await readFile(filePath)
-      const faces = await processPhotoFaces(imageBuffer)
+      const decoded = await decodeImage(filePath)
+      const faces = await processPhotoFaces(decoded.buffer)
 
       for (const face of faces) {
         const faceId = this.db.saveFace(
@@ -208,31 +209,37 @@ export class Indexer extends EventEmitter {
 
   private async processThumbnail(fileHash: string, filePath: string, photoId: number): Promise<void> {
     try {
+      const decoded = await decodeImage(filePath)
       const thumbnailPath = this.getThumbnailPath(fileHash)
       if (existsSync(thumbnailPath)) {
-        const imageBuffer = await readFile(filePath)
-        await this.parseAndUpdateMeta(photoId, imageBuffer)
+        await this.parseAndUpdateMeta(photoId, decoded.buffer, decoded.originalBuffer)
         return
       }
-
-      const imageBuffer = await readFile(filePath)
-
-      await this.parseAndUpdateMeta(photoId, imageBuffer)
-      await this.generateThumbnail(fileHash, imageBuffer)
+      await this.parseAndUpdateMeta(photoId, decoded.buffer, decoded.originalBuffer)
+      await this.generateThumbnail(fileHash, decoded.buffer)
     } catch (error) {
       console.error(`Error processing thumbnail for ${filePath}:`, error)
       throw error
     }
   }
 
-  private async parseAndUpdateMeta(photoId: number, imageBuffer: Buffer): Promise<void> {
+  /**
+   * EXIF/GPS 解析始终走 originalBuffer —— exifr 原生认 HEIC/RAW 元数据，
+   * 转码后的 JPEG 反而会丢失拍摄时间和 GPS。sharp metadata 则用解码后的
+   * 像素 buffer。
+   */
+  private async parseAndUpdateMeta(
+    photoId: number,
+    decodedBuffer: Buffer,
+    originalBuffer: Buffer
+  ): Promise<void> {
     const [metadata, exifData, gpsData] = await Promise.all([
-      sharp(imageBuffer).metadata(),
-      exifr.parse(imageBuffer, {
+      sharp(decodedBuffer).metadata(),
+      exifr.parse(originalBuffer, {
         pick: ['Make', 'Model', 'ExposureTime', 'FNumber', 'ISO',
           'FocalLength', 'DateTimeOriginal'],
       }).catch(() => null),
-      exifr.gps(imageBuffer).catch(() => null),
+      exifr.gps(originalBuffer).catch(() => null),
     ])
 
     this.db.updatePhotoMeta(photoId, {
@@ -252,7 +259,7 @@ export class Indexer extends EventEmitter {
         return
       }
 
-      const imageBuffer = await readFile(filePath)
+      const decoded = await decodeImage(filePath)
 
       // 兜底：确保缩略图存在
       const thumbnailPath = this.getThumbnailPath(fileHash)
@@ -262,7 +269,7 @@ export class Indexer extends EventEmitter {
 
       try {
         const embeddingService = getEmbeddingService()
-        const embedding = await embeddingService.encodeImage(imageBuffer)
+        const embedding = await embeddingService.encodeImage(decoded.buffer)
         this.db.saveImageVec(fileHash, embedding)
       } catch (embedError) {
         console.warn(`Image embedding failed for ${filePath}:`, embedError)

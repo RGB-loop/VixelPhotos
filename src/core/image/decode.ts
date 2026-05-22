@@ -20,10 +20,16 @@ import { extname, join } from 'path'
 import sharp from 'sharp'
 
 export interface DecodedImage {
-  /** 已被 sharp 验证可解码的 buffer（通常是 JPEG/PNG/WebP/TIFF） */
+  /** sharp 可直接消化的 buffer（HEIC/RAW 会被转成 JPEG） */
   buffer: Buffer
+  /**
+   * 原始文件字节。对 EXIF/GPS 提取有用 —— exifr 能直接读 HEIC/RAW 元数据，
+   * 转码后的 JPEG 反而会丢拍摄设备 / GPS 等关键字段。
+   * 对 passthrough 路径，buffer === originalBuffer（同一 Buffer 引用）。
+   */
+  originalBuffer: Buffer
   /** 解码来源，便于日志和测试 */
-  source: 'sharp' | 'sips' | 'passthrough'
+  source: 'passthrough' | 'sips'
   /** 原始扩展名（含 .），全小写 */
   ext: string
 }
@@ -42,20 +48,20 @@ const SIPS_EXTS = new Set<string>([
  */
 export async function decodeImage(filePath: string): Promise<DecodedImage> {
   const ext = extname(filePath).toLowerCase()
-  const buffer = await readFile(filePath)
+  const originalBuffer = await readFile(filePath)
 
   // 1) sharp 直接试
   try {
-    await sharp(buffer).metadata()
-    return { buffer, source: 'passthrough', ext }
+    await sharp(originalBuffer).metadata()
+    return { buffer: originalBuffer, originalBuffer, source: 'passthrough', ext }
   } catch {
     /* fall through */
   }
 
   // 2) 仅在白名单格式 + macOS 上走 sips
   if (process.platform === 'darwin' && SIPS_EXTS.has(ext)) {
-    const jpeg = await decodeWithSips(buffer, ext)
-    return { buffer: jpeg, source: 'sips', ext }
+    const jpeg = await decodeWithSips(originalBuffer, ext)
+    return { buffer: jpeg, originalBuffer, source: 'sips', ext }
   }
 
   throw new Error(
