@@ -331,6 +331,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   // 历史数据：把 unicode61-切的 FTS5 内容用 jieba 重切一遍
   rebuildFtsIndicesIfNeeded(db)
 
+  // 历史数据：把 faces.embedding 的 BLOB 灌进 face_vecs ANN 索引
+  backfillFaceVecsIfNeeded(db)
+
   const stmts = {
     addFolder: db.prepare(`
       INSERT INTO watched_folders (path) VALUES (?)
@@ -1133,6 +1136,73 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     close: (): void => { db.close() },
+  }
+}
+
+/**
+ * 把 faces 表里历史的 embedding BLOB 灌进 face_vecs ANN 索引。
+ * 只在首次发现未迁移时执行；标志写入 meta_state。
+ *
+ * 维度不匹配的行会跳过并打 warning（保留 BLOB 不删，assignFaceToPerson
+ * 的 bruteForceNearest 兜底仍能 work）。
+ */
+function backfillFaceVecsIfNeeded(db: Database.Database): void {
+  try {
+    const FLAG = `face_vecs_backfilled_dim${FACE_EMBEDDING_DIM}_v1`
+    const row = db
+      .prepare(`SELECT value FROM meta_state WHERE key = ?`)
+      .get(FLAG) as { value?: string } | undefined
+    if (row?.value === '1') return
+
+    const totalRow = db
+      .prepare(`SELECT COUNT(*) as n FROM faces`)
+      .get() as { n: number }
+    if (totalRow.n === 0) {
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
+      return
+    }
+
+    // 已经在 vec0 里的就不动；只补缺失的。
+    const missingRows = db
+      .prepare(`
+        SELECT f.id, f.embedding FROM faces f
+        WHERE NOT EXISTS (SELECT 1 FROM face_vecs v WHERE v.rowid = f.id)
+      `)
+      .all() as Array<{ id: number; embedding: Buffer }>
+
+    if (missingRows.length === 0) {
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
+      return
+    }
+
+    console.log(`[migrate] backfilling face_vecs (${missingRows.length}/${totalRow.n} rows)`)
+    const insert = db.prepare(`INSERT INTO face_vecs(rowid, embedding) VALUES (?, ?)`)
+    let inserted = 0
+    let mismatch = 0
+    const tx = db.transaction(() => {
+      for (const r of missingRows) {
+        const floats = new Float32Array(
+          r.embedding.buffer,
+          r.embedding.byteOffset,
+          r.embedding.byteLength / 4
+        )
+        if (floats.length !== FACE_EMBEDDING_DIM) {
+          mismatch++
+          continue
+        }
+        try {
+          insert.run(r.id, floats)
+          inserted++
+        } catch (err) {
+          console.warn(`[migrate] face_vecs insert failed for face id=${r.id}:`, err)
+        }
+      }
+      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
+    })
+    tx()
+    console.log(`[migrate] face_vecs backfill done: ${inserted} inserted, ${mismatch} dim-mismatch skipped`)
+  } catch (err) {
+    console.warn('[migrate] face_vecs backfill failed:', err)
   }
 }
 
