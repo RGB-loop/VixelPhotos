@@ -56,8 +56,10 @@ export interface IndexProgress {
   captionedPhotos: number       // 已生成 AI 描述的照片数
 
   // 当前状态
-  stage: 'idle' | 'indexing' | 'captioning' | 'detecting_faces'
+  stage: 'idle' | 'indexing' | 'ocr' | 'detecting_faces'
   currentFile?: string
+  // OCR 进度
+  ocrPhotos?: number
 
   // AI 模型状态
   aiModelReady: boolean
@@ -123,6 +125,9 @@ export const IPC_CHANNELS = {
   // 地图
   GET_PHOTOS_WITH_GPS: 'get-photos-with-gps',
 
+  // OCR
+  START_OCR_SCAN: 'start-ocr-scan',
+
   // 人脸识别
   START_FACE_SCAN: 'start-face-scan',
   GET_PEOPLE: 'get-people',
@@ -180,4 +185,4 @@ export interface Person {
 }
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'
-export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face'
+export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face' | 'ocr'

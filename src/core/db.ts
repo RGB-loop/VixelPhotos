@@ -195,7 +195,7 @@ export interface DatabaseInstance {
   getQueueStats: () => { pending: number; processing: number; done: number }
 
   // 照片统计
-  getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number }
+  getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number; ocred: number }
 
   // 内容操作（按 file_hash 共享）
   hasContentForHash: (fileHash: string) => { hasEmbedding: boolean; hasCaption: boolean; hasOcr: boolean }
@@ -475,12 +475,13 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     getPhotoStats: db.prepare(`
       SELECT
         COUNT(*) as total,
-        COUNT(DISTINCT file_hash) as uniqueTotal,
-        SUM(CASE WHEN width IS NOT NULL THEN 1 ELSE 0 END) as thumbnailed,
-        SUM(CASE WHEN embed_status = 'done' THEN 1 ELSE 0 END) as indexed,
-        SUM(CASE WHEN caption_status = 'done' THEN 1 ELSE 0 END) as captioned
-      FROM photos
-      WHERE deleted_at IS NULL
+        COUNT(DISTINCT p.file_hash) as uniqueTotal,
+        SUM(CASE WHEN p.width IS NOT NULL THEN 1 ELSE 0 END) as thumbnailed,
+        SUM(CASE WHEN p.embed_status = 'done' THEN 1 ELSE 0 END) as indexed,
+        SUM(CASE WHEN p.caption_status = 'done' THEN 1 ELSE 0 END) as captioned,
+        (SELECT COUNT(DISTINCT file_hash) FROM image_ocr) as ocred
+      FROM photos p
+      WHERE p.deleted_at IS NULL
     `),
 
     // 内容操作（按 file_hash）
@@ -819,7 +820,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     getPhotoStats: () => {
       const result = stmts.getPhotoStats.get() as {
-        total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number
+        total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number; ocred: number
       }
       return {
         total: result.total || 0,
@@ -827,6 +828,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         thumbnailed: result.thumbnailed || 0,
         indexed: result.indexed || 0,
         captioned: result.captioned || 0,
+        ocred: result.ocred || 0,
       }
     },
 

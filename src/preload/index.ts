@@ -89,6 +89,11 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CAPTION, photoId, text)
   },
 
+  // OCR
+  startOcrScan: (): Promise<{ queued?: number; error?: string }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.START_OCR_SCAN)
+  },
+
   // 人脸识别
   startFaceScan: (): Promise<{ queued?: number; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.START_FACE_SCAN)

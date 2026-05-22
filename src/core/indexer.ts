@@ -8,6 +8,7 @@ import type { DatabaseInstance } from './db'
 import type { IndexProgress } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
+import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 
 /**
  * Indexer 流水线（v0.2，纯本地，无 LLM）：
@@ -31,6 +32,22 @@ export class Indexer extends EventEmitter {
     this.ensureThumbnailDir()
   }
 
+  /** 手动触发 OCR 扫描（已 embed 但未 OCR 的照片） */
+  async startOcrScan(): Promise<{ queued: number }> {
+    const ready = await initOcrService()
+    if (!ready) {
+      throw new Error('OCR models not available — run `npm run models:download` first')
+    }
+    const pending = this.db.getPendingOcrPhotos()
+    for (const photo of pending) {
+      this.db.addToQueue(photo.id, 'ocr', 4)
+    }
+    if (pending.length > 0) {
+      this.processNext()
+    }
+    return { queued: pending.length }
+  }
+
   /** 手动触发人脸扫描 */
   async startFaceScan(): Promise<{ queued: number }> {
     const ready = await initFaceService()
@@ -48,6 +65,33 @@ export class Indexer extends EventEmitter {
     }
 
     return { queued: pending.length }
+  }
+
+  private async processOcr(fileHash: string, filePath: string): Promise<void> {
+    try {
+      const { hasOcr } = this.db.hasContentForHash(fileHash)
+      if (hasOcr) return // 同内容已 OCR 过
+
+      if (!isOcrReady()) {
+        const ok = await initOcrService()
+        if (!ok) {
+          // 没装 OCR 模型：不抛错，静默跳过（caption FTS5 + vec 仍可用）
+          return
+        }
+      }
+
+      const imageBuffer = await readFile(filePath)
+      const result = await processPhotoOcr(imageBuffer)
+      if (result.text.trim().length > 0) {
+        this.db.saveOcrText(fileHash, result.text)
+      } else {
+        // 写空串以标记"扫过了，无文字"，避免重复扫
+        this.db.saveOcrText(fileHash, '')
+      }
+    } catch (error) {
+      console.error(`Error processing OCR for ${filePath}:`, error)
+      throw error
+    }
   }
 
   private async processFace(fileHash: string, filePath: string): Promise<void> {
@@ -143,6 +187,10 @@ export class Indexer extends EventEmitter {
       } else if (task.taskType === 'face') {
         this.emitProgress('detecting_faces', photo.fileName)
         await this.processFace(photo.fileHash, photo.filePath)
+        this.db.completeTask(task.id)
+      } else if (task.taskType === 'ocr') {
+        this.emitProgress('ocr', photo.fileName)
+        await this.processOcr(photo.fileHash, photo.filePath)
         this.db.completeTask(task.id)
       } else if (task.taskType === 'caption') {
         // legacy 队列条目：直接 drop（v0.2 不再生成 caption）
@@ -240,7 +288,8 @@ export class Indexer extends EventEmitter {
       totalPhotos: photoStats.uniqueTotal,
       thumbnailedPhotos: photoStats.thumbnailed,
       indexedPhotos: photoStats.indexed,
-      captionedPhotos: photoStats.captioned, // 字段保留为 0（未来 OCR 填）
+      captionedPhotos: photoStats.captioned,
+      ocrPhotos: photoStats.ocred,
       stage,
       currentFile,
       aiModelReady: getEmbeddingService().isReady(),

@@ -9,6 +9,7 @@ import { Indexer } from '../core/indexer'
 import { SearchEngine } from '../core/search'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
 import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
+import { setOcrModelsDir } from '../core/ocr'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox } from '../shared/types'
 
 // 全局服务实例
@@ -66,6 +67,7 @@ async function initServices(): Promise<void> {
 
   initEmbeddingServicePath(userDataPath, bundledModelsDir)
   setFaceModelsDir(bundledModelsDir)
+  setOcrModelsDir(bundledModelsDir)
 
   db = initDatabase(dbPath)
   db.recoverStuckTasks()
@@ -269,6 +271,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.START_FACE_SCAN, async () => {
     try {
       return await indexer.startFaceScan()
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // OCR 扫描
+  ipcMain.handle(IPC_CHANNELS.START_OCR_SCAN, async () => {
+    try {
+      return await indexer.startOcrScan()
     } catch (error) {
       return { success: false, error: String(error) }
     }
