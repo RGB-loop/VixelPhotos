@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
 import { basename, join } from 'path'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, rm, unlink, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import sharp from 'sharp'
 import exifr from 'exifr'
@@ -124,6 +124,23 @@ export class Indexer extends EventEmitter {
 
     this.emitProgress('indexing', basename(video.filePath))
 
+    // 清掉该视频上一轮抽的帧（DB 行 + 孤立 hash 的内容 GC + 共享缩略图）
+    // 然后再 rm 整个 framesDir，确保磁盘和 DB 状态一致。
+    // 首次抽帧时 removeFramesForVideo 返回空，相当于 no-op。
+    const orphanedOldHashes = this.db.removeFramesForVideo(videoId)
+    for (const hash of orphanedOldHashes) {
+      const thumb = this.getThumbnailPath(hash)
+      try {
+        if (existsSync(thumb)) await unlink(thumb)
+      } catch { /* best-effort */ }
+    }
+    const framesDir = this.getVideoFramesDir(video.fileHash)
+    if (existsSync(framesDir)) {
+      try {
+        await rm(framesDir, { recursive: true, force: true })
+      } catch { /* best-effort */ }
+    }
+
     const frames = await extractKeyframes(video.filePath, {})
     if (frames.length === 0) {
       // 空视频 / 损坏；标记 frame_count=0 让搜索界面知道这个视频确实扫过了但没内容
@@ -131,7 +148,6 @@ export class Indexer extends EventEmitter {
       return
     }
 
-    const framesDir = join(this.userDataPath, 'video_frames', video.fileHash)
     if (!existsSync(framesDir)) {
       await mkdir(framesDir, { recursive: true })
     }

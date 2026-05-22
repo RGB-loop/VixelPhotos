@@ -334,6 +334,12 @@ export interface DatabaseInstance {
     fileHash: string
     orphanedFrameHashes: string[]
   } | null
+  /**
+   * 重抽帧前的清理：soft-delete 该 videoId 已有的所有 frame photos，
+   * 对孤立 hash 做内容 GC。**不动 videos 表本身**。
+   * 返回 orphanedFrameHashes，调用方据此清磁盘 JPG / 缩略图。
+   */
+  removeFramesForVideo: (videoId: number) => string[]
 
   // 备份
   /**
@@ -1310,6 +1316,37 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     getFramePhotosByVideo: (videoId) => {
       return stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+    },
+    removeFramesForVideo: (videoId): string[] => {
+      const frames = stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+      if (frames.length === 0) return []
+      const frameHashes = new Set(frames.map((f) => f.fileHash).filter((h): h is string => !!h))
+
+      const tx = db.transaction(() => {
+        for (const f of frames) stmts.softDeletePhoto.run(f.filePath)
+      })
+      tx()
+
+      const orphaned: string[] = []
+      const hasOther = db.prepare(
+        `SELECT 1 FROM photos WHERE file_hash = ? AND deleted_at IS NULL LIMIT 1`
+      )
+      for (const hash of frameHashes) {
+        if (!hasOther.get(hash)) {
+          orphaned.push(hash)
+          const vec = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
+          if (vec) {
+            stmts.deleteVecByRowid.run(Number(vec.rowid))
+            stmts.deleteVecMapByHash.run(hash)
+          }
+          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
+          for (const fr of faceRows) stmts.deleteFaceVec.run(fr.id)
+          stmts.deleteFacesByHash.run(hash)
+          stmts.deleteCaptionByHash.run(hash)
+          stmts.deleteOcrByHash.run(hash)
+        }
+      }
+      return orphaned
     },
     cascadeRemoveVideo: (filePath) => {
       const video = stmts.getVideoByPath.get(filePath) as VideoRecord | undefined
