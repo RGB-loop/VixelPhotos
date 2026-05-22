@@ -231,6 +231,11 @@ export class Indexer extends EventEmitter {
     return join(this.thumbnailDir, `${fileHash}.webp`)
   }
 
+  /** 获取某视频的帧 JPEG 输出目录（按视频 hash） */
+  getVideoFramesDir(videoHash: string): string {
+    return join(this.userDataPath, 'video_frames', videoHash)
+  }
+
   async processNext(): Promise<void> {
     if (this.isProcessing) return
 

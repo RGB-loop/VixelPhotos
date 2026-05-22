@@ -325,6 +325,15 @@ export interface DatabaseInstance {
   ) => void
   softDeleteVideo: (path: string) => void
   getFramePhotosByVideo: (videoId: number) => Photo[]
+  /**
+   * 用户删了源视频文件后的级联清理：soft-delete video，
+   * soft-delete 所有 frame photos，对孤立的 frame hash 做内容 GC。
+   * 返回 { fileHash, orphanedFrameHashes }；调用方据此清理 JPG 帧目录。
+   */
+  cascadeRemoveVideo: (filePath: string) => {
+    fileHash: string
+    orphanedFrameHashes: string[]
+  } | null
 
   // 备份
   /**
@@ -1301,6 +1310,47 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     getFramePhotosByVideo: (videoId) => {
       return stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+    },
+    cascadeRemoveVideo: (filePath) => {
+      const video = stmts.getVideoByPath.get(filePath) as VideoRecord | undefined
+      if (!video) return null
+
+      // 找出所有帧 photos，逐张 soft-delete；记录它们的 hash 以便后续判孤立
+      const frames = stmts.getFramePhotosByVideo.all(video.id) as Photo[]
+      const frameHashes = new Set(frames.map((f) => f.fileHash).filter((h): h is string => !!h))
+
+      const tx = db.transaction(() => {
+        for (const f of frames) {
+          stmts.softDeletePhoto.run(f.filePath)
+        }
+        stmts.softDeleteVideo.run(filePath)
+      })
+      tx()
+
+      // 哪些 frame hash 已经没有任何存活 photos 引用 → 真正可以清内容
+      const orphanedFrameHashes: string[] = []
+      const hasOther = db.prepare(
+        `SELECT 1 FROM photos WHERE file_hash = ? AND deleted_at IS NULL LIMIT 1`
+      )
+      for (const hash of frameHashes) {
+        const row = hasOther.get(hash)
+        if (!row) {
+          orphanedFrameHashes.push(hash)
+          // 复用 deleteContentByHash 的内联逻辑（同一段，避免实例自引用）
+          const vec = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
+          if (vec) {
+            stmts.deleteVecByRowid.run(Number(vec.rowid))
+            stmts.deleteVecMapByHash.run(hash)
+          }
+          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
+          for (const fr of faceRows) stmts.deleteFaceVec.run(fr.id)
+          stmts.deleteFacesByHash.run(hash)
+          stmts.deleteCaptionByHash.run(hash)
+          stmts.deleteOcrByHash.run(hash)
+        }
+      }
+
+      return { fileHash: video.fileHash || '', orphanedFrameHashes }
     },
 
     backupTo: async (destPath: string): Promise<void> => {

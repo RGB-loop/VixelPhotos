@@ -1,6 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, extname } from 'path'
-import { stat, readFile, access } from 'fs/promises'
+import { stat, readFile, access, rm, unlink } from 'fs/promises'
+import { existsSync } from 'fs'
 import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from './db'
 import type { Indexer } from './indexer'
@@ -209,20 +210,55 @@ export class FileWatcher {
     }
   }
 
-  private handleRemove(filePath: string): void {
+  private async handleRemove(filePath: string): Promise<void> {
     const kind = classifyMedia(filePath)
     if (kind === null) return
 
     try {
       if (kind === 'video') {
-        // 视频删除：标记 videos.deleted_at；它的帧 photos 仍按文件路径自己被
-        // chokidar unlink 触发处理（如果对应的 frame JPEG 也被删了）。
-        this.db.softDeleteVideo(filePath)
+        await this.removeVideo(filePath)
       } else {
         this.db.softDeletePhoto(filePath)
       }
     } catch (error) {
       console.error(`Error handling remove for ${filePath}:`, error)
+    }
+  }
+
+  /**
+   * 视频删除的完整级联：cascadeRemoveVideo 处理 DB（soft-delete video、
+   * frame photos、孤立 hash 的内容），这里负责清理磁盘上的 JPG 帧目录
+   * 与共享的缩略图（如果该 hash 已彻底无活体引用）。
+   *
+   * Frame JPG 落在 <userData>/video_frames/<videoHash>/，不在用户监控目录里，
+   * 所以 chokidar 不会触发它们自己的 unlink — 必须显式删。
+   */
+  private async removeVideo(filePath: string): Promise<void> {
+    const result = this.db.cascadeRemoveVideo(filePath)
+    if (!result) return // 视频不在库中
+
+    const { fileHash, orphanedFrameHashes } = result
+
+    // 帧 JPG 目录：通常以 video hash 命名，整目录 rm
+    if (fileHash) {
+      const framesDir = this.indexer.getVideoFramesDir(fileHash)
+      if (existsSync(framesDir)) {
+        try {
+          await rm(framesDir, { recursive: true, force: true })
+        } catch (err) {
+          console.warn(`Failed to remove video frames dir ${framesDir}:`, err)
+        }
+      }
+    }
+
+    // 共享缩略图：孤立 frame hash 的 .webp 文件
+    for (const hash of orphanedFrameHashes) {
+      const thumb = this.indexer.getThumbnailPath(hash)
+      try {
+        if (existsSync(thumb)) await unlink(thumb)
+      } catch (err) {
+        console.warn(`Failed to remove thumbnail ${thumb}:`, err)
+      }
     }
   }
 }
