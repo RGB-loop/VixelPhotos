@@ -487,300 +487,240 @@ initDatabase(dbPath)
 
 ## 4. 核心模块实现
 
-### 4.1 Electron 进程架构
+### 4.1 进程模型
+
+v0.2 是**单 Electron 进程**：main 同时负责 UI 路由、SQLite、ONNX 推理。
+没有 Worker 线程、没有 llama-server 子进程、没有 Python。视频抽帧是
+唯一的外部子进程（ffmpeg）—— 短命的 spawn-and-wait，不常驻。
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Main Process                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │ IndexWorker │  │ FileWatcher │  │   Database  │ │
-│  │ (Worker)    │  │ (chokidar)  │  │ (sqlite)    │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘ │
-│         │                │                │         │
-│         └────────────────┼────────────────┘         │
-│                          │ IPC                      │
-└──────────────────────────┼──────────────────────────┘
-                           │
-┌──────────────────────────┼──────────────────────────┐
-│                   Renderer Process                   │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │  SearchBar  │  │  PhotoGrid  │  │   Settings  │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘ │
-└──────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│                  Main Process                     │
+│  ┌───────────┐  ┌────────────┐  ┌─────────────┐  │
+│  │ Indexer   │  │ Watcher    │  │ SQLite +    │  │
+│  │ EventEm.  │◄─│ chokidar   │─►│ sqlite-vec  │  │
+│  └─────┬─────┘  └────────────┘  └─────────────┘  │
+│        │                                          │
+│        ▼   onnxruntime-node / 🤗 Transformers.js  │
+│  ┌──────────────────────────────────────────────┐ │
+│  │ SigLIP 2 / SCRFD / MobileFaceNet / PaddleOCR │ │
+│  └──────────────────────────────────────────────┘ │
+│        │   spawn (fire-and-wait)                  │
+│        ▼                                          │
+│  ┌──────────────┐                                 │
+│  │ ffmpeg-static│  仅在抽视频帧时启动              │
+│  └──────────────┘                                 │
+└──────────────┬────────────────────────────────────┘
+               │ contextBridge + ipcMain/Renderer
+┌──────────────▼────────────────────────────────────┐
+│              Renderer Process (React)             │
+│   PhotoGrid · MapView · PeopleView · PhotoDetail  │
+│   SearchBar · FolderManager · ModelStatus         │
+└───────────────────────────────────────────────────┘
 ```
 
-### 4.2 IPC 接口设计
+### 4.2 IPC 表面
+
+[`src/preload/index.ts`](src/preload/index.ts) 暴露的全部 API（v0.2）。
+全部走 `ipcRenderer.invoke`，没有同步 IPC，没有 `nodeIntegration`。
 
 ```typescript
-// shared/types.ts
-export interface Photo {
-  id: number;
-  filePath: string;
-  fileName: string;
-  width: number;
-  height: number;
-  takenAt?: Date;
-  caption?: string;
-}
-
-export interface SearchResult {
-  photo: Photo;
-  score: number;
-}
-
-export interface IndexProgress {
-  total: number;
-  done: number;
-  currentFile: string;
-  etaSeconds: number;
-}
-
-// preload/index.ts
-import { contextBridge, ipcRenderer } from 'electron';
-
-contextBridge.exposeInMainWorld('api', {
+window.api = {
   // 搜索
-  search: (query: string, limit?: number) =>
-    ipcRenderer.invoke('search', query, limit),
+  search(query, limit?, { dateFrom?, dateTo? }?)
+  findSimilar(photoId, limit?)
+  getPhotosWithGPS()
 
-  // 文件夹管理
-  addFolder: (path: string) =>
-    ipcRenderer.invoke('add-folder', path),
-  removeFolder: (id: number) =>
-    ipcRenderer.invoke('remove-folder', id),
-  getFolders: () =>
-    ipcRenderer.invoke('get-folders'),
+  // 文件夹
+  selectFolder() / addFolder(path) / removeFolder(id)
+  getFolders() / getFolderStats(id)
 
-  // 照片详情
-  getPhotoDetail: (id: number) =>
-    ipcRenderer.invoke('get-photo-detail', id),
-  getThumbnail: (id: number) =>
-    ipcRenderer.invoke('get-thumbnail', id),
+  // 照片
+  getPhotoDetail(id) / getThumbnailData(id) / getFullImageData(id)
+  getPhotoLocations(id) / showInFinder(path)
+  updateCaption(id, text)
 
-  // 进度监听
-  onIndexProgress: (callback: (progress: IndexProgress) => void) => {
-    ipcRenderer.on('index-progress', (_, progress) => callback(progress));
-  },
+  // OCR
+  startOcrScan()
 
-  // 打开文件所在位置
-  showInFinder: (filePath: string) =>
-    ipcRenderer.invoke('show-in-finder', filePath),
-});
-```
+  // 人脸
+  startFaceScan() / getPeople()
+  getPersonPhotos(id, limit?) / setPersonName(id, name)
+  mergePeople(target, sources[]) / getFaceThumbnail(faceId)
+  getPhotoFaces(photoId)
 
-### 4.3 索引管线
+  // 模型状态 / Embedding provider 切换
+  getModelStatus() / getEmbeddingConfig() / setEmbeddingConfig(c|null)
+  testEmbeddingApi()
 
-```typescript
-// main/services/indexer.ts
-import { Worker } from 'worker_threads';
-import { EventEmitter } from 'events';
-
-export class Indexer extends EventEmitter {
-  private worker: Worker;
-  private db: Database.Database;
-  private queue: IndexTask[] = [];
-  private isProcessing = false;
-
-  constructor(db: Database.Database) {
-    super();
-    this.db = db;
-    this.worker = new Worker('./indexWorker.js');
-    this.worker.on('message', this.handleWorkerMessage.bind(this));
-  }
-
-  async addToQueue(photoId: number, taskType: 'embed' | 'caption') {
-    const priority = taskType === 'embed' ? 10 : 5;
-    this.db.prepare(`
-      INSERT INTO index_queue (photo_id, task_type, priority)
-      VALUES (?, ?, ?)
-    `).run(photoId, taskType, priority);
-
-    this.processNext();
-  }
-
-  private async processNext() {
-    if (this.isProcessing) return;
-
-    const task = this.db.prepare(`
-      SELECT * FROM index_queue
-      WHERE status = 'pending'
-      ORDER BY priority DESC, id ASC
-      LIMIT 1
-    `).get();
-
-    if (!task) return;
-
-    this.isProcessing = true;
-    this.db.prepare(`UPDATE index_queue SET status = 'processing' WHERE id = ?`)
-      .run(task.id);
-
-    this.worker.postMessage({ type: task.task_type, photoId: task.photo_id });
-  }
-
-  private handleWorkerMessage(msg: any) {
-    if (msg.type === 'embed-done') {
-      this.saveImageEmbedding(msg.photoId, msg.embedding);
-      // 添加 caption 任务
-      this.addToQueue(msg.photoId, 'caption');
-    } else if (msg.type === 'caption-done') {
-      this.saveCaption(msg.photoId, msg.caption, msg.embedding);
-    }
-
-    this.isProcessing = false;
-    this.emitProgress();
-    this.processNext();
-  }
+  // 进度
+  onIndexProgress(cb)  // → { stage, totalPhotos, indexedPhotos, ocrPhotos, ... }
 }
 ```
 
-### 4.4 文件监听
+> 历史 channel（`download-model` / `download-llama-server` /
+> `init-caption-generator` / `regenerate-caption` 等）已在 PR2 全部删除，
+> renderer 不再持有对应回调。
 
-```typescript
-// main/services/watcher.ts
-import chokidar from 'chokidar';
-import path from 'path';
+### 4.3 Indexer 任务流水线
 
-const SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.heic', '.webp', '.cr2', '.nef', '.arw'];
-
-export class FileWatcher {
-  private watchers: Map<number, chokidar.FSWatcher> = new Map();
-  private db: Database.Database;
-  private indexer: Indexer;
-
-  constructor(db: Database.Database, indexer: Indexer) {
-    this.db = db;
-    this.indexer = indexer;
-  }
-
-  watchFolder(folderId: number, folderPath: string) {
-    const watcher = chokidar.watch(folderPath, {
-      ignored: /(^|[\/\\])\../, // 忽略隐藏文件
-      persistent: true,
-      ignoreInitial: false,
-      awaitWriteFinish: {
-        stabilityThreshold: 2000,
-        pollInterval: 100,
-      },
-    });
-
-    watcher
-      .on('add', (filePath) => this.handleAdd(folderId, filePath))
-      .on('change', (filePath) => this.handleChange(filePath))
-      .on('unlink', (filePath) => this.handleRemove(filePath));
-
-    this.watchers.set(folderId, watcher);
-  }
-
-  private async handleAdd(folderId: number, filePath: string) {
-    const ext = path.extname(filePath).toLowerCase();
-    if (!SUPPORTED_EXTENSIONS.includes(ext)) return;
-
-    const stats = await fs.stat(filePath);
-    const photoId = this.db.prepare(`
-      INSERT INTO photos (folder_id, file_path, file_name, file_size, file_mtime)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(folderId, filePath, path.basename(filePath), stats.size, stats.mtimeMs).lastInsertRowid;
-
-    this.indexer.addToQueue(photoId as number, 'embed');
-  }
-
-  private async handleRemove(filePath: string) {
-    this.db.prepare(`
-      UPDATE photos SET deleted_at = CURRENT_TIMESTAMP WHERE file_path = ?
-    `).run(filePath);
-  }
-}
 ```
+file enters watcher
+  │
+  ├─ image  → addPhoto → enqueue('thumbnail', 'embed')
+  └─ video  → addVideo → enqueue('extract_frames')
+
+indexer.processNext() loop:
+  task                    handler
+  ─────────────────       ────────────────────────────────
+  thumbnail               processThumbnail
+                            decodeImage()           ← sharp / sips fallback
+                            parseAndUpdateMeta()    ← exifr on original bytes
+                            sharp.rotate().resize(512).webp
+                            → <userData>/thumbnails/<hash>.webp
+  embed                   processEmbedding
+                            decodeImage()
+                            getEmbeddingService().encodeImage(decoded)
+                            → db.saveImageVec(hash, Float32Array<768>)
+  face                    processFace
+                            decodeImage()
+                            SCRFD detect → MobileFaceNet embed
+                            → db.saveFace(...)        ← 同时写 face_vecs
+                            → assignFaceToPerson(...)  ← ANN k=10 匹配
+  ocr                     processOcr
+                            decodeImage()
+                            processPhotoOcr()        ← det/cls/rec
+                            → db.saveOcrText(hash, joined)
+  extract_frames          processExtractFrames (task.photoId 是 videos.id)
+                            extractKeyframes()       ← ffmpeg-static
+                            → 每帧落 <userData>/video_frames/<vh>/<ms>.jpg
+                            → 每帧 addPhoto(videoCtx={videoId, frameTimeMs})
+                            → 每帧 enqueue('thumbnail', 'embed')
+
+  caption                 legacy queue 残留，直接 completeTask
+```
+
+关键设计点：
+
+- **single-flight `isProcessing` flag**：v0.2 仍是串行处理 task；并发是后续
+  优化方向（image embedding 走 CoreML 时 ~25 ms，多核 CPU 可受益）。
+- **task 失败 ≠ 全局停摆**：`failTask` 写 retry_count + error_msg，下一轮
+  recoverStuckTasks 把 processing 状态拉回 pending 重试。
+- **decodeImage 是流水线唯一的读文件入口**：所有阶段都通过它拿 buffer，
+  自动处理 HEIC/RAW；EXIF 走原始字节避免 sips 转码丢失 GPS。
+
+### 4.4 文件监听（chokidar）
+
+[`src/core/watcher.ts`](src/core/watcher.ts) 的 `FileWatcher.handleAdd` 现在
+按 `classifyMedia(ext)` 分流：
+
+| 扩展名 | 走向 |
+|---|---|
+| `.jpg .png .webp .gif .tiff .bmp .avif .heic .heif .cr2 .cr3 .nef .arw .dng .raf .orf .rw2` | `image` 路径，addPhoto + enqueue thumbnail/embed |
+| `.mp4 .mov .m4v .webm .mkv .avi` | `video` 路径，addVideo + enqueue extract_frames |
+| 其它 | 忽略 |
+
+视频条目的 `file_hash` 用 `(path|size|mtime)` 轻量哈希，避免 watcher 在
+GB 级文件上读取全部字节阻塞。真正的内容 hash 在 indexer 抽出帧后逐帧算。
 
 ### 4.5 搜索引擎
 
 ```typescript
-// main/services/search.ts
-export class SearchEngine {
-  private db: Database.Database;
-  private textEmbedding: TextEmbedding;
+// src/core/search.ts （简化）
+async search(query, limit, options) {
+  if (!query.trim()) return getRecentPhotos(limit) // 含日期过滤分支
 
-  async search(query: string, limit: number = 50): Promise<SearchResult[]> {
-    // 1. 生成查询向量 (~25ms)
-    const queryVec = await this.textEmbedding.encode(query);
+  const [vec, captionBm25, ocrBm25, fileName] = await Promise.all([
+    searchByVector(query, limit * 2),       // SigLIP text encoder → vec0 KNN
+    db.searchByText(query, limit * 2),      // captions_fts BM25
+    db.searchByOcr(query, limit * 2),       // image_ocr_fts BM25
+    db.searchByFileName(query, limit * 2),  // LIKE %query%
+  ])
 
-    // 2. 双路检索
-    const [imgResults, capResults] = await Promise.all([
-      this.searchImageVecs(queryVec, limit * 2),
-      this.searchCaptionVecs(queryVec, limit * 2),
-    ]);
+  const fused = rrfFuse([
+    [...vec].sort((a, b) => a.distance - b.distance),
+    [...captionBm25].sort((a, b) => b.score - a.score),
+    [...ocrBm25].sort((a, b) => b.score - a.score),
+    fileName,
+  ], 60)
 
-    // 3. RRF 融合
-    const merged = this.rrfMerge(imgResults, capResults);
-
-    return merged.slice(0, limit);
+  // dedup：同 hash 只取一次；同 video 只取最佳帧
+  const results = []
+  const seenHashes = new Set(); const seenVideos = new Set()
+  for (const { fileHash, score } of fused) {
+    if (seenHashes.has(fileHash)) continue; seenHashes.add(fileHash)
+    const photo = db.getRepresentativeByHash(fileHash)
+    if (!photo || photo.deletedAt) continue
+    if (photo.videoId != null) {
+      if (seenVideos.has(photo.videoId)) continue
+      seenVideos.add(photo.videoId)
+    }
+    if (dateFrom && photo.takenAt < dateFrom) continue
+    if (dateTo   && photo.takenAt > dateTo)   continue
+    results.push({ photo, score })
+    if (results.length >= limit) break
   }
-
-  private rrfMerge(
-    list1: SearchResult[],
-    list2: SearchResult[],
-    k: number = 60
-  ): SearchResult[] {
-    const scores = new Map<number, number>();
-
-    list1.forEach((r, i) => {
-      const score = 1 / (k + i + 1);
-      scores.set(r.photo.id, (scores.get(r.photo.id) || 0) + score);
-    });
-
-    list2.forEach((r, i) => {
-      const score = 1 / (k + i + 1);
-      scores.set(r.photo.id, (scores.get(r.photo.id) || 0) + score);
-    });
-
-    const all = [...list1, ...list2];
-    const seen = new Set<number>();
-    const unique = all.filter(r => {
-      if (seen.has(r.photo.id)) return false;
-      seen.add(r.photo.id);
-      return true;
-    });
-
-    return unique.sort((a, b) =>
-      (scores.get(b.photo.id) || 0) - (scores.get(a.photo.id) || 0)
-    );
-  }
+  return results
 }
 ```
 
+`rrfFuse` 抽到 [`src/core/fusion.ts`](src/core/fusion.ts) 作纯函数 + 7 个单测；
+`buildFtsQuery` 抽到 [`src/core/text/fts-query.ts`](src/core/text/fts-query.ts)
+作纯函数 + 9 个单测（覆盖 jieba 分词 + FTS5 语法字符转义 + keyword 过滤）。
+
 ---
 
-## 5. 性能设计
+## 5. 性能特征
 
-### 5.1 各硬件配置性能预估
+### 5.1 单照片索引耗时（Apple M2, CoreML EP）
 
-| 硬件配置 | Embedding 速度 | Caption 速度 | 10 万张预计时间 |
-|---|---|---|---|
-| Apple M2（16GB） | ~20 张/秒 | ~0.2 张/秒 | Embed: 1.4h / Caption: 14h |
-| Intel i7 + RTX 3060 | ~35 张/秒（CUDA） | ~0.5 张/秒 | Embed: 50m / Caption: 6h |
-| Intel i5（无独显） | ~6 张/秒 | ~0.07 张/秒 | Embed: 4.5h / Caption: 40h |
+| 阶段 | 耗时 | 说明 |
+|---|---|---|
+| decodeImage | < 5 ms (JPEG) / ~200 ms (HEIC via sips) | |
+| parseAndUpdateMeta | ~10 ms | exifr |
+| generateThumbnail | ~20 ms | sharp resize → webp 512px |
+| processEmbedding | ~80 ms CPU / ~25 ms CoreML | SigLIP 2 |
+| processFace（按需） | ~30 ms / 张（不含 detect） | SCRFD + MobileFaceNet |
+| processOcr（按需） | ~150–400 ms / 张 | PaddleOCR det+rec |
+| 单视频抽帧 | ~2 s + (每帧 embedding ~80 ms) | ffmpeg + 20 帧上限 |
 
-### 5.2 内存占用预估
+### 5.2 大库性能 (PR5 前后)
 
-| 组件 | 内存占用 |
+| 操作 | v0.1 | v0.2 |
+|---|---|---|
+| 新人脸入库（10k 已有脸） | ~500 ms / 张 (JS 暴力余弦) | ~1 ms / 张 (vec0 ANN) |
+| 中文 query "海边" | 字符级 BM25，召回错乱 | jieba 分词后 BM25 + vec 并行 |
+| HEIC 索引 | 静默失败 | sips fallback 正确解码 |
+
+### 5.3 内存占用
+
+| 组件 | 内存（M2 实测，加载完） |
 |---|---|
-| Electron 基础 | ~150MB |
-| React UI | ~50MB |
-| SigLIP 2 模型 | ~400MB |
-| EmbeddingGemma | ~350MB |
-| Qwen3.5-4B (INT4) | ~3GB |
-| SQLite + 缓存 | ~100MB |
-| **总计** | **~4GB** |
+| Electron 基础 + React UI | ~250 MB |
+| SigLIP 2 模型（q8 + tokenizer + processor） | ~400 MB |
+| onnxruntime + face / OCR sessions | ~150 MB |
+| SQLite WAL + caches | < 100 MB |
+| **稳态总计** | **< 1 GB** |
 
-> 建议最低配置：8GB RAM
+视频抽帧期间 ffmpeg 短暂吃额外 ~100 MB，结束后释放。
 
-### 5.3 优化策略
+### 5.4 已应用的优化
 
-1. **模型懒加载** - Caption 模型在首次需要时才加载
-2. **Worker 隔离** - AI 推理在 Worker 线程，不阻塞 UI
-3. **批量处理** - Embedding 支持 batch inference
-4. **虚拟列表** - PhotoGrid 使用 react-window
-5. **缩略图缓存** - 预生成 WebP 缩略图
+1. **模型预热**：jieba + SigLIP 2 在启动后 fire-and-forget 预加载
+2. **SQL UDF `deterministic: true`**：FTS5 触发器密集写入时缓存 jieba 结果
+3. **decodeImage 单读**：避免对 HEIC 重复触发 sharp metadata 探测
+4. **缩略图共享**：按 file_hash 复用，重复文件零额外存储
+5. **vec0 ANN**：所有向量搜索（image + face）O(log N)
+6. **CoreML execution provider 优先**：Apple Silicon 上 ONNX 3-4x 加速
+
+### 5.5 仍是单线程的部分（后续优化方向）
+
+- Indexer 流水线 `isProcessing` 串行；可并行的有：
+  - 多个 embed 任务并发（CPU/Metal 都未饱和）
+  - thumbnail 与 embed 解耦（thumb 是 IO，embed 是计算）
+- IPC `getThumbnailData` 走 base64 base64 over IPC；可换 `vixel://` 自定义
+  协议直接 stream，省一次内存拷贝
+- search 各通道并发但 `rrfFuse` 是 JS 单 fold；对 limit=50 量级无所谓
 
 ---
 
