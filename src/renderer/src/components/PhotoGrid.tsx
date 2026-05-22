@@ -176,6 +176,19 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
       {/* 处理状态 — 仅对可视区域内未完成的照片显示 */}
       {isVisible && <StatusBadge photo={result.photo} />}
 
+      {/* 视频徽章 —— 该照片是某个视频抽出的帧 */}
+      {result.photo.videoId != null && (
+        <div
+          className="absolute top-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/55 backdrop-blur-sm text-white text-[10px] font-medium pointer-events-none"
+          title={`Video frame @ ${formatFrameTime(result.photo.frameTimeMs)}`}
+        >
+          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+          <span>{formatFrameTime(result.photo.frameTimeMs)}</span>
+        </div>
+      )}
+
       {/* Hover overlay — 文件名和 caption */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 hover:opacity-100 transition-opacity duration-200">
         <div className="absolute bottom-0 left-0 right-0 p-2.5">
@@ -187,6 +200,17 @@ function PhotoCard({ result, onClick, showScore, rank, index }: PhotoCardProps):
       </div>
     </div>
   )
+}
+
+/** 把毫秒转 "M:SS" 或 "H:MM:SS"；缺时间显示 ▶ 单字符 */
+function formatFrameTime(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return 'video'
+  const totalSec = Math.floor(ms / 1000)
+  const s = totalSec % 60
+  const m = Math.floor(totalSec / 60) % 60
+  const h = Math.floor(totalSec / 3600)
+  const pad = (n: number): string => n.toString().padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
 }
 
 export function PhotoGrid({ results, onSelect, isSearching }: PhotoGridProps): JSX.Element {

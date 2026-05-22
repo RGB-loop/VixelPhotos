@@ -157,6 +157,23 @@ export function PhotoDetail({ photo, onSelect, onClose }: PhotoDetailProps): JSX
           )}
         </div>
 
+        {/* 视频帧 provenance */}
+        {detail?.videoId != null && (
+          <div className="mb-5">
+            <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-1.5">视频帧</h3>
+            <dl className="space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <dt className="text-white/30">时间点</dt>
+                <dd className="text-white/60">{formatVideoTime(detail.frameTimeMs)}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-white/30">来源</dt>
+                <dd className="text-white/60 text-right truncate ml-3">videoId #{detail.videoId}</dd>
+              </div>
+            </dl>
+          </div>
+        )}
+
         {/* 文件信息 */}
         <div className="mb-5">
           <h3 className="text-[11px] font-medium text-white/30 uppercase tracking-wider mb-1.5">文件信息</h3>
@@ -292,6 +309,16 @@ function formatFileSize(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+function formatVideoTime(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return '-'
+  const totalSec = Math.floor(ms / 1000)
+  const s = totalSec % 60
+  const m = Math.floor(totalSec / 60) % 60
+  const h = Math.floor(totalSec / 3600)
+  const pad = (n: number): string => n.toString().padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
 }
 
 function formatDate(dateString: string): string {

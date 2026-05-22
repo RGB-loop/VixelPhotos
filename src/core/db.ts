@@ -483,6 +483,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
              embed_status as embedStatus, caption_status as captionStatus,
+             video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos WHERE id = ?
     `),
@@ -491,6 +492,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
              embed_status as embedStatus, caption_status as captionStatus,
+             video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos WHERE file_path = ?
     `),
@@ -499,6 +501,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
              embed_status as embedStatus, caption_status as captionStatus,
+             video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos
       WHERE deleted_at IS NULL
@@ -511,6 +514,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
              p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -528,6 +532,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
              p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -549,6 +554,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
              p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              c.text as caption
       FROM photos p
@@ -718,6 +724,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
              p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -737,6 +744,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
              p.embed_status as embedStatus, p.caption_status as captionStatus,
+             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt
       FROM photos p
       WHERE p.deleted_at IS NULL
