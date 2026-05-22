@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, extname } from 'path'
-import { stat, readFile, access, rm, unlink } from 'fs/promises'
+import { stat, readFile, access, rm, unlink, open } from 'fs/promises'
 import { existsSync } from 'fs'
 import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from './db'
@@ -30,6 +30,42 @@ const SUPPORTED_IMAGE_EXTENSIONS = new Set([
 const SUPPORTED_VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi',
 ])
+
+const VIDEO_HASH_SAMPLE_BYTES = 64 * 1024
+
+/**
+ * 计算视频文件的"轻量内容哈希"：size + mtime + 头 N 字节 + 尾 N 字节。
+ * 对个人相册体量足够区分；不读全文件（多 GB 视频几秒钟卡住 watcher 不可接受）。
+ *
+ * 路径**不参与**哈希 —— 这是有意为之：搬动视频后内容不变，dedup 应该
+ * 仍然把它识别为同一个素材。
+ */
+async function computeVideoLightHash(
+  filePath: string,
+  size: number,
+  mtimeMs: number,
+  hasher: (input: Uint8Array) => string
+): Promise<string> {
+  const handle = await open(filePath, 'r')
+  try {
+    const headLen = Math.min(VIDEO_HASH_SAMPLE_BYTES, size)
+    const head = Buffer.alloc(headLen)
+    if (headLen > 0) await handle.read(head, 0, headLen, 0)
+
+    let tail = Buffer.alloc(0)
+    // 文件足够大才采尾部，否则头部已经覆盖整个文件
+    if (size > VIDEO_HASH_SAMPLE_BYTES * 2) {
+      tail = Buffer.alloc(VIDEO_HASH_SAMPLE_BYTES)
+      await handle.read(tail, 0, VIDEO_HASH_SAMPLE_BYTES, size - VIDEO_HASH_SAMPLE_BYTES)
+    }
+
+    const meta = new TextEncoder().encode(`v1|${size}|${mtimeMs}|`)
+    const combined = Buffer.concat([Buffer.from(meta), head, tail])
+    return hasher(new Uint8Array(combined.buffer, combined.byteOffset, combined.byteLength))
+  } finally {
+    await handle.close()
+  }
+}
 
 type MediaKind = 'image' | 'video' | null
 
@@ -165,12 +201,13 @@ export class FileWatcher {
       const stats = await stat(filePath)
       const fileName = basename(filePath)
 
-      // 视频的 file_hash 用 (size, mtime, path) 的轻量哈希避免全文件读取——
-      // 视频文件大，纯内容哈希会显著拖慢导入。等抽出帧后，每帧再用真正的
-      // 内容 hash（PR11.3 indexer 里完成）。
-      const lightHash = await getHasher().then((h) =>
-        h(new TextEncoder().encode(`${filePath}|${stats.size}|${stats.mtimeMs}`))
-      )
+      // 视频的 file_hash 用"size + mtime + 头尾 64 KB 内容"做轻量哈希：
+      //   - 不读全文件（GB 级视频会让 watcher 卡几秒）
+      //   - 路径不参与（搬动视频不破坏 dedup）
+      //   - 头尾采样能可靠区分 mtime 巧合相同的不同文件
+      //     (rsync --times / cp -p / 时钟回拨等场景下 size+mtime 单独是不够的)
+      const hasher = await getHasher()
+      const lightHash = await computeVideoLightHash(filePath, stats.size, stats.mtimeMs, hasher)
 
       const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash)
 
