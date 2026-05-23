@@ -37,20 +37,27 @@ const colors = {
   cyan: '\x1b[36m',
 }
 
+// HF token —— 部分网络环境匿名访问被风控，提供 HF_TOKEN 可绕过。
+// 设置后所有 huggingface.co 请求自动带 Authorization 头；非 HF URL 不受影响。
+const HF_TOKEN = process.env.HF_TOKEN || ''
+
 const MODEL_GROUPS = {
   // ─── 图文 CLIP ───────────────────────────────────────────────────
+  // 仓库实测：onnx-community/siglip2-base-patch16-256-ONNX（注意大写 -ONNX 后缀）
   siglip: {
     label: 'SigLIP 2 base/16-256 (multilingual)',
     targetDir: join(MODELS_ROOT, 'siglip2'),
     sources: [
       {
-        baseUrl: `https://huggingface.co/${process.env.SIGLIP_REPO || 'onnx-community/siglip2-base-patch16-256'}/resolve/${process.env.SIGLIP_REVISION || 'main'}/`,
+        baseUrl: `https://huggingface.co/${process.env.SIGLIP_REPO || 'onnx-community/siglip2-base-patch16-256-ONNX'}/resolve/${process.env.SIGLIP_REVISION || 'main'}/`,
         files: [
           { path: 'config.json', optional: false },
           { path: 'tokenizer.json', optional: false },
           { path: 'tokenizer_config.json', optional: false },
           { path: 'preprocessor_config.json', optional: false },
           { path: 'special_tokens_map.json', optional: true },
+          { path: 'tokenizer.model', optional: true },
+          // Transformers.js 默认加载 model_quantized.onnx
           { path: 'onnx/model_quantized.onnx', optional: false },
           { path: 'onnx/model.onnx_data', optional: true },
         ],
@@ -59,21 +66,20 @@ const MODEL_GROUPS = {
   },
 
   // ─── OCR ────────────────────────────────────────────────────────
+  // Aquamarinex/PP-OCRv5-onnx 提供 mobile det + rec（无 cls；cls 是可选项）。
+  // 字符表 ppocr_keys_v1.txt 走 GitHub raw —— PaddleOCR 上游维护。
   paddleocr: {
-    label: 'PaddleOCR v5 (det + cls + rec + charset)',
+    label: 'PaddleOCR v5 (det + rec + charset; cls optional)',
     targetDir: join(MODELS_ROOT, 'paddleocr'),
     sources: [
-      // RapidAI 维护着社区导出的 PaddleOCR ONNX 包，许可与 Paddle 上游一致 (Apache 2.0)。
-      // 如官方仓库改名，可通过 PADDLEOCR_REPO 环境变量覆盖。
       {
-        baseUrl: `https://huggingface.co/${process.env.PADDLEOCR_REPO || 'RapidAI/RapidOCR'}/resolve/${process.env.PADDLEOCR_REVISION || 'main'}/onnx/PP-OCRv5/`,
+        baseUrl: `https://huggingface.co/${process.env.PADDLEOCR_REPO || 'Aquamarinex/PP-OCRv5-onnx'}/resolve/${process.env.PADDLEOCR_REVISION || 'main'}/`,
         files: [
-          { path: 'ch_PP-OCRv5_det_infer.onnx', rename: 'ppocr_v5_det.onnx', optional: false },
-          { path: 'ch_PP-OCRv5_rec_infer.onnx', rename: 'ppocr_v5_rec.onnx', optional: false },
-          { path: 'ch_ppocr_mobile_v2.0_cls_infer.onnx', rename: 'ppocr_v5_cls.onnx', optional: true },
+          { path: 'PP-OCRv5_mobile_det/inference.onnx', rename: 'ppocr_v5_det.onnx', optional: false },
+          { path: 'PP-OCRv5_mobile_rec/inference.onnx', rename: 'ppocr_v5_rec.onnx', optional: false },
         ],
       },
-      // PaddleOCR 上游的字符表（也可用社区镜像）
+      // PaddleOCR 上游的字符表（GitHub raw，无 HF 风控问题）
       {
         baseUrl: 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/',
         files: [
@@ -107,7 +113,12 @@ async function downloadFile(url, target, optional) {
   }
 
   process.stdout.write(`${colors.cyan}↓ ${target.replace(MODELS_ROOT + '/', '')}${colors.reset}\n`)
-  const resp = await fetch(url)
+  // 仅对 huggingface.co 主机带 token；GitHub raw 等不会泄露
+  const headers = {}
+  if (HF_TOKEN && url.includes('huggingface.co')) {
+    headers['Authorization'] = `Bearer ${HF_TOKEN}`
+  }
+  const resp = await fetch(url, { headers, redirect: 'follow' })
   if (!resp.ok) {
     if (optional && (resp.status === 404 || resp.status === 403)) {
       process.stdout.write(`${colors.dim}  (optional, skipped: ${resp.status})${colors.reset}\n`)
