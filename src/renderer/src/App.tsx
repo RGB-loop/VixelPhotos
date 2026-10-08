@@ -7,9 +7,17 @@ import { IndexProgress } from './components/IndexProgress'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
 import { TaskDrawer } from './components/tasks/TaskDrawer'
-import type { SearchResult, Photo, IndexProgress as IndexProgressType } from '../../shared/types'
+import type { SearchResult, Photo, MediaKind, IndexProgress as IndexProgressType } from '../../shared/types'
 
 type ViewMode = 'grid' | 'map' | 'people'
+type KindFilter = 'all' | MediaKind
+
+const KIND_FILTERS: { value: KindFilter; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'image', label: '图片' },
+  { value: 'video', label: '视频' },
+  { value: 'audio', label: '音频' },
+]
 
 const VIEW_ICONS: Record<ViewMode, { title: string; path: string }> = {
   grid: {
@@ -28,7 +36,7 @@ const VIEW_ICONS: Record<ViewMode, { title: string; path: string }> = {
 
 function App(): JSX.Element {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null)
+  const [selected, setSelected] = useState<SearchResult | null>(null)
   const [showFolderManager, setShowFolderManager] = useState(false)
   const [indexProgress, setIndexProgress] = useState<IndexProgressType | null>(null)
   const [isSearching, setIsSearching] = useState(false)
@@ -39,10 +47,17 @@ function App(): JSX.Element {
   const [showDateFilter, setShowDateFilter] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [showTasks, setShowTasks] = useState(false)
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const currentQuery = useRef('')
+  // 过滤条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前日期 + 类型，
+  // 不用每个调用点各自传参，也不会因闭包拿到旧值
+  const filters = useRef<{ from: string; to: string; kind: KindFilter }>({ from: '', to: '', kind: 'all' })
 
-  const doSearch = useCallback(async (query: string, from?: string, to?: string) => {
-    const options = (from || to) ? { dateFrom: from || undefined, dateTo: to || undefined } : undefined
+  const doSearch = useCallback(async (query: string) => {
+    const { from, to, kind } = filters.current
+    const options = (from || to || kind !== 'all')
+      ? { dateFrom: from || undefined, dateTo: to || undefined, kind: kind === 'all' ? undefined : kind }
+      : undefined
     return window.api.search(query, undefined, options)
   }, [])
 
@@ -94,21 +109,19 @@ function App(): JSX.Element {
     if (trimmedQuery && viewMode !== 'grid') setViewMode('grid')
     setIsSearching(true)
     try {
-      const results = await doSearch(query, dateFrom, dateTo)
+      const results = await doSearch(query)
       setSearchResults(results)
     } catch (error) {
       console.error('Search error:', error)
     } finally {
       setIsSearching(false)
     }
-  }, [doSearch, dateFrom, dateTo, viewMode])
+  }, [doSearch, viewMode])
 
-  const handleDateFilterChange = useCallback(async (from: string, to: string) => {
-    setDateFrom(from)
-    setDateTo(to)
+  const applyFilters = useCallback(async () => {
     setIsSearching(true)
     try {
-      const results = await doSearch(currentQuery.current, from, to)
+      const results = await doSearch(currentQuery.current)
       setSearchResults(results)
     } catch (error) {
       console.error('Filter error:', error)
@@ -117,8 +130,23 @@ function App(): JSX.Element {
     }
   }, [doSearch])
 
-  const handleSelectPhoto = useCallback((photo: Photo) => setSelectedPhoto(photo), [])
-  const handleCloseDetail = useCallback(() => setSelectedPhoto(null), [])
+  const handleDateFilterChange = useCallback((from: string, to: string) => {
+    setDateFrom(from)
+    setDateTo(to)
+    filters.current = { ...filters.current, from, to }
+    applyFilters()
+  }, [applyFilters])
+
+  const handleKindFilterChange = useCallback((kind: KindFilter) => {
+    setKindFilter(kind)
+    filters.current = { ...filters.current, kind }
+    applyFilters()
+  }, [applyFilters])
+
+  const handleSelect = useCallback((result: SearchResult) => setSelected(result), [])
+  // 地图 / 人物视图只给 Photo，没有搜索上下文
+  const handleSelectPhoto = useCallback((photo: Photo) => setSelected({ photo, score: 0 }), [])
+  const handleCloseDetail = useCallback(() => setSelected(null), [])
   const handleOpenTasks = useCallback(() => setShowTasks(true), [])
   const handleCloseTasks = useCallback(() => setShowTasks(false), [])
 
@@ -135,7 +163,7 @@ function App(): JSX.Element {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (selectedPhoto) setSelectedPhoto(null)
+        if (selected) setSelected(null)
         else if (showFolderManager) setShowFolderManager(false)
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
@@ -150,7 +178,7 @@ function App(): JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedPhoto, showFolderManager, viewMode])
+  }, [selected, showFolderManager, viewMode])
 
   const hasDateFilter = !!(dateFrom || dateTo)
 
@@ -196,6 +224,22 @@ function App(): JSX.Element {
 
         {/* 右侧工具 */}
         <div className="flex items-center gap-1 flex-shrink-0">
+          {/* 类型过滤 — 仅网格视图 */}
+          {viewMode === 'grid' && (
+            <div className="flex items-center bg-white/5 rounded-lg p-0.5 mr-1">
+              {KIND_FILTERS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => handleKindFilterChange(value)}
+                  className={`px-2 py-0.5 rounded-md text-[11px] transition-all ${
+                    kindFilter === value ? 'bg-white/10 text-white/80' : 'text-white/30 hover:text-white/50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {/* 日期过滤 — 仅网格视图 */}
           {viewMode === 'grid' && (
             <button
@@ -261,15 +305,21 @@ function App(): JSX.Element {
         ) : viewMode === 'map' ? (
           <MapView onSelect={handleSelectPhoto} />
         ) : searchResults.length > 0 ? (
-          <PhotoGrid results={searchResults} onSelect={handleSelectPhoto} isSearching={hasSearchQuery} />
-        ) : hasSearchQuery ? (
+          <PhotoGrid results={searchResults} onSelect={handleSelect} isSearching={hasSearchQuery} />
+        ) : hasSearchQuery || (hasPhotos && (kindFilter !== 'all' || hasDateFilter)) ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center animate-fade-in">
               <svg className="w-10 h-10 mx-auto mb-3 text-white/10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              <p className="text-white/40 text-sm">没有找到匹配的照片</p>
-              <p className="text-white/20 text-xs mt-2">试试其他关键词、图内的文字片段，或换种说法</p>
+              <p className="text-white/40 text-sm">
+                {hasSearchQuery ? '没有找到匹配的内容' : '没有符合筛选条件的内容'}
+              </p>
+              <p className="text-white/20 text-xs mt-2">
+                {kindFilter !== 'all' || hasDateFilter
+                  ? '试试放宽类型或时间过滤'
+                  : '试试其他关键词、图内的文字片段，或换种说法'}
+              </p>
             </div>
           </div>
         ) : (
@@ -301,11 +351,11 @@ function App(): JSX.Element {
       <TaskDrawer open={showTasks} onClose={handleCloseTasks} progress={indexProgress} />
 
       {/* 照片详情 */}
-      {selectedPhoto && (
+      {selected && (
         <PhotoDetail
-          photo={selectedPhoto}
+          result={selected}
           siblings={viewMode === 'grid' ? searchResults : undefined}
-          onSelect={handleSelectPhoto}
+          onSelect={handleSelect}
           onClose={handleCloseDetail}
         />
       )}

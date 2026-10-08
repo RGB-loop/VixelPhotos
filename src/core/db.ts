@@ -1248,6 +1248,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         kind: v.mediaKind,
         filePath: v.filePath,
         fileName: v.fileName,
+        fileSize: v.fileSize,
         durationMs: v.durationMs ?? null,
         width: v.width ?? null,
         height: v.height ?? null,

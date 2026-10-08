@@ -94,6 +94,7 @@ export interface MediaDetail {
   kind: 'video' | 'audio'
   filePath: string
   fileName: string
+  fileSize: number
   durationMs: number | null
   width: number | null
   height: number | null
