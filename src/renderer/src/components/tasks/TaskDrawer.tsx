@@ -110,7 +110,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
   return (
     <>
       <div className="fixed inset-0 z-30 bg-black/30 animate-fade-in" onClick={onClose} />
-      <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-surface-1 border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
+      <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-raised border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
         {/* 头部 */}
         <div className="flex items-center gap-3 px-5 h-11 border-b border-line flex-shrink-0">
           <h2 className="text-body font-medium text-ink">活动</h2>
@@ -124,7 +124,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
           <div className="ml-auto flex items-center gap-1">
             <button
               onClick={togglePause}
-              className="px-2.5 py-1 rounded-md text-caption text-ink-2 hover:text-white hover:bg-fill-hover transition-colors"
+              className="px-2.5 py-1 rounded-md text-caption text-ink-2 hover:text-ink hover:bg-fill-hover transition-colors"
             >
               {paused ? '继续索引' : '暂停索引'}
             </button>
@@ -167,7 +167,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
           <section>
             <SectionTitle>正在处理</SectionTitle>
             {current ? (
-              <div className="bg-surface-2 rounded-lg px-3 py-2.5">
+              <div className="bg-fill rounded-lg px-3 py-2.5">
                 <div className="flex items-center gap-2 text-callout">
                   <KindBadge kind={current.kind} />
                   <span className="text-ink truncate flex-1">{current.name}</span>
@@ -197,7 +197,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
               <SectionTitle>队列</SectionTitle>
               <div className="flex flex-wrap gap-2 mb-2">
                 {queueByType.map((q) => (
-                  <span key={q.type} className="px-2 py-1 rounded-md bg-surface-2 text-caption text-ink-2">
+                  <span key={q.type} className="px-2 py-1 rounded-md bg-fill text-caption text-ink-2">
                     {TASK_LABELS[q.type]} <span className="text-ink tabular-nums">{q.active}</span>
                     {q.error > 0 && <span className="text-bad/70"> · {q.error} 失败</span>}
                   </span>
@@ -235,7 +235,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
               </div>
               <ul className="space-y-1">
                 {errors.map((t) => (
-                  <li key={t.id} className="group bg-surface-2 rounded-md px-3 py-2">
+                  <li key={t.id} className="group bg-fill rounded-md px-3 py-2">
                     <div className="flex items-center gap-2 text-callout">
                       <KindBadge kind={t.kind} />
                       <span className="text-ink truncate flex-1">{t.name ?? '(已删除)'}</span>
@@ -286,7 +286,7 @@ function Bar({ ratio }: { ratio: number }): JSX.Element {
 function ProgressStat({ label, done, total, detail }: { label: string; done: number; total: number; detail?: string }): JSX.Element {
   const ratio = total > 0 ? done / total : 0
   return (
-    <div className="bg-surface-2 rounded-lg px-3 py-2.5">
+    <div className="bg-fill rounded-lg px-3 py-2.5">
       <div className="flex items-baseline gap-2 mb-2">
         <span className="text-callout text-ink-2">{label}</span>
         <span className="ml-auto text-caption text-ink-3 tabular-nums">

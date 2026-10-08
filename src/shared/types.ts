@@ -215,6 +215,10 @@ export const IPC_CHANNELS = {
   CLEAR_FAILED_TASKS: 'clear-failed-tasks',
   GET_MEDIA_DETAIL: 'get-media-detail',
 
+  // 外观
+  GET_THEME: 'get-theme',
+  SET_THEME: 'set-theme',
+
   // 系统
   GET_APP_PATH: 'get-app-path',
   GET_MODEL_STATUS: 'get-model-status',
@@ -311,3 +315,6 @@ export interface Person {
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'
 export type TaskType = 'thumbnail' | 'embed' | 'face' | 'ocr' | 'extract_frames'
+
+/** 外观：跟随系统 / 浅色 / 深色 */
+export type ThemeMode = 'system' | 'light' | 'dark'

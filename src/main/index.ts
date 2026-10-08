@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme } from 'electron'
 import { pathToFileURL } from 'url'
 import { join } from 'path'
 import { readFile, unlink, mkdir, readdir, rm } from 'fs/promises'
@@ -15,12 +15,13 @@ import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
 import { installAppMenu, popupItemMenu } from './menu'
-import { IPC_CHANNELS, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
+import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
 const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const BACKUP_KEEP_COUNT = 3
 const META_KEY_LAST_BACKUP = 'last_backup_at'
+const META_KEY_THEME = 'ui.theme'
 let backupTimer: NodeJS.Timeout | null = null
 let backupInFlight = false
 
@@ -32,8 +33,27 @@ let searchEngine: SearchEngine
 let mainWindow: BrowserWindow | null = null
 let bundledModelsDir: string = ''
 
+/** 窗口底色：首帧渲染前露出来的颜色，要和当前外观的内容区一致，否则切换 / 打开时闪一下 */
+function windowBackground(): string {
+  return nativeTheme.shouldUseDarkColors ? '#0f0f0f' : '#ffffff'
+}
+
+/**
+ * 外观由 nativeTheme.themeSource 统一控制：它决定所有窗口的 prefers-color-scheme，
+ * 渲染进程的 CSS 变量随之切换，原生菜单 / 滚动条 / 对话框也一起跟着变。
+ */
+function applyTheme(mode: ThemeMode): void {
+  nativeTheme.themeSource = mode
+}
+
+function loadTheme(): ThemeMode {
+  const v = db.getMetaState(META_KEY_THEME)
+  return v === 'light' || v === 'dark' ? v : 'system'
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
+    backgroundColor: windowBackground(),
     width: 1200,
     height: 800,
     minWidth: 960,
@@ -229,6 +249,15 @@ function registerIpcHandlers(): void {
       db.removeFolder(folderId)
     }
     return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_THEME, async () => loadTheme())
+
+  ipcMain.handle(IPC_CHANNELS.SET_THEME, async (_event, mode: ThemeMode) => {
+    const next: ThemeMode = mode === 'light' || mode === 'dark' ? mode : 'system'
+    db.setMetaState(META_KEY_THEME, next)
+    applyTheme(next)
+    return next
   })
 
   ipcMain.handle(IPC_CHANNELS.GET_INDEX_PAUSED, async () => {
@@ -549,6 +578,10 @@ app.whenReady().then(async () => {
   })
 
   await initServices()
+  applyTheme(loadTheme())
+  nativeTheme.on('updated', () => {
+    for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(windowBackground())
+  })
   registerVixelProtocol()
   registerIpcHandlers()
   installAppMenu(() => mainWindow)

@@ -115,7 +115,7 @@ export const MediaCard = memo(function MediaCard({
       {/* 音频：居中播放图标，提示点开可播放 */}
       {kind === 'audio' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="w-9 h-9 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center text-ink opacity-70 group-hover:opacity-100 transition-opacity">
+          <div className="w-9 h-9 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center text-white/90 opacity-70 group-hover:opacity-100 transition-opacity">
             <svg className="w-4 h-4 ml-0.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
           </div>
         </div>
@@ -124,14 +124,14 @@ export const MediaCard = memo(function MediaCard({
       {/* 悬停：文件名 + 描述 */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-fast pointer-events-none">
         <div className="absolute bottom-7 left-0 right-0 px-2.5">
-          <p className="text-white text-callout truncate font-medium">{photo.fileName}</p>
-          {photo.caption && <p className="text-ink-2 text-caption truncate mt-0.5">{photo.caption}</p>}
+          <p className="text-white/90 text-callout truncate font-medium">{photo.fileName}</p>
+          {photo.caption && <p className="text-white/60 text-caption truncate mt-0.5">{photo.caption}</p>}
         </div>
       </div>
 
       {/* 左上：排名 */}
       {rank != null && (
-        <span className="absolute top-1.5 left-1.5 min-w-[18px] h-[18px] px-1 rounded bg-black/60 backdrop-blur-sm text-ink text-micro font-semibold tabular-nums flex items-center justify-center pointer-events-none">
+        <span className="absolute top-1.5 left-1.5 min-w-[18px] h-[18px] px-1 rounded bg-black/60 backdrop-blur-sm text-white/90 text-micro font-semibold tabular-nums flex items-center justify-center pointer-events-none">
           {rank}
         </span>
       )}
@@ -141,7 +141,7 @@ export const MediaCard = memo(function MediaCard({
         onClick={(e) => { e.stopPropagation(); onContextMenu(index, e) }}
         onDoubleClick={(e) => e.stopPropagation()}
         title="更多操作"
-        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-md bg-black/55 backdrop-blur-sm text-ink flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-black/75 transition-opacity duration-fast"
+        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-md bg-black/55 backdrop-blur-sm text-white/90 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-black/75 transition-opacity duration-fast"
       >
         <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
           <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
@@ -157,7 +157,7 @@ export const MediaCard = memo(function MediaCard({
 
       {/* 右下：类型 + 时长 */}
       {kind !== 'image' && (
-        <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-white text-micro font-medium tabular-nums pointer-events-none">
+        <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-white/90 text-micro font-medium tabular-nums pointer-events-none">
           <KindIcon kind={kind} />
           {duration > 0 && formatDuration(duration)}
         </span>

@@ -117,7 +117,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
   // 人物照片子视图
   if (selectedPerson) {
     return (
-      <div className="h-full flex flex-col bg-surface-0">
+      <div className="h-full flex flex-col bg-canvas">
         <div className="px-4 py-3 flex items-center gap-3 border-b border-line">
           <button
             onClick={() => setSelectedPerson(null)}
@@ -151,7 +151,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
   // 空状态
   if (!loading && people.length === 0 && !scanning) {
     return (
-      <div className="h-full flex items-center justify-center bg-surface-0">
+      <div className="h-full flex items-center justify-center bg-canvas">
         <div className="text-center">
           <svg className="w-12 h-12 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -170,14 +170,14 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center bg-surface-0">
+      <div className="h-full flex items-center justify-center bg-canvas">
         <p className="text-ink-3 text-callout">加载中...</p>
       </div>
     )
   }
 
   return (
-    <div className="h-full flex flex-col bg-surface-0">
+    <div className="h-full flex flex-col bg-canvas">
       {/* 扫描状态 */}
       {scanning && (
         <div className="px-4 py-2 bg-accent/10 text-accent text-callout flex items-center gap-2">
@@ -208,7 +208,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
                 }`}
               >
                 {selectedIds.has(person.id) && (
-                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-3 h-3 text-black/85" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                   </svg>
                 )}
@@ -272,7 +272,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
 
       {/* 合并浮动按钮 */}
       {selectedIds.size >= 2 && (
-        <div className="px-4 py-3 border-t border-line bg-surface-1 animate-fade-in">
+        <div className="px-4 py-3 border-t border-line bg-bar animate-fade-in">
           <button
             onClick={handleMerge}
             className="w-full py-2 bg-accent/20 hover:bg-accent/30 text-accent text-callout rounded-md transition-colors"

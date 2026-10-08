@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction, type ThemeMode } from '../shared/types'
 
 const api = {
   // 搜索
@@ -74,6 +74,13 @@ const api = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.INDEX_PROGRESS, handler)
     }
+  },
+
+  getTheme: (): Promise<ThemeMode> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_THEME)
+  },
+  setTheme: (mode: ThemeMode): Promise<ThemeMode> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_THEME, mode)
   },
 
   getIndexPaused: (): Promise<boolean> => {

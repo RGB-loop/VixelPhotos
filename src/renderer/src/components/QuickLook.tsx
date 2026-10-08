@@ -47,7 +47,7 @@ export function QuickLook({ result, onClose, onNavigate, onOpen }: QuickLookProp
 
   return (
     <div
-      className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-16 animate-fade-in"
+      className="theme-dark fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-16 animate-fade-in"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
       data-quicklook
     >

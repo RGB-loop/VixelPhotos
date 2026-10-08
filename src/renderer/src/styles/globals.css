@@ -7,6 +7,129 @@
   --app-region-no-drag: no-drag;
 }
 
+/*
+ * 主题：深色是默认值；系统 / 用户选了浅色时（主进程 nativeTheme.themeSource 控制
+ * prefers-color-scheme）换成浅色。.theme-dark 让大图详情、快速查看这类"放映厅"
+ * 子树始终用深色，不随外观变化。.theme-dark 必须写在媒体查询之后才能覆盖它。
+ */
+:root {
+  --surface-0: #0a0a0a;
+  --surface-1: #141414;
+  --surface-2: #1e1e1e;
+  --surface-3: #282828;
+  --surface-4: #333333;
+  --canvas: #0f0f0f;
+  --sidebar: #171615;
+  --bar: #1b1a19;
+  --raised: #232120;
+  --accent: 212 165 116;
+  --accent-dim: 166 124 82;
+  --accent-bright: 232 196 154;
+  --accent-fill: rgb(212 165 116 / 0.18);
+  --ink: rgb(255 255 255 / 0.88);
+  --ink-2: rgb(255 255 255 / 0.60);
+  --ink-3: rgb(255 255 255 / 0.38);
+  --ink-4: rgb(255 255 255 / 0.24);
+  --ink-ghost: rgb(255 255 255 / 0.12);
+  --line: rgb(255 255 255 / 0.07);
+  --line-strong: rgb(255 255 255 / 0.12);
+  --line-heavy: rgb(255 255 255 / 0.20);
+  --fill: rgb(255 255 255 / 0.05);
+  --fill-hover: rgb(255 255 255 / 0.08);
+  --fill-active: rgb(255 255 255 / 0.12);
+  --fill-strong: rgb(255 255 255 / 0.22);
+  --ok: 48 209 88;
+  --warn: 255 214 10;
+  --bad: 255 69 58;
+  --info: 100 210 255;
+  --scrollbar: rgb(255 255 255 / 0.10);
+  --scrollbar-hover: rgb(255 255 255 / 0.20);
+  --shimmer-a: #1e1e1e;
+  --shimmer-b: #282828;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --surface-0: #fafaf9;
+    --surface-1: #f3f2f0;
+    --surface-2: #e9e8e5;
+    --surface-3: #dfdedb;
+    --surface-4: #d3d2ce;
+    --canvas: #ffffff;
+    --sidebar: #f1efec;
+    --bar: #f6f5f3;
+    --raised: #ffffff;
+    --accent: 168 110 56;
+    --accent-dim: 138 88 42;
+    --accent-bright: 196 140 86;
+    --accent-fill: rgb(168 110 56 / 0.16);
+    --ink: rgb(0 0 0 / 0.85);
+    --ink-2: rgb(0 0 0 / 0.58);
+    --ink-3: rgb(0 0 0 / 0.42);
+    --ink-4: rgb(0 0 0 / 0.26);
+    --ink-ghost: rgb(0 0 0 / 0.12);
+    --line: rgb(0 0 0 / 0.08);
+    --line-strong: rgb(0 0 0 / 0.13);
+    --line-heavy: rgb(0 0 0 / 0.24);
+    --fill: rgb(0 0 0 / 0.04);
+    --fill-hover: rgb(0 0 0 / 0.065);
+    --fill-active: rgb(0 0 0 / 0.10);
+    --fill-strong: rgb(0 0 0 / 0.18);
+    --ok: 36 138 61;
+    --warn: 178 80 0;
+    --bad: 215 0 21;
+    --info: 0 113 164;
+    --scrollbar: rgb(0 0 0 / 0.15);
+    --scrollbar-hover: rgb(0 0 0 / 0.28);
+    --shimmer-a: #e9e8e5;
+    --shimmer-b: #f3f2f0;
+    color-scheme: light;
+  }
+}
+
+.theme-dark {
+  --surface-0: #0a0a0a;
+  --surface-1: #141414;
+  --surface-2: #1e1e1e;
+  --surface-3: #282828;
+  --surface-4: #333333;
+  --canvas: #0f0f0f;
+  --sidebar: #171615;
+  --bar: #1b1a19;
+  --raised: #232120;
+  --accent: 212 165 116;
+  --accent-dim: 166 124 82;
+  --accent-bright: 232 196 154;
+  --accent-fill: rgb(212 165 116 / 0.18);
+  --ink: rgb(255 255 255 / 0.88);
+  --ink-2: rgb(255 255 255 / 0.60);
+  --ink-3: rgb(255 255 255 / 0.38);
+  --ink-4: rgb(255 255 255 / 0.24);
+  --ink-ghost: rgb(255 255 255 / 0.12);
+  --line: rgb(255 255 255 / 0.07);
+  --line-strong: rgb(255 255 255 / 0.12);
+  --line-heavy: rgb(255 255 255 / 0.20);
+  --fill: rgb(255 255 255 / 0.05);
+  --fill-hover: rgb(255 255 255 / 0.08);
+  --fill-active: rgb(255 255 255 / 0.12);
+  --fill-strong: rgb(255 255 255 / 0.22);
+  --ok: 48 209 88;
+  --warn: 255 214 10;
+  --bad: 255 69 58;
+  --info: 100 210 255;
+  --scrollbar: rgb(255 255 255 / 0.10);
+  --scrollbar-hover: rgb(255 255 255 / 0.20);
+  --shimmer-a: #1e1e1e;
+  --shimmer-b: #282828;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+}
+
 /* macOS 标题栏拖拽区域 */
 .titlebar {
   -webkit-app-region: drag;
@@ -28,12 +151,12 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--scrollbar);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-hover);
 }
 
 /* 照片网格项的悬浮效果 */
@@ -52,7 +175,7 @@
 
 /* 图片加载占位符 */
 .image-placeholder {
-  background: linear-gradient(110deg, #1e1e1e 8%, #282828 18%, #1e1e1e 33%);
+  background: linear-gradient(110deg, var(--shimmer-a) 8%, var(--shimmer-b) 18%, var(--shimmer-a) 33%);
   background-size: 200% 100%;
   animation: shimmer 1.5s linear infinite;
 }
@@ -83,16 +206,17 @@
   animation: slideIn 0.25s ease-out both;
 }
 
-/* Leaflet 暗色 popup */
+/* Leaflet popup：跟随主题的浮层色 */
 .dark-popup .leaflet-popup-content-wrapper {
-  background: #1e1e1e;
-  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--raised);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 20px rgb(0 0 0 / 0.25);
 }
 .dark-popup .leaflet-popup-tip {
-  background: #1e1e1e;
-  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
 }
 .dark-popup .leaflet-popup-content {
   margin: 8px;
@@ -133,7 +257,7 @@
   appearance: none;
   height: 3px;
   border-radius: 9999px;
-  background: rgb(255 255 255 / 0.12);
+  background: var(--fill-active);
   outline: none;
 }
 .thumb-slider::-webkit-slider-thumb {
@@ -141,7 +265,7 @@
   width: 11px;
   height: 11px;
   border-radius: 9999px;
-  background: rgb(255 255 255 / 0.88);
+  background: var(--ink);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
   cursor: pointer;
 }

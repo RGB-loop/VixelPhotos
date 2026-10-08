@@ -87,7 +87,7 @@ export function SearchBar({ onSearch, isSearching, resultCount }: SearchBarProps
         onBlur={() => setFocused(false)}
         onKeyDown={handleKeyDown}
         placeholder="搜索：物体、场景、图内文字、文件名…"
-        className="w-full h-7 pl-8 pr-14 text-body rounded-md bg-fill border border-line text-ink placeholder-ink-4 focus:outline-none focus:border-accent/50 focus:bg-surface-2 transition-colors duration-fast"
+        className="w-full h-7 pl-8 pr-14 text-body rounded-md bg-fill border border-line text-ink placeholder-ink-4 focus:outline-none focus:border-accent/50 focus:bg-raised transition-colors duration-fast"
       />
 
       <div className="absolute inset-y-0 right-0 flex items-center pr-2 gap-1">
