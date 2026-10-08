@@ -213,7 +213,9 @@ export class FileWatcher {
 
       // 同步抽帧太慢；用 indexer 队列异步处理。约定：task_type='extract_frames'
       // 时，photo_id 字段携带的是 videos.id 而非 photos.id（schema 不变）。
-      this.db.addToQueue(videoId, 'extract_frames', 15)
+      // 优先级 6：排在图片 embed(10) / face(8) 之后 —— 视频按片段编码，一个长视频
+      // 就要几分钟，放前面会让整库照片在视频跑完前都搜不到
+      this.db.addToQueue(videoId, 'extract_frames', 6)
       this.indexer.processNext()
     } catch (error) {
       console.error(`Error handling add for video ${filePath}:`, error)

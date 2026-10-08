@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'child_process'
+import { FFMPEG_THREADS, lowerPriority } from '../video/extract'
 
 // 复用 video/extract.ts 的 ffmpeg 路径获取逻辑
 let ffmpegPath: string | null | undefined
@@ -53,7 +54,7 @@ export async function extractAudioTrack(
     throw new Error('ffmpeg binary not available (ffmpeg-static package missing or unsupported platform)')
   }
 
-  const args = ['-hide_banner', '-loglevel', 'error']
+  const args = ['-hide_banner', '-loglevel', 'error', '-threads', String(FFMPEG_THREADS)]
 
   // 起始时间（-ss 放在 -i 前，seek 更快）
   if (options.startSec !== undefined && options.startSec > 0) {
@@ -108,6 +109,7 @@ interface FfmpegResult {
 function runFfmpegToBuffer(bin: string, args: string[]): Promise<FfmpegResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    lowerPriority(child.pid)
     const chunks: Buffer[] = []
     let stderr = ''
     let timedOut = false

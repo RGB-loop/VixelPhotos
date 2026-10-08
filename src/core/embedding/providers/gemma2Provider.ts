@@ -24,6 +24,7 @@
  */
 
 import { existsSync } from 'fs'
+import { cpus } from 'os'
 import { join } from 'path'
 import type { EmbeddingProvider, EmbeddingInput, Gemma2ProviderConfig } from '../types'
 import { EMBEDDING_DIMENSIONS } from '../types'
@@ -87,9 +88,14 @@ export class Gemma2EmbeddingProvider implements EmbeddingProvider {
         audio_encoder: audioDtype,
       },
       device: this.config.device || 'cpu',
-      // 关掉 BFCArena：视频片段的 vision 激活很大，arena 扩容会一次申请超大对齐块，
-      // Electron 的 PartitionAlloc 分配失败直接 SIGTRAP（纯 Node 下不崩）
-      session_options: { enableCpuMemArena: false },
+      session_options: {
+        // 关掉 BFCArena：视频片段的 vision 激活很大，arena 扩容会一次申请超大对齐块，
+        // Electron 的 PartitionAlloc 分配失败直接 SIGTRAP（纯 Node 下不崩）
+        enableCpuMemArena: false,
+        // 默认每核一个线程，大库后台索引会吃满整机 CPU；只用一半核，给 UI 和其他应用留余量
+        intraOpNumThreads: Math.max(1, Math.floor(cpus().length / 2)),
+        interOpNumThreads: 1,
+      },
     })
 
     this.ready = true

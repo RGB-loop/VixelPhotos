@@ -14,7 +14,7 @@
 
 import { spawn } from 'child_process'
 import { mkdtemp, readFile, readdir, rm } from 'fs/promises'
-import { tmpdir } from 'os'
+import { setPriority, tmpdir } from 'os'
 import { join } from 'path'
 import type { ExtractedFrame, ExtractOptions } from './types'
 
@@ -72,6 +72,7 @@ export async function extractKeyframes(
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
+      '-threads', String(FFMPEG_THREADS),
     ]
     if (startSec > 0) {
       args.push('-ss', String(startSec))
@@ -136,6 +137,15 @@ export async function probeDurationMs(videoPath: string): Promise<number | null>
   return ms > 0 ? ms : null
 }
 
+// 4K HEVC 软解默认吃满所有核；后台索引限 2 线程 + nice 10，让出 CPU 给前台
+export const FFMPEG_THREADS = 2
+export const FFMPEG_NICE = 10
+
+export function lowerPriority(pid: number | undefined): void {
+  if (pid === undefined) return
+  try { setPriority(pid, FFMPEG_NICE) } catch { /* 进程已退出 / 无权限：不影响正确性 */ }
+}
+
 // 5 分钟硬上限：单片段在 4K H.265 上通常远低于此，
 // 但卡住的视频（损坏 / 编解码 deadlock）必须给 indexer 一个逃生窗口
 const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000
@@ -143,6 +153,7 @@ const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000
 function runFfmpeg(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    lowerPriority(child.pid)
     let stderr = ''
     let timedOut = false
     const killTimer = setTimeout(() => {

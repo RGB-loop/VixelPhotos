@@ -1075,7 +1075,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       }
       const videos = stmts.getVideosWithoutSegments.all() as Array<{ id: number }>
       for (const video of videos) {
-        stmts.addToQueue.run(video.id, 'extract_frames', 15)
+        stmts.addToQueue.run(video.id, 'extract_frames', 6)
       }
       return photos.length + videos.length
     },

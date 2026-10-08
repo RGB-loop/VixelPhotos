@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
 
 ### Fixed
+- Background indexing of a large video folder pegged every core. ONNX now
+  uses half the cores (`intraOpNumThreads`), ffmpeg runs with `-threads 2`
+  at nice 10, and `extract_frames` is queued at priority 6 (after image
+  embed / face) so photos become searchable before long videos finish.
 - Video frame extraction returned 0–1 frames for 29.97/59.94 fps footage
   (`select='not(mod(t,N))'` never hits whole seconds after `-ss`); now `fps=1/N`.
 - Queuing `extract_frames` failed with a FOREIGN KEY error (`index_queue.photo_id`
