@@ -16,6 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filename. The query is encoded once and shared by both vector channels.
 
 ### Added
+- **Standalone audio** (`.mp3 .m4a .aac .wav .flac .ogg .opus`): cut into 32s
+  segments, each embedded from the audio track alone, stored in the same
+  `videos` / `video_segments` tables (`videos.media_kind = 'audio'`). The grid
+  tile is the embedded cover art, or a rendered waveform when there is none
+  (thumbnail only, no image vector).
+- **In-app playback** via `vixel://media/<id>` with HTTP Range (206) streaming,
+  so `<video>` / `<audio>` can seek. Formats Chromium can't decode fall back
+  to "open in system player".
+- **Media browsing rewrite**: grid cards show kind + duration and a "命中 m:ss"
+  pill for segment hits; hovering a video plays a muted preview from the hit
+  segment. The detail view opens a player that auto-seeks to the hit, has a
+  32s segment timeline (hit highlighted, click to seek), Space / J / L / M
+  shortcuts, and a 媒体信息 panel (duration, resolution, indexed segments).
+- Search results carry the matching segment (`SearchResult.segment`), and a
+  全部 / 图片 / 视频 / 音频 filter sits in the title bar.
+- **Task drawer** (click the status bar): current file with per-segment
+  progress and ETA, overall image / segment progress, upcoming queue by type,
+  failed tasks with error messages and retry / clear. Partial segment failures
+  are recorded on the task. Finished tasks are pruned at startup.
 - Pause / resume background indexing from the status bar. The paused state
   survives restarts; a long video stops between segments and resumes from
   the next one.
@@ -26,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
 
 ### Fixed
+- Every launch re-queued and re-encoded all videos / audio from scratch
+  (chokidar's initial scan fires `add` for every file). Unchanged media that
+  was already scanned or is already queued is now skipped.
 - Video frame extraction uses VideoToolbox hardware decode on macOS (4K HEVC
   32s segment: 22.8s → 2.8s), falling back to software decode on failure.
 - Removing a folder left its videos, segment vectors and `extract_frames`

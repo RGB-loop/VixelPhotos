@@ -283,7 +283,19 @@ ONNX session 关闭了 CPU BFCArena（`enableCpuMemArena: false`）：arena 扩�
 `frame_time_ms = 0`）入库，走缩略图 + 图像 embed —— 网格展示、搜索结果落点、
 "相似照片"入口都靠它。它**在编码前**写入，所以模型未就绪时视频也会出现在网格里。
 
-单片段失败（抽帧 / 编码异常）只跳过该片段，不让整个视频失败。
+单片段失败（抽帧 / 编码异常）只跳过该片段，不让整个视频失败；失败数记进任务的
+`error_msg`（如 `3/86 个片段失败`），任务面板可见。全部片段失败才算任务失败。
+
+**纯音频**复用同一套表和 `extract_frames` 任务，按 `videos.media_kind` 分支：
+每个 32s 片段只抽音轨 → `encode({ type: 'audio' })`。代表图由
+`extractCoverOrWaveform()` 生成：先取内嵌封面（`-map 0:v? -frames:v 1`），
+没有则 `showwavespic` 画波形（accent 色 `#d4a574`）。代表图只做缩略图、
+不做图像 embed —— 波形向量会污染图片搜索。
+
+**播放**：`vixel://media/<videoId>` 手写 HTTP Range（206 + `Content-Range`，
+`createReadStream({start, end})`），不走 `net.fetch(file://)` —— 后者 Range 不可靠，
+`<video>` seek 依赖它。Chromium 解不了的编码（如 mpeg4 avi）触发 `onError`，
+UI 回退到"在系统播放器中打开"。
 
 ---
 
@@ -445,6 +457,7 @@ CREATE TABLE videos (
   width        INTEGER,
   height       INTEGER,
   frame_count  INTEGER DEFAULT 0,
+  media_kind   TEXT NOT NULL DEFAULT 'video',  -- 'video' | 'audio'
   deleted_at   DATETIME,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -550,7 +563,9 @@ initDatabase(dbPath)
   6. cleanupStaleVecMap                  ← image_vec_map 孤立条目清理
 ```
 
-产品未发布，**不做 schema 迁移**：schema 变更后直接删掉开发库 `library.db` 重建。
+产品未发布，原则上**不做 schema 迁移**：schema 变更后直接删掉开发库 `library.db` 重建。
+例外是 `videos.media_kind`：用 `hasColumn` 判断后 `ALTER TABLE ADD COLUMN`，幂等。
+启动时还会 `pruneDoneTasks()` 删除已完成的队列行。
 注意 SigLIP 2 与 EmbeddingGemma 2 同为 768d，旧库不会报维度错误，但向量空间不同，必须删库。
 
 ---
@@ -597,7 +612,7 @@ v0.2 是**单 Electron 进程**：main 同时负责 UI 路由、SQLite、ONNX �
 ```typescript
 window.api = {
   // 搜索
-  search(query, limit?, { dateFrom?, dateTo? }?)
+  search(query, limit?, { dateFrom?, dateTo?, kind? }?)  // 结果可带 segment: {startMs, endMs}
   findSimilar(photoId, limit?)
   getPhotosWithGPS()
 
@@ -623,8 +638,13 @@ window.api = {
   getModelStatus() / getEmbeddingConfig() / setEmbeddingConfig(quantPatch)
   openSourceVideo(videoId)
 
-  // 进度
-  onIndexProgress(cb)  // → { stage, totalPhotos, indexedPhotos, ocrPhotos, ... }
+  // 音视频
+  getMediaDetail(videoId)  // → { kind, durationMs, width, height, filePath, fileSize, segments }
+
+  // 进度 / 任务面板
+  onIndexProgress(cb)  // → { stage, totalPhotos, ..., paused, current?, queue }
+  getIndexPaused() / setIndexPaused(paused)
+  getTaskOverview() / retryFailedTasks(ids?) / clearFailedTasks()
 }
 ```
 
@@ -639,7 +659,8 @@ window.api = {
 file enters watcher
   │
   ├─ image  → addPhoto → enqueue('thumbnail', 'embed')
-  └─ video  → addVideo → enqueue('extract_frames')
+  └─ video / audio → addVideo(kind) → enqueue('extract_frames')
+                     （内容未变且已扫过 / 已在队列中 → 跳过，避免每次启动重编码）
 
 indexer.processNext() loop:
   task                    handler
@@ -695,11 +716,16 @@ indexer.processNext() loop:
 |---|---|
 | `.jpg .png .webp .gif .tiff .bmp .avif .heic .heif .cr2 .cr3 .nef .arw .dng .raf .orf .rw2` | `image` 路径，addPhoto + enqueue thumbnail/embed |
 | `.mp4 .mov .m4v .webm .mkv .avi` | `video` 路径，addVideo + enqueue extract_frames |
+| `.mp3 .m4a .aac .wav .flac .ogg .opus` | `audio` 路径，同上（`media_kind = 'audio'`） |
 | 其它 | 忽略 |
 
 视频条目的 `file_hash` 用 `(path|size|mtime)` 轻量哈希，避免 watcher 在
 GB 级文件上读取全部字节阻塞。代表帧的内容 hash 在 indexer 抽帧后计算；
 片段 hash = hash(视频 hash + 时间区间)。
+
+chokidar 启动时对已有文件逐个触发 `add`。`handleAddVideo` 在轻量哈希未变、
+且 `frame_count` 非空（已扫过；坏文件为 0）或已有 pending / processing 的
+`extract_frames` 任务时不再入队 —— 否则每次启动都会清掉片段从头重编码。
 
 ### 4.5 搜索引擎
 
