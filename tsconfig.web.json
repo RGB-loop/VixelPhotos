@@ -10,11 +10,21 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/renderer/src/*"]
+      "@/*": [
+        "src/renderer/src/*"
+      ]
     }
   },
-  "include": ["src/renderer/**/*"]
+  "include": [
+    "src/renderer/**/*",
+    "src/shared/**/*",
+    "src/preload/index.ts"
+  ]
 }

@@ -3,9 +3,11 @@ import type { IndexProgress as IndexProgressType } from '../../../shared/types'
 
 interface IndexProgressProps {
   progress: IndexProgressType | null
+  /** 点击底栏打开任务抽屉 */
+  onOpenTasks: () => void
 }
 
-export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
+export function IndexProgress({ progress, onOpenTasks }: IndexProgressProps): JSX.Element {
   const totalPhotos = progress?.totalPhotos || 0
   const thumbnailedPhotos = progress?.thumbnailedPhotos || 0
   const indexedPhotos = progress?.indexedPhotos || 0
@@ -20,7 +22,8 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
     if (progress?.paused !== undefined) setPaused(progress.paused)
   }, [progress?.paused])
 
-  const togglePause = (): void => {
+  const togglePause = (e: React.MouseEvent): void => {
+    e.stopPropagation()
     window.api.setIndexPaused(!paused).then(setPaused).catch(() => {})
   }
 
@@ -48,10 +51,21 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
     statusText = '检测人脸…'
     progressPercent = 0
    } else if (isIndexing) {
-    // 照片都处理完了，剩下的是视频片段编码
-    statusText = '处理视频…'
-    progressPercent = 0
+    // 照片都处理完了，剩下的是音视频片段编码
+    const cur = progress?.current
+    if (cur && cur.taskType === 'extract_frames' && cur.segTotal > 0) {
+      statusText = `处理${cur.kind === 'audio' ? '音频' : '视频'} 片段 ${cur.segDone}/${cur.segTotal}`
+      progressPercent = Math.round((cur.segDone / cur.segTotal) * 100)
+    } else {
+      statusText = '处理音视频…'
+      progressPercent = 0
+    }
   }
+
+  const errorCount = progress?.queue?.error ?? 0
+  const errorBadge = errorCount > 0 && (
+    <span className="ml-2 flex-shrink-0 px-1.5 py-px rounded bg-red-400/10 text-red-400/70">{errorCount} 失败</span>
+  )
 
   const pauseButton = (isWorking || paused) && (
     <button
@@ -63,12 +77,16 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
   )
 
   return (
-    <div className="h-7 flex items-center px-4 bg-surface-1 border-t border-white/5 text-[11px] text-white/30">
+    <div
+      onClick={onOpenTasks}
+      title="查看索引任务"
+      className="h-7 flex items-center px-4 bg-surface-1 border-t border-white/5 text-[11px] text-white/30 cursor-pointer hover:bg-surface-2 transition-colors"
+    >
       {paused ? (
         <div className="flex items-center gap-1.5 w-full">
           <span className="text-amber-400/70">索引已暂停</span>
           {totalPhotos > 0 && <span className="text-white/15">· {indexedPhotos}/{totalPhotos} 已索引</span>}
-          <div className="ml-auto">{pauseButton}</div>
+          <div className="ml-auto flex items-center">{errorBadge}{pauseButton}</div>
         </div>
       ) : isWorking && statusText ? (
         <div className="flex items-center gap-2 w-full">
@@ -86,10 +104,11 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
               style={{ width: `${progressPercent}%` }}
             />
           </div>
+          {errorBadge}
           {pauseButton}
         </div>
       ) : totalPhotos > 0 ? (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 w-full">
           <span>{totalPhotos} 张照片</span>
           {indexedPhotos < totalPhotos && (
             <span className="text-white/15">· {indexedPhotos} 已索引</span>
@@ -97,6 +116,7 @@ export function IndexProgress({ progress }: IndexProgressProps): JSX.Element {
           {ocrPhotos > 0 && (
             <span className="text-white/15">· {ocrPhotos} 已识字</span>
           )}
+          <div className="ml-auto flex items-center">{errorBadge}</div>
         </div>
       ) : (
         <span>添加照片文件夹开始使用</span>

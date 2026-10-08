@@ -6,6 +6,7 @@ import { FolderManager } from './components/FolderManager'
 import { IndexProgress } from './components/IndexProgress'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
+import { TaskDrawer } from './components/tasks/TaskDrawer'
 import type { SearchResult, Photo, IndexProgress as IndexProgressType } from '../../shared/types'
 
 type ViewMode = 'grid' | 'map' | 'people'
@@ -37,6 +38,7 @@ function App(): JSX.Element {
   const [dateTo, setDateTo] = useState('')
   const [showDateFilter, setShowDateFilter] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [showTasks, setShowTasks] = useState(false)
   const currentQuery = useRef('')
 
   const doSearch = useCallback(async (query: string, from?: string, to?: string) => {
@@ -117,6 +119,8 @@ function App(): JSX.Element {
 
   const handleSelectPhoto = useCallback((photo: Photo) => setSelectedPhoto(photo), [])
   const handleCloseDetail = useCallback(() => setSelectedPhoto(null), [])
+  const handleOpenTasks = useCallback(() => setShowTasks(true), [])
+  const handleCloseTasks = useCallback(() => setShowTasks(false), [])
 
   const handleFolderManagerClose = useCallback(async () => {
     setShowFolderManager(false)
@@ -293,7 +297,8 @@ function App(): JSX.Element {
       </div>
 
       {/* 索引进度 */}
-      <IndexProgress progress={indexProgress} />
+      <IndexProgress progress={indexProgress} onOpenTasks={handleOpenTasks} />
+      <TaskDrawer open={showTasks} onClose={handleCloseTasks} progress={indexProgress} />
 
       {/* 照片详情 */}
       {selectedPhoto && (
