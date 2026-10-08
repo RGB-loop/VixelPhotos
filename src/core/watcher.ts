@@ -173,7 +173,7 @@ export class FileWatcher {
 
       const photoId = this.db.addPhoto(folderId, filePath, fileName, stats.size, stats.mtimeMs, fileHash)
 
-      // v0.2：流水线是 thumbnail → embed（caption 不再自动生成）
+      // 流水线：thumbnail → embed
       const { hasEmbedding } = this.db.hasContentForHash(fileHash)
 
       if (hasEmbedding) {
@@ -194,7 +194,7 @@ export class FileWatcher {
   /**
    * 视频不入 photos 直接走 thumbnail pipeline，
    * 而是先登记到 videos 表 + queue 一个 'extract_frames' 任务；
-   * indexer 抽完帧后才把每帧作为 photo 行 + 缩略图/embed/face/ocr 排队。
+   * indexer 切 32s 片段编码进 video_segments，并把首帧落成代表 photo。
    */
   private async handleAddVideo(folderId: number, filePath: string): Promise<void> {
     try {

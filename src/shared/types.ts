@@ -135,7 +135,7 @@ export const IPC_CHANNELS = {
   GET_EMBEDDING_CONFIG: 'get-embedding-config',
   SET_EMBEDDING_CONFIG: 'set-embedding-config',
 
-  // Caption（v0.2：仅手动编辑，无自动生成）
+  // Caption（仅手动编辑，不参与搜索）
   UPDATE_CAPTION: 'update-caption',
 
   // 相似照片

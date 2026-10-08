@@ -30,7 +30,7 @@ function columnsForWidth(w: number): number {
 }
 
 function StatusBadge({ photo }: { photo: Photo }): JSX.Element | null {
-  // v0.2：caption 不再自动生成，badge 仅对未完成的 embedding 显示
+  // badge 仅对未完成的 embedding 显示
   if (photo.embedStatus === 'done') return null
   return (
     <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 pointer-events-none">

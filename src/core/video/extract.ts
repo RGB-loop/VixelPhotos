@@ -4,7 +4,7 @@
  * 设计取舍：
  *   - 用临时目录 + image2 输出文件而非 image2pipe 管道。管道方案要自己
  *     按 SOI/EOI 切 JPEG 流，对一个个人相册产品不值得。
- *   - 抽帧间隔固定（indexer 按 32s 片段 1fps 抽），不做 scene detection。
+ *   - 抽帧间隔固定（indexer 按 32s 片段每 4s 抽一帧），不做 scene detection。
  *     scene detection 对静态长视频会返回 0 帧；固定间隔行为可预测。
  *   - 时长用 probeDurationMs 解析 `ffmpeg -i` 的 stderr，不依赖 ffprobe。
  *
@@ -64,11 +64,10 @@ export async function extractKeyframes(
     // -ss: seek to start position (before -i for fast seek)
     // -t: duration to process (if specified)
     // -vf 解释：
-    //   select='not(mod(t,N))'  -- 每 N 秒选一帧（基于显示时间戳）
+    //   fps=1/N  -- 每 N 秒输出一帧。不能用 select='not(mod(t,N))'：29.97/59.94fps
+    //              的帧时间戳几乎不会落在整秒上，-ss seek 后连 t=0 都没有，会抽到 0 帧
     //   scale=W:H:force_original_aspect_ratio=decrease -- 长边 W，等比缩小，不放大
-    //
-    // -vsync vfr 保证抽出来的帧时间戳不被复制（select filter 配合用）
-    const vf = `select='not(mod(t\\,${intervalSec}))',scale='min(${maxSide},iw)':'min(${maxSide},ih)':force_original_aspect_ratio=decrease`
+    const vf = `fps=1/${intervalSec},scale='min(${maxSide},iw)':'min(${maxSide},ih)':force_original_aspect_ratio=decrease`
 
     const args = [
       '-hide_banner',
@@ -83,7 +82,6 @@ export async function extractKeyframes(
     }
     args.push(
       '-vf', vf,
-      '-vsync', 'vfr',
       '-frames:v', String(maxFrames),
       '-f', 'image2',
       join(dir, 'f_%04d.jpg')
@@ -100,7 +98,7 @@ export async function extractKeyframes(
       const buffer = await readFile(join(dir, files[i]))
       frames.push({
         buffer,
-        // 帧 i 对应片段内的 (i * intervalSec) 秒；select 过滤器是按 t 整数倍。
+        // 帧 i 对应片段内的 (i * intervalSec) 秒（fps 过滤器等间隔输出）。
         // 片段模式下加上 startSec 偏移，使时间戳相对整个视频。
         timestampMs: Math.round((startSec + i * intervalSec) * 1000),
       })

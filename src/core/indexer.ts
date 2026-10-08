@@ -112,7 +112,7 @@ export class Indexer extends EventEmitter {
    *   2. 全视频首帧抽取 → 缩略图（UI 展示用）
    *
    * 帧本身仍写到 <userData>/video_frames/<videoHash>/ 供缩略图和调试，
-   * 但不再为每帧单独生成 photo 行 + image embedding；搜索直接走 video_segments。
+   * 但不为每帧单独生成 photo 行 + image embedding；搜索直接走 video_segments。
    */
   private async processExtractFrames(videoId: number): Promise<void> {
     const video = this.db.getVideoById(videoId)
@@ -158,9 +158,11 @@ export class Indexer extends EventEmitter {
     await embeddingService.init()
     const modelReady = embeddingService.isReady()
 
-    // processor_config 的 video_processor.max_frames = 32，超出会被均匀降采样，
-    // 所以 1fps 下片段取 32s：32 帧 × 140 token + 32s 音频 ≈ 800 token ≈ 5.3K < 8K context
+    // 32s 片段，每 4s 一帧 → 8 帧。vision encoder 开销随帧数超线性增长：
+    // 实测 M 系列 CPU 上 8 帧 ≈ 14s / 16 帧 ≈ 43s / 32 帧 ≈ 141s（峰值 3.9GB），
+    // 1fps 对长视频不可用。8 帧 × 140 token + 32s 音频 ≈ 2K token，远低于 8K context
     const SEGMENT_DURATION_SEC = 32
+    const FRAME_INTERVAL_SEC = 4
     const numSegments = Math.max(1, Math.ceil(durationMs / 1000 / SEGMENT_DURATION_SEC))
 
     if (!existsSync(framesDir)) {
@@ -176,12 +178,11 @@ export class Indexer extends EventEmitter {
       const segmentDurationSec = (endMs - startMs) / 1000
 
       try {
-        // 抽该片段的帧（1fps）
         const frames = await extractKeyframes(video.filePath, {
           startSec: startMs / 1000,
           durationSec: segmentDurationSec,
-          intervalSec: 1,
-          maxFrames: SEGMENT_DURATION_SEC,
+          intervalSec: FRAME_INTERVAL_SEC,
+          maxFrames: SEGMENT_DURATION_SEC / FRAME_INTERVAL_SEC,
           maxSide: 512,
         })
 

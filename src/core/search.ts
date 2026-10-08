@@ -66,18 +66,24 @@ export class SearchEngine {
       // 视频片段命中 → 映射到该视频首帧 photo 的 fileHash，
       // 这样才能和图片通道在同一个 id 空间里融合。
       const videoSegmentAsFileHash: VecSearchResult[] = []
+      const segmentHashes = new Set<string>()
       for (const seg of videoSegmentResults) {
         const frames = this.db.getFramePhotosByVideo(seg.videoId)
         const frame = frames.find((f) => !f.deletedAt) ?? frames[0]
         if (frame?.fileHash) {
           videoSegmentAsFileHash.push({ fileHash: frame.fileHash, distance: seg.distance })
+          segmentHashes.add(frame.fileHash)
         }
       }
+
+      // 代表帧也有图片向量：已被片段通道命中的视频从图片通道剔除，
+      // 否则 RRF 会把同一视频累加两次，视频几乎霸占所有查询的前排
+      const imageOnlyResults = imageVecResults.filter((r) => !segmentHashes.has(r.fileHash))
 
       // RRF 融合（各通道先按相关性排序好，再交给 fusion）
       const mergedResults = rrfFuse(
         [
-          [...imageVecResults].sort((a, b) => a.distance - b.distance),
+          [...imageOnlyResults].sort((a, b) => a.distance - b.distance),
           [...videoSegmentAsFileHash].sort((a, b) => a.distance - b.distance),
           [...ocrResults].sort((a, b) => b.score - a.score),
           fileNameResults,

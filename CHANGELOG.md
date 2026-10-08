@@ -17,10 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Video segment semantics with audio**: each video is cut into 32s
-  segments (1 frame/s + audio track) and embedded as one vector per segment
+  segments (1 frame every 4s + audio track) and embedded as one vector per segment
   (`video_segments` / `video_segment_vecs`). Audio-less videos fall back
   to frames only.
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
+
+### Fixed
+- Video frame extraction returned 0–1 frames for 29.97/59.94 fps footage
+  (`select='not(mod(t,N))'` never hits whole seconds after `-ss`); now `fps=1/N`.
+- Queuing `extract_frames` failed with a FOREIGN KEY error (`index_queue.photo_id`
+  holds `videos.id` for that task type).
+- Electron crashed (SIGTRAP) encoding video segments with ≥16 frames: the ONNX
+  CPU arena requested a huge aligned block that PartitionAlloc refuses. The arena
+  is now disabled.
+- Videos were counted twice in search fusion (first-frame image vector + segment
+  vector) and crowded out photos.
+- `models:download` flattened `onnx/`, so transformers.js couldn't find weights.
 
 ### Removed
 - External embedding API provider and its settings UI / IPC

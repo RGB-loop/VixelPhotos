@@ -87,6 +87,9 @@ export class Gemma2EmbeddingProvider implements EmbeddingProvider {
         audio_encoder: audioDtype,
       },
       device: this.config.device || 'cpu',
+      // 关掉 BFCArena：视频片段的 vision 激活很大，arena 扩容会一次申请超大对齐块，
+      // Electron 的 PartitionAlloc 分配失败直接 SIGTRAP（纯 Node 下不崩）
+      session_options: { enableCpuMemArena: false },
     })
 
     this.ready = true

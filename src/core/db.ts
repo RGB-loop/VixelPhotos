@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_photos_file_hash ON photos(file_hash);
 -- 索引任务队列
 CREATE TABLE IF NOT EXISTS index_queue (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  photo_id    INTEGER REFERENCES photos(id),
+  photo_id    INTEGER,          -- 多态：extract_frames 任务存 videos.id，其余存 photos.id，所以不加外键
   task_type   TEXT NOT NULL,
   priority    INTEGER DEFAULT 0,
   status      TEXT DEFAULT 'pending',

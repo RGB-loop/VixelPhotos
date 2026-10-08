@@ -20,7 +20,7 @@
 > **重大变更（2026-10 重构，EmbeddingGemma 2）：**
 > - 所有 embedding 任务统一到 **EmbeddingGemma 2**（文本/图像/音频/视频同一 768 维空间），
 >   删除 SigLIP 2 provider 与外部 Embedding API provider —— 纯本地，无 API 兜底
-> - 视频从"逐帧当照片"改为 **32s 片段语义向量**（1fps 帧序列 + 音轨 → 单向量），
+> - 视频从"逐帧当照片"改为 **32s 片段语义向量**（每 4s 一帧的帧序列 + 音轨 → 单向量），
 >   新表 `video_segments` + `video_segment_vecs`
 > - 新增音轨抽取（`src/core/audio/extract.ts`，ffmpeg → mono 16 kHz f32le）
 > - 搜索：删除 caption BM25 通道；新增视频片段向量通道；query 只编码一次
@@ -67,7 +67,7 @@
 │                        │  └──────────────────────────────────────┘ │    │
 │                        │  ┌──────────────────────────────────────┐ │    │
 │                        │  │      ffmpeg-static (subprocess)      │ │    │
-│                        │  │  32s 片段：1fps 帧 + 音轨 → 片段向量 │ │    │
+│                        │  │  32s 片段：8 帧 + 音轨 → 片段向量    │ │    │
 │                        │  └──────────────────────────────────────┘ │    │
 │                        │  ┌──────────────────────────────────────┐ │    │
 │                        │  │    better-sqlite3 + sqlite-vec       │ │    │
@@ -99,7 +99,7 @@
 | 人脸检测 | **SCRFD-2.5G-KPS**（InsightFace ONNX） | ~3 MB |
 | 人脸 embedding | **MobileFaceNet**（ONNX） | 128 维，L2 归一化 |
 | 人脸聚类 | **sqlite-vec ANN** | 取代 v0.1 的 O(N) JS 余弦扫描 |
-| 视频 / 音频抽取 | **ffmpeg-static** | 32s 片段，1fps 帧（≤32 帧）+ mono 16 kHz 音轨；时长解析 `ffmpeg -i` stderr |
+| 视频 / 音频抽取 | **ffmpeg-static** | 32s 片段，每 4s 一帧（8 帧）+ mono 16 kHz 音轨；时长解析 `ffmpeg -i` stderr |
 | 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + video_segment_vecs(768) + face_vecs(128) |
 | 元数据存储 | **better-sqlite3 + FTS5** | 同进程 sync API |
 | 中文分词 | **@node-rs/jieba**（UDF jiebatok） | FTS5 写入/查询两端对称切词 |
@@ -266,15 +266,18 @@ return createNewPerson()
 | 二进制来源 | `ffmpeg-static` npm（per-platform prebuilt，~80 MB；不带 ffprobe） |
 | 时长 | `probeDurationMs()`：解析 `ffmpeg -i` stderr 的 `Duration:`，30s 超时 |
 | 切片 | **32s** 一段（`-ss` 在 `-i` 前快速 seek，`-t` 限长） |
-| 帧 | 1 fps，≤ 32 帧，长边 ≤ 512 px JPEG |
+| 帧 | 每 4s 一帧（ffmpeg `fps=1/4`），8 帧，长边 ≤ 512 px JPEG |
 | 音轨 | `src/core/audio/extract.ts`：ffmpeg → mono 16 kHz f32le |
 | 编码 | 帧序列 + 音轨 → `encode({ type: 'multimodal', video, audio })` → 单向量；无音轨退化为纯视频 |
 | 存储 | `video_segments`（时间区间）+ `video_segment_vecs`（vec0, 768d） |
 | 编排 | indexer task 类型 `extract_frames` |
 
-为什么是 32s：`processor_config.json` 的 `video_processor.max_frames = 32`，
-超出会被均匀降采样（白抽）。32 帧 × 140 token ≈ 4.5K，加 32s 音频（~40 ms/token
-≈ 800 token）≈ 5.3K，在 8K 上下文内留足余量。
+为什么是 32s / 8 帧：processor 上限 32 帧，但 vision encoder 开销随帧数超线性
+增长 —— 实测 M 系列 CPU 上 8 帧 ≈ 14s、16 帧 ≈ 43s、32 帧 ≈ 141s（峰值 3.9 GB），
+1 fps 对长视频不可用。8 帧 × 140 token + 32s 音频（~800 token）≈ 2K，远低于 8K 上下文。
+
+ONNX session 关闭了 CPU BFCArena（`enableCpuMemArena: false`）：arena 扩容会一次申请
+超大对齐块，Electron 的 PartitionAlloc 分配失败直接 SIGTRAP，纯 Node 下不复现。
 
 代表帧：首段首帧落成 `segment_0_0ms.jpg`，作为一行 `photos`（`video_id`,
 `frame_time_ms = 0`）入库，走缩略图 + 图像 embed —— 网格展示、搜索结果落点、
@@ -663,7 +666,7 @@ indexer.processNext() loop:
                             清理旧 segments + 旧帧 photo 行 + 帧目录
                             probeDurationMs()        ← 无时长 → frameCount=0 返回
                             for 每个 32s 片段:
-                              extractKeyframes({startSec, durationSec, 1fps, ≤32})
+                              extractKeyframes({startSec, durationSec, 每 4s, 8 帧})
                               首段：首帧 → segment_0_0ms.jpg → addPhoto(videoId, 0)
                                     → enqueue('thumbnail', 'embed')（编码前写入）
                               extractAudioTrack()    ← 失败则纯视频
@@ -759,10 +762,10 @@ async search(query, limit, options) {
 | decodeImage | < 5 ms (JPEG) / ~200 ms (HEIC via sips) / ~600 ms (HEIC via heic-convert WASM) | |
 | parseAndUpdateMeta | ~10 ms | exifr |
 | generateThumbnail | ~20 ms | sharp resize → webp 512px |
-| processEmbedding | 待测 | EmbeddingGemma 2 视觉 q4（旧 SigLIP 2 为 ~80 ms CPU / ~25 ms CoreML） |
+| processEmbedding | ~3.4 s / 张 | EmbeddingGemma 2 视觉 q4（旧 SigLIP 2 为 ~80 ms CPU / ~25 ms CoreML） |
 | processFace（按需） | ~30 ms / 张（不含 detect） | SCRFD + MobileFaceNet |
 | processOcr（按需） | ~150–400 ms / 张 | PaddleOCR det+rec |
-| 单视频片段（32s） | 待测 | ffmpeg 抽 ≤32 帧 + 音轨 + 一次多模态编码 |
+| 单视频片段（32s） | ~14 s | ffmpeg 抽 8 帧 + 音轨 + 一次多模态编码 |
 
 ### 5.2 大库性能 (PR5 前后)
 

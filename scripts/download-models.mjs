@@ -49,6 +49,8 @@ const MODEL_GROUPS = {
   gemma2: {
     label: 'EmbeddingGemma 2 (text/image/audio/video, 768D)',
     targetDir: join(MODELS_ROOT, 'gemma2'),
+    // transformers.js 从 <model>/onnx/ 加载权重，必须保留 HF 仓库的目录结构
+    preserveSubdirs: true,
     sources: [
       {
         baseUrl: `https://huggingface.co/${process.env.GEMMA2_REPO || 'onnx-community/embeddinggemma-2-ONNX'}/resolve/${process.env.GEMMA2_REVISION || 'main'}/`,
@@ -180,7 +182,8 @@ async function downloadGroup(groupKey) {
     for (const file of source.files) {
       const url = source.baseUrl + file.path
       const targetName = file.rename || file.path
-      const target = join(group.targetDir, targetName.includes('/') ? targetName.split('/').pop() : targetName)
+      const target = join(group.targetDir, group.preserveSubdirs ? targetName : targetName.split('/').pop())
+      mkdirSync(dirname(target), { recursive: true })
       try {
         await downloadFile(url, target, file.optional === true)
       } catch (err) {
