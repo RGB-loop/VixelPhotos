@@ -186,7 +186,7 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center bg-surface-0">
-        <p className="text-white/30 text-xs">加载中...</p>
+        <p className="text-ink-3 text-callout">加载中...</p>
       </div>
     )
   }
@@ -195,8 +195,8 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
     return (
       <div className="h-full flex items-center justify-center bg-surface-0">
         <div className="text-center">
-          <p className="text-red-400/60 text-sm">地图加载失败</p>
-          <p className="text-white/20 text-xs mt-1">{error}</p>
+          <p className="text-bad/60 text-body">地图加载失败</p>
+          <p className="text-ink-4 text-callout mt-1">{error}</p>
         </div>
       </div>
     )
@@ -206,12 +206,12 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
     return (
       <div className="h-full flex items-center justify-center bg-surface-0">
         <div className="text-center">
-          <svg className="w-12 h-12 mx-auto mb-3 text-white/10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-12 h-12 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <p className="text-white/40 text-sm">暂无位置信息的照片</p>
-          <p className="text-white/20 text-xs mt-1">手机拍摄的照片通常包含 GPS 数据</p>
+          <p className="text-ink-3 text-body">暂无带位置信息的内容</p>
+          <p className="text-ink-4 text-callout mt-1">手机拍摄的图片和视频通常包含 GPS 数据</p>
         </div>
       </div>
     )
@@ -220,8 +220,8 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
   return (
     <div className="h-full relative">
       <div ref={mapContainerRef} className="h-full w-full" style={{ background: '#1a1a2e' }} />
-      <div className="absolute bottom-3 left-3 px-2 py-1 rounded bg-black/60 text-[10px] text-white/50 pointer-events-none">
-        {gpsPhotos.length} 张照片有位置信息
+      <div className="absolute bottom-3 left-3 px-2 py-1 rounded bg-black/60 text-micro text-ink-2 pointer-events-none">
+        {gpsPhotos.length} 项有位置信息
       </div>
     </div>
   )

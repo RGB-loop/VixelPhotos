@@ -64,13 +64,13 @@ export function IndexProgress({ progress, onOpenTasks }: IndexProgressProps): JS
 
   const errorCount = progress?.queue?.error ?? 0
   const errorBadge = errorCount > 0 && (
-    <span className="ml-2 flex-shrink-0 px-1.5 py-px rounded bg-red-400/10 text-red-400/70">{errorCount} 失败</span>
+    <span className="ml-2 flex-shrink-0 px-1.5 py-px rounded bg-bad/10 text-bad/70">{errorCount} 失败</span>
   )
 
   const pauseButton = (isWorking || paused) && (
     <button
       onClick={togglePause}
-      className="ml-3 flex-shrink-0 px-2 py-0.5 rounded text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
+      className="ml-3 flex-shrink-0 px-2 py-0.5 rounded text-ink-2 hover:text-ink hover:bg-fill transition-colors"
     >
       {paused ? '继续' : '暂停'}
     </button>
@@ -80,12 +80,12 @@ export function IndexProgress({ progress, onOpenTasks }: IndexProgressProps): JS
     <div
       onClick={onOpenTasks}
       title="查看索引任务"
-      className="h-7 flex items-center px-4 bg-surface-1 border-t border-white/5 text-[11px] text-white/30 cursor-pointer hover:bg-surface-2 transition-colors"
+      className="h-7 flex items-center px-4 bg-surface-1 border-t border-line text-caption text-ink-3 cursor-pointer hover:bg-surface-2 transition-colors"
     >
       {paused ? (
         <div className="flex items-center gap-1.5 w-full">
-          <span className="text-amber-400/70">索引已暂停</span>
-          {totalPhotos > 0 && <span className="text-white/15">· {indexedPhotos}/{totalPhotos} 已索引</span>}
+          <span className="text-warn/70">索引已暂停</span>
+          {totalPhotos > 0 && <span className="text-ink-4">· {indexedPhotos}/{totalPhotos} 已索引</span>}
           <div className="ml-auto flex items-center">{errorBadge}{pauseButton}</div>
         </div>
       ) : isWorking && statusText ? (
@@ -96,9 +96,9 @@ export function IndexProgress({ progress, onOpenTasks }: IndexProgressProps): JS
           </svg>
           <span>{statusText}</span>
           {progress?.currentFile && (
-            <span className="text-white/15 truncate">{progress.currentFile}</span>
+            <span className="text-ink-4 truncate">{progress.currentFile}</span>
           )}
-          <div className="ml-auto w-16 h-1 bg-white/5 rounded-full overflow-hidden flex-shrink-0">
+          <div className="ml-auto w-16 h-1 bg-fill rounded-full overflow-hidden flex-shrink-0">
             <div
               className="h-full bg-accent/60 rounded-full transition-all duration-500"
               style={{ width: `${progressPercent}%` }}
@@ -109,17 +109,17 @@ export function IndexProgress({ progress, onOpenTasks }: IndexProgressProps): JS
         </div>
       ) : totalPhotos > 0 ? (
         <div className="flex items-center gap-1.5 w-full">
-          <span>{totalPhotos} 张照片</span>
+          <span>{totalPhotos} 项</span>
           {indexedPhotos < totalPhotos && (
-            <span className="text-white/15">· {indexedPhotos} 已索引</span>
+            <span className="text-ink-4">· {indexedPhotos} 已索引</span>
           )}
           {ocrPhotos > 0 && (
-            <span className="text-white/15">· {ocrPhotos} 已识字</span>
+            <span className="text-ink-4">· {ocrPhotos} 已识字</span>
           )}
           <div className="ml-auto flex items-center">{errorBadge}</div>
         </div>
       ) : (
-        <span>添加照片文件夹开始使用</span>
+        <span>添加文件夹开始使用</span>
       )}
     </div>
   )

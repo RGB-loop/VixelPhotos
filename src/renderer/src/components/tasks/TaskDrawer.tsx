@@ -17,7 +17,7 @@ const TASK_LABELS: Record<TaskType, string> = {
 }
 const TASK_ORDER: TaskType[] = ['thumbnail', 'embed', 'extract_frames', 'ocr', 'face']
 
-const KIND_LABELS: Record<MediaKind, string> = { image: '照片', video: '视频', audio: '音频' }
+const KIND_LABELS: Record<MediaKind, string> = { image: '图片', video: '视频', audio: '音频' }
 
 // ETA 用最近 N 个片段耗时的均值；单个片段受内容影响波动大（静态画面 vs 4K 运动）
 const ETA_WINDOW = 8
@@ -110,27 +110,27 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
   return (
     <>
       <div className="fixed inset-0 z-30 bg-black/30 animate-fade-in" onClick={onClose} />
-      <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-surface-1 border-t border-white/10 rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
+      <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-surface-1 border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
         {/* 头部 */}
-        <div className="flex items-center gap-3 px-5 h-11 border-b border-white/5 flex-shrink-0">
-          <h2 className="text-sm font-medium text-white/80">索引任务</h2>
+        <div className="flex items-center gap-3 px-5 h-11 border-b border-line flex-shrink-0">
+          <h2 className="text-body font-medium text-ink">索引任务</h2>
           {paused ? (
-            <span className="text-[11px] text-amber-400/70">已暂停</span>
+            <span className="text-caption text-warn/70">已暂停</span>
           ) : progress?.stage !== 'idle' && progress?.stage ? (
-            <span className="text-[11px] text-accent/70">运行中</span>
+            <span className="text-caption text-accent/70">运行中</span>
           ) : (
-            <span className="text-[11px] text-white/25">空闲</span>
+            <span className="text-caption text-ink-4">空闲</span>
           )}
           <div className="ml-auto flex items-center gap-1">
             <button
               onClick={togglePause}
-              className="px-2.5 py-1 rounded-md text-[11px] text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+              className="px-2.5 py-1 rounded-md text-caption text-ink-2 hover:text-white hover:bg-fill-hover transition-colors"
             >
               {paused ? '继续索引' : '暂停索引'}
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-md text-white/30 hover:text-white/70 hover:bg-white/10 transition-colors"
+              className="p-1.5 rounded-md text-ink-3 hover:text-ink hover:bg-fill-hover transition-colors"
               title="关闭 (Esc)"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -144,7 +144,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
           {/* 整体进度 */}
           <section className="grid grid-cols-2 gap-4">
             <ProgressStat
-              label="照片"
+              label="图片"
               done={photos?.indexed ?? 0}
               total={photos?.total ?? 0}
               detail={photos && photos.thumbnailed < photos.total ? `缩略图 ${photos.thumbnailed}/${photos.total}` : undefined}
@@ -168,26 +168,26 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
             <SectionTitle>当前任务</SectionTitle>
             {current ? (
               <div className="bg-surface-2 rounded-lg px-3 py-2.5">
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-2 text-callout">
                   <KindBadge kind={current.kind} />
-                  <span className="text-white/80 truncate flex-1">{current.name}</span>
-                  <span className="text-white/30 flex-shrink-0">{TASK_LABELS[current.taskType]}</span>
+                  <span className="text-ink truncate flex-1">{current.name}</span>
+                  <span className="text-ink-3 flex-shrink-0">{TASK_LABELS[current.taskType]}</span>
                 </div>
                 {current.segTotal > 1 && (
                   <div className="mt-2 flex items-center gap-3">
                     <Bar ratio={current.segDone / current.segTotal} />
-                    <span className="text-[11px] text-white/40 tabular-nums flex-shrink-0">
+                    <span className="text-caption text-ink-3 tabular-nums flex-shrink-0">
                       片段 {current.segDone}/{current.segTotal}
                     </span>
                   </div>
                 )}
-                <div className="mt-1.5 text-[10px] text-white/25 tabular-nums">
+                <div className="mt-1.5 text-micro text-ink-4 tabular-nums">
                   已用 {formatSpan(Date.now() - current.startedAt)}
                   {current.lastSegMs ? ` · 上一片段 ${(current.lastSegMs / 1000).toFixed(1)}s` : ''}
                 </div>
               </div>
             ) : (
-              <p className="text-xs text-white/25">{paused ? '已暂停，点「继续索引」恢复' : '没有正在运行的任务'}</p>
+              <p className="text-callout text-ink-4">{paused ? '已暂停，点「继续索引」恢复' : '没有正在运行的任务'}</p>
             )}
           </section>
 
@@ -197,9 +197,9 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
               <SectionTitle>队列</SectionTitle>
               <div className="flex flex-wrap gap-2 mb-2">
                 {queueByType.map((q) => (
-                  <span key={q.type} className="px-2 py-1 rounded-md bg-surface-2 text-[11px] text-white/50">
-                    {TASK_LABELS[q.type]} <span className="text-white/80 tabular-nums">{q.active}</span>
-                    {q.error > 0 && <span className="text-red-400/70"> · {q.error} 失败</span>}
+                  <span key={q.type} className="px-2 py-1 rounded-md bg-surface-2 text-caption text-ink-2">
+                    {TASK_LABELS[q.type]} <span className="text-ink tabular-nums">{q.active}</span>
+                    {q.error > 0 && <span className="text-bad/70"> · {q.error} 失败</span>}
                   </span>
                 ))}
               </div>
@@ -220,14 +220,14 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
                   <button
                     disabled={busy}
                     onClick={() => runAction(() => window.api.retryFailedTasks())}
-                    className="px-2 py-0.5 rounded text-[11px] text-accent/80 hover:bg-accent/10 disabled:opacity-40"
+                    className="px-2 py-0.5 rounded text-caption text-accent/80 hover:bg-accent/10 disabled:opacity-40"
                   >
                     全部重试
                   </button>
                   <button
                     disabled={busy}
                     onClick={() => runAction(() => window.api.clearFailedTasks())}
-                    className="px-2 py-0.5 rounded text-[11px] text-white/40 hover:text-white/70 hover:bg-white/5 disabled:opacity-40"
+                    className="px-2 py-0.5 rounded text-caption text-ink-3 hover:text-ink hover:bg-fill disabled:opacity-40"
                   >
                     清除
                   </button>
@@ -236,22 +236,22 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
               <ul className="space-y-1">
                 {errors.map((t) => (
                   <li key={t.id} className="group bg-surface-2 rounded-md px-3 py-2">
-                    <div className="flex items-center gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-callout">
                       <KindBadge kind={t.kind} />
-                      <span className="text-white/70 truncate flex-1">{t.name ?? '(已删除)'}</span>
-                      <span className="text-[10px] text-white/25 flex-shrink-0">
+                      <span className="text-ink truncate flex-1">{t.name ?? '(已删除)'}</span>
+                      <span className="text-micro text-ink-4 flex-shrink-0">
                         {TASK_LABELS[t.taskType]}{t.retryCount > 0 ? ` · 重试 ${t.retryCount} 次` : ''}
                       </span>
                       <button
                         disabled={busy}
                         onClick={() => runAction(() => window.api.retryFailedTasks([t.id]))}
-                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 rounded text-[10px] text-accent/80 hover:bg-accent/10 transition-opacity disabled:opacity-40"
+                        className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 rounded text-micro text-accent/80 hover:bg-accent/10 transition-opacity disabled:opacity-40"
                       >
                         重试
                       </button>
                     </div>
                     {t.errorMsg && (
-                      <p className="mt-1 text-[10px] text-red-400/60 break-all line-clamp-2">{t.errorMsg}</p>
+                      <p className="mt-1 text-micro text-bad/60 break-all line-clamp-2">{t.errorMsg}</p>
                     )}
                   </li>
                 ))}
@@ -260,7 +260,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
           )}
 
           {overview && !current && queueByType.length === 0 && errors.length === 0 && (
-            <p className="text-xs text-white/25 text-center pt-4">全部完成 ✓</p>
+            <p className="text-callout text-ink-4 text-center pt-4">全部完成 ✓</p>
           )}
         </div>
       </div>
@@ -269,12 +269,12 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
 }
 
 function SectionTitle({ children, className = 'mb-2' }: { children: React.ReactNode; className?: string }): JSX.Element {
-  return <h3 className={`text-[11px] font-medium text-white/35 uppercase tracking-wide ${className}`}>{children}</h3>
+  return <h3 className={`text-caption font-medium text-ink-3 uppercase tracking-wide ${className}`}>{children}</h3>
 }
 
 function Bar({ ratio }: { ratio: number }): JSX.Element {
   return (
-    <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+    <div className="flex-1 h-1.5 bg-fill rounded-full overflow-hidden">
       <div
         className="h-full bg-accent/70 rounded-full transition-all duration-500"
         style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%` }}
@@ -288,30 +288,30 @@ function ProgressStat({ label, done, total, detail }: { label: string; done: num
   return (
     <div className="bg-surface-2 rounded-lg px-3 py-2.5">
       <div className="flex items-baseline gap-2 mb-2">
-        <span className="text-xs text-white/60">{label}</span>
-        <span className="ml-auto text-[11px] text-white/40 tabular-nums">
+        <span className="text-callout text-ink-2">{label}</span>
+        <span className="ml-auto text-caption text-ink-3 tabular-nums">
           {total > 0 ? `${done}/${total} · ${Math.floor(ratio * 100)}%` : '—'}
         </span>
       </div>
       <Bar ratio={ratio} />
-      {detail && <p className="mt-1.5 text-[10px] text-white/25 tabular-nums">{detail}</p>}
+      {detail && <p className="mt-1.5 text-micro text-ink-4 tabular-nums">{detail}</p>}
     </div>
   )
 }
 
 function KindBadge({ kind }: { kind: MediaKind }): JSX.Element {
-  const color = kind === 'video' ? 'text-sky-300/70 bg-sky-400/10'
+  const color = kind === 'video' ? 'text-info/70 bg-info/10'
     : kind === 'audio' ? 'text-violet-300/70 bg-violet-400/10'
-    : 'text-white/40 bg-white/5'
-  return <span className={`px-1.5 py-px rounded text-[10px] flex-shrink-0 ${color}`}>{KIND_LABELS[kind]}</span>
+    : 'text-ink-3 bg-fill'
+  return <span className={`px-1.5 py-px rounded text-micro flex-shrink-0 ${color}`}>{KIND_LABELS[kind]}</span>
 }
 
 function TaskLine({ task }: { task: TaskRow }): JSX.Element {
   return (
-    <li className="flex items-center gap-2 text-[11px] px-1 py-0.5">
+    <li className="flex items-center gap-2 text-caption px-1 py-0.5">
       <KindBadge kind={task.kind} />
-      <span className="text-white/45 truncate flex-1">{task.name ?? '(已删除)'}</span>
-      <span className="text-white/20 flex-shrink-0">{TASK_LABELS[task.taskType]}</span>
+      <span className="text-ink-2 truncate flex-1">{task.name ?? '(已删除)'}</span>
+      <span className="text-ink-4 flex-shrink-0">{TASK_LABELS[task.taskType]}</span>
     </li>
   )
 }

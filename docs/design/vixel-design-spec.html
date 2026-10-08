@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vixel Design Spec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme: dark;
+  /* 文档本身用 Vixel 的暗色体系：暖偏近黑 + 琥珀 accent */
+  --ground:#121110; --panel:#1a1917; --raised:#22201d; --line:rgba(236,226,212,.09); --line-strong:rgba(236,226,212,.16);
+  --ink:#ece6dd; --ink-2:rgba(236,230,221,.64); --ink-3:rgba(236,230,221,.42);
+  --accent:#d4a574; --accent-ink:#e8c49a; --accent-fill:rgba(212,165,116,.14);
+  --ok:#30d158; --warn:#ffd60a; --bad:#ff453a; --info:#64d2ff;
+  --win-bg:#0f0f0f; --win-side:#171615; --win-bar:#1b1a19;
+  --sans:"Geist",-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    color-scheme: light;
+    --ground:#f3f2ef; --panel:#fbfaf8; --raised:#ffffff; --line:rgba(40,32,22,.10); --line-strong:rgba(40,32,22,.18);
+    --ink:#1d1b18; --ink-2:rgba(29,27,24,.68); --ink-3:rgba(29,27,24,.48);
+    --accent:#9a6a3a; --accent-ink:#7d5428; --accent-fill:rgba(154,106,58,.12);
+    --ok:#1f9a43; --warn:#a87b00; --bad:#d1352b; --info:#1a7fb0;
+  }
+}
+:root[data-theme="light"]{
+  color-scheme: light;
+  --ground:#f3f2ef; --panel:#fbfaf8; --raised:#ffffff; --line:rgba(40,32,22,.10); --line-strong:rgba(40,32,22,.18);
+  --ink:#1d1b18; --ink-2:rgba(29,27,24,.68); --ink-3:rgba(29,27,24,.48);
+  --accent:#9a6a3a; --accent-ink:#7d5428; --accent-fill:rgba(154,106,58,.12);
+  --ok:#1f9a43; --warn:#a87b00; --bad:#d1352b; --info:#1a7fb0;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:24px;padding-block:48px 96px}
+a{color:var(--accent-ink)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--accent-fill);color:var(--accent-ink);padding:1px 5px;border-radius:4px}
+h1,h2,h3{text-wrap:balance;line-height:1.25;margin:0}
+h1{font-size:40px;font-weight:600;letter-spacing:-.02em}
+h2{font-size:24px;font-weight:600;letter-spacing:-.01em;padding-top:8px}
+h3{font-size:16px;font-weight:600}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.lede{font-size:17px;color:var(--ink-2);max-width:62ch}
+header.top{display:grid;gap:14px;margin-bottom:40px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-3);font:12px var(--mono)}
+section{display:grid;gap:18px;padding-block:44px;border-top:1px solid var(--line)}
+.sec-head{display:grid;gap:8px}
+.sec-head .eyebrow{color:var(--ink-3)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.note{border-left:2px solid var(--accent);padding:4px 0 4px 14px;color:var(--ink-2);max-width:72ch}
+.note strong{color:var(--ink)}
+ul.clean{margin:0;padding-left:1.1em;display:grid;gap:6px;max-width:72ch}
+ul.clean li::marker{color:var(--ink-3)}
+
+/* ---------- 窗口 mockup ---------- */
+.shot{overflow-x:auto;padding-bottom:6px}
+.win{width:1080px;height:640px;border-radius:12px;background:var(--win-bg);border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 30px 80px -20px rgba(0,0,0,.6);display:grid;grid-template-columns:232px 1fr 272px;grid-template-rows:52px 1fr 26px;
+  overflow:hidden;font:12px/1.4 -apple-system,"PingFang SC",var(--sans);color:rgba(255,255,255,.88);position:relative}
+.w-side{grid-row:1/3;background:var(--win-side);border-right:1px solid rgba(255,255,255,.07);padding:52px 10px 10px;display:flex;flex-direction:column;gap:14px;position:relative}
+.lights{position:absolute;top:19px;left:20px;display:flex;gap:8px}
+.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.grp{display:grid;gap:1px}
+.grp b{font:600 10.5px/1 -apple-system,var(--sans);color:rgba(255,255,255,.36);padding:0 8px 6px;letter-spacing:.02em}
+.row{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:rgba(255,255,255,.78)}
+.row .ic{width:14px;height:14px;border-radius:3px;border:1.5px solid rgba(255,255,255,.4);flex:none}
+.row .ct{margin-left:auto;color:rgba(255,255,255,.34);font-variant-numeric:tabular-nums;font-size:11px}
+.row.on{background:rgba(212,165,116,.18);color:#fff}.row.on .ic{border-color:#d4a574}
+.row .dot{width:6px;height:6px;border-radius:50%;background:#d4a574;margin-left:auto;box-shadow:0 0 0 3px rgba(212,165,116,.18)}
+.w-bar{grid-column:2/4;background:var(--win-bar);border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:center;gap:10px;padding:0 14px}
+.w-title{display:grid;line-height:1.15}.w-title strong{font-size:13px}.w-title span{font-size:11px;color:rgba(255,255,255,.4)}
+.search{margin-left:auto;width:340px;height:28px;border-radius:7px;background:rgba(255,255,255,.07);display:flex;align-items:center;padding:0 10px;color:rgba(255,255,255,.88);gap:8px}
+.search em{font-style:normal;color:rgba(255,255,255,.36);margin-left:auto;font-size:11px}
+.tb{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:rgba(255,255,255,.55)}
+.tb.on{background:rgba(255,255,255,.08);color:#fff}
+.tb svg{width:16px;height:16px}
+.chip{height:24px;padding:0 9px;border-radius:12px;background:rgba(255,255,255,.07);display:flex;align-items:center;gap:5px;color:rgba(255,255,255,.7);font-size:11px}
+.w-main{overflow:hidden;padding:14px;display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:118px;gap:6px;align-content:start}
+.t{border-radius:8px;position:relative;overflow:hidden}
+.t.sel{outline:2px solid #d4a574;outline-offset:2px}
+.t .dur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.6);padding:1px 5px;border-radius:4px;font:500 10.5px/1.4 ui-monospace,var(--mono);display:flex;gap:4px;align-items:center}
+.t .hit{position:absolute;left:6px;bottom:6px;background:rgba(212,165,116,.92);color:#1a120a;padding:1px 6px;border-radius:4px;font:600 10.5px/1.4 -apple-system,var(--sans)}
+.t .scrub{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.15)}.t .scrub i{display:block;height:100%;width:38%;background:#d4a574}
+.wave{position:absolute;inset:26% 10%;display:flex;align-items:center;gap:2px}
+.wave i{flex:1;background:#d4a574;border-radius:1px;opacity:.85}
+.w-insp{background:var(--win-side);border-left:1px solid rgba(255,255,255,.07);padding:14px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.w-insp .pv{height:140px;border-radius:8px}
+.kv{display:grid;grid-template-columns:64px 1fr;gap:5px 8px;font-size:11.5px}
+.kv span{color:rgba(255,255,255,.4)}
+.tl{height:16px;border-radius:3px;background:rgba(255,255,255,.06);position:relative;overflow:hidden;display:flex;gap:1px}
+.tl i{flex:1;background:rgba(255,255,255,.1)}.tl i.h{background:rgba(212,165,116,.75)}
+.w-status{grid-column:2/4;background:var(--win-bar);border-top:1px solid rgba(255,255,255,.07);display:flex;align-items:center;gap:12px;padding:0 12px;font-size:11px;color:rgba(255,255,255,.5)}
+.w-status .prog{display:flex;align-items:center;gap:7px;color:rgba(255,255,255,.7)}
+.w-status .bar{width:80px;height:3px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden}.w-status .bar i{display:block;height:100%;width:14%;background:#d4a574}
+.w-status .err{color:#ff453a;background:rgba(255,69,58,.12);padding:1px 6px;border-radius:4px}
+.w-status .zoom{margin-left:auto;display:flex;align-items:center;gap:6px}
+.w-status .zoom .tr{width:72px;height:3px;border-radius:2px;background:rgba(255,255,255,.18);position:relative}.w-status .zoom .tr i{position:absolute;left:40%;top:-4px;width:11px;height:11px;border-radius:50%;background:#ddd}
+.pin{position:absolute;width:20px;height:20px;border-radius:50%;background:#d4a574;color:#1a120a;font:700 11px/20px var(--mono);text-align:center;box-shadow:0 0 0 3px rgba(0,0,0,.45);z-index:3}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px 22px;margin-top:6px}
+.legend div{display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:start}
+.legend .n{width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--ground);font:700 11px/20px var(--mono);text-align:center}
+.legend p{font-size:13.5px;color:var(--ink-2)}.legend strong{color:var(--ink);display:block;font-size:14px}
+
+/* ---------- 表格 ---------- */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:620px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 11px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--raised)}
+tr:last-child td{border-bottom:0}
+td.k{font-family:var(--mono);font-size:12.5px;color:var(--accent-ink);white-space:nowrap}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+.sw{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:-2px;margin-right:8px;border:1px solid var(--line-strong)}
+
+/* ---------- 审计数字 ---------- */
+.audit{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.audit div{background:var(--panel);padding:16px 18px;display:grid;gap:4px}
+.audit b{font:500 28px/1 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+.audit b small{font-size:13px;color:var(--ink-3);font-weight:400}
+.audit span{font-size:13px;color:var(--ink-2)}
+
+/* ---------- 字号样张 ---------- */
+.typescale{display:grid;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+.ts{display:grid;grid-template-columns:110px 70px 1fr;gap:14px;align-items:baseline;padding:10px 16px;border-bottom:1px solid var(--line)}
+.ts:last-child{border-bottom:0}
+.ts .r{font:12px var(--mono);color:var(--accent-ink)}.ts .s{font:12px var(--mono);color:var(--ink-3)}
+.ts .x{font-family:-apple-system,"PingFang SC",var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ts.ban .x{text-decoration:line-through;color:var(--bad)}
+
+/* ---------- 卡片 anatomy ---------- */
+.anat{display:grid;grid-template-columns:minmax(0,320px) 1fr;gap:28px;align-items:center}
+.card-demo{aspect-ratio:1;max-width:100%;border-radius:10px;position:relative;overflow:hidden;background:linear-gradient(140deg,#4b3a2c,#1f2a33 60%,#0f1418)}
+.card-demo .c{position:absolute;font:600 11px/1.4 -apple-system,var(--sans);padding:2px 7px;border-radius:4px}
+.c.tl{left:8px;top:8px;background:rgba(0,0,0,.55);color:#fff}
+.c.tr{right:8px;top:8px;background:rgba(0,0,0,.55);color:#fff}
+.c.bl{left:8px;bottom:12px;background:rgba(212,165,116,.92);color:#1a120a}
+.c.br{right:8px;bottom:12px;background:rgba(0,0,0,.6);color:#fff;font-family:ui-monospace,var(--mono);font-weight:500}
+.card-demo .sb{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.18)}.card-demo .sb i{display:block;width:42%;height:100%;background:#d4a574}
+.corners{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.corners div{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel);font-size:13.5px;color:var(--ink-2)}
+.corners b{display:block;font:500 11px/1.4 var(--mono);color:var(--accent-ink);letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px}
+
+.phases{display:grid;gap:10px}
+.ph{display:grid;grid-template-columns:72px 1fr;gap:16px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.ph b{font:500 13px var(--mono);color:var(--accent-ink)}
+.ph h3{margin-bottom:4px}.ph p{color:var(--ink-2);font-size:14px}
+
+kbd{font:500 11.5px var(--mono);border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:5px;padding:0 6px;background:var(--raised);color:var(--ink);white-space:nowrap}
+
+@media (max-width:720px){
+  .wrap{padding-inline:16px}
+  h1{font-size:30px}
+  .anat{grid-template-columns:1fr}
+  .ts{grid-template-columns:90px 1fr}.ts .s{display:none}
+  .ph{grid-template-columns:1fr;gap:4px}
+}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <span class="eyebrow">Vixel · UI 设计规范 v1 · 2026-10</span>
+  <h1>从"能用的搜索框"到一个本地媒体资料库应用</h1>
+  <p class="lede">Vixel 现在能检索图片、视频和音频，界面却还是一个标题栏加一个网格。这份规范定义新的窗口结构（侧边栏 + 工具栏 + 检查器 + 状态栏）、一套语义化 token，以及按阶段迁移的顺序。参考的是 Apple Photos、Lightroom、Eagle、Finder、DaVinci Resolve 和 Immich 的成熟做法。</p>
+  <div class="meta"><span>适用：src/renderer</span><span>基准平台：macOS 15 / 26</span><span>状态：草案，待评审</span></div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">提案</span><h2>新的窗口结构</h2>
+  <p>结论：<strong>要侧边栏，也要状态栏。</strong>侧边栏统一"在看什么"（资料库 / 类型 / 地图 / 人物 / 文件夹 / 搜索），工具栏只放"对当前内容做什么"，状态栏负责计数、后台活动和缩略图尺寸。检查器（右栏）可随时收起。</p></div>
+  <div class="shot" role="img" aria-label="提案窗口布局示意图">
+    <div class="win">
+      <span class="pin" style="left:150px;top:62px">1</span>
+      <span class="pin" style="left:420px;top:4px">2</span>
+      <span class="pin" style="left:880px;top:62px">3</span>
+      <span class="pin" style="left:420px;top:612px">4</span>
+      <span class="pin" style="left:520px;top:200px">5</span>
+      <aside class="w-side">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="grp"><b>资料库</b>
+          <div class="row on"><span class="ic"></span>全部<span class="ct">12,408</span></div>
+          <div class="row"><span class="ic"></span>图片<span class="ct">11,962</span></div>
+          <div class="row"><span class="ic"></span>视频<span class="ct">381</span></div>
+          <div class="row"><span class="ic"></span>音频<span class="ct">65</span></div>
+        </div>
+        <div class="grp"><b>浏览</b>
+          <div class="row"><span class="ic"></span>地图</div>
+          <div class="row"><span class="ic"></span>人物<span class="ct">48</span></div>
+        </div>
+        <div class="grp"><b>搜索</b>
+          <div class="row"><span class="ic"></span>海边日落</div>
+          <div class="row"><span class="ic"></span>有人在说话</div>
+        </div>
+        <div class="grp"><b>文件夹</b>
+          <div class="row"><span class="ic"></span>Pictures<span class="ct">9,830</span></div>
+          <div class="row"><span class="ic"></span>DJI Pocket<span class="dot" title="正在索引"></span></div>
+        </div>
+      </aside>
+      <div class="w-bar">
+        <div class="w-title"><strong>全部</strong><span>海边日落 · 42 项</span></div>
+        <span class="chip">视频 ✕</span><span class="chip">2025 年 ▾</span>
+        <div class="search">⌕&nbsp; 海边日落<em>⌘F</em></div>
+        <span class="tb" title="筛选"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></span>
+        <span class="tb on" title="检查器 ⌘I"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M10 2.5v11"/></svg></span>
+      </div>
+      <main class="w-main">
+        <div class="t" style="background:linear-gradient(160deg,#e3a15a,#7c4a3a 55%,#21303f)"><span class="hit">命中 1:04</span><span class="dur">▶ 2:18</span></div>
+        <div class="t sel" style="background:linear-gradient(170deg,#f2b36b,#b4553f 45%,#2d3a4d)"><span class="hit">命中 0:32</span><span class="dur">▶ 0:50</span><span class="scrub"><i></i></span></div>
+        <div class="t" style="background:linear-gradient(180deg,#f0c08a,#9d6a4c 50%,#3b4552)"></div>
+        <div class="t" style="background:linear-gradient(150deg,#ffb36b,#d06a4a 50%,#46324a)"></div>
+        <div class="t" style="background:#1d1b19"><div class="wave"><i style="height:30%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:45%"></i><i style="height:70%"></i><i style="height:95%"></i><i style="height:55%"></i><i style="height:35%"></i><i style="height:75%"></i><i style="height:50%"></i><i style="height:25%"></i><i style="height:65%"></i><i style="height:40%"></i><i style="height:80%"></i></div><span class="hit">命中 0:00</span><span class="dur">♪ 3:41</span></div>
+        <div class="t" style="background:linear-gradient(165deg,#c58b5d,#5b3f3d 55%,#1c2633)"></div>
+        <div class="t" style="background:linear-gradient(175deg,#d79f6a,#894a3a 50%,#253447)"><span class="dur">▶ 0:21</span></div>
+        <div class="t" style="background:linear-gradient(155deg,#efbb7f,#a96048 48%,#30384b)"></div>
+        <div class="t" style="background:linear-gradient(160deg,#b98a63,#4b3b3a 50%,#1a222b)"></div>
+        <div class="t" style="background:linear-gradient(170deg,#e9a564,#8b4b3b 55%,#26303d)"></div>
+        <div class="t" style="background:linear-gradient(150deg,#f6c995,#b77b58 50%,#3b4150)"></div>
+        <div class="t" style="background:linear-gradient(180deg,#d39060,#6d4239 55%,#202a35)"><span class="dur">▶ 5:02</span></div>
+      </main>
+      <aside class="w-insp">
+        <div class="pv" style="background:linear-gradient(170deg,#f2b36b,#b4553f 45%,#2d3a4d)"></div>
+        <div style="display:grid;gap:2px"><strong style="font-size:13px">DJI_0412.MP4</strong><span style="color:rgba(255,255,255,.4);font-size:11px">视频 · 3840×2160 · 194.8 MB</span></div>
+        <div style="display:grid;gap:6px"><span style="color:rgba(255,255,255,.4);font-size:11px">片段 · 命中 0:32–0:50</span><div class="tl"><i></i><i class="h"></i></div></div>
+        <div class="kv"><span>时长</span>0:50<span>拍摄</span>2025-08-14 19:02<span>位置</span>三亚 · 亚龙湾<span>文件夹</span>DJI Pocket</div>
+        <div style="color:rgba(255,255,255,.4);font-size:11px">相似内容</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px"><div class="t" style="height:52px;background:linear-gradient(160deg,#e3a15a,#21303f)"></div><div class="t" style="height:52px;background:linear-gradient(170deg,#f0c08a,#3b4552)"></div><div class="t" style="height:52px;background:linear-gradient(150deg,#ffb36b,#46324a)"></div></div>
+      </aside>
+      <footer class="w-status">
+        <span>42 项 · 已选 1</span>
+        <span class="prog"><span class="bar"><i></i></span>视频片段 12/86 · 约 14 分钟</span>
+        <span class="err">2 失败</span>
+        <span class="zoom">▫<span class="tr"><i></i></span>◻</span>
+      </footer>
+    </div>
+  </div>
+  <div class="legend">
+    <div><span class="n">1</span><p><strong>侧边栏 · 232 px，可拖 200–320</strong>"看什么"的唯一入口。现在标题栏里的 照片/地图/人物 和 全部/图片/视频/音频 两组按钮都并进来，所以"图片"这个词只在这里出现一次。<kbd>⌘⌥S</kbd> 收起。</p></div>
+    <div><span class="n">2</span><p><strong>工具栏 · 52 px</strong>左侧是当前来源的名称和数量，然后是筛选 chip、搜索框和检查器开关。红绿灯固定在侧边栏顶部，侧边栏收起后移到工具栏最左。</p></div>
+    <div><span class="n">3</span><p><strong>检查器 · 272 px</strong>显示选中项的预览、元数据、片段时间轴和相似内容。<kbd>⌘I</kbd> 开关。全屏详情页仍然保留，只用于看大图和播放。</p></div>
+    <div><span class="n">4</span><p><strong>状态栏 · 26 px</strong>左边是计数和选择数，中间是后台活动（点击打开"活动"面板），右边是缩略图尺寸滑块（同 Finder）。</p></div>
+    <div><span class="n">5</span><p><strong>内容区</strong>网格里有选中态（2 px accent 描边），支持方向键、<kbd>空格</kbd>快速查看、<kbd>↩</kbd>打开详情，多选用 <kbd>⌘</kbd>/<kbd>⇧</kbd> 点击。</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">现状审计</span><h2>为什么需要一套规范</h2>
+  <p>对 <code>src/renderer</code> 当前代码的统计。问题不是哪个页面"丑"，而是每个组件各自选值，没有共同的约束。</p></div>
+  <div class="audit">
+    <div><b>15 <small>级</small></b><span>白色透明度：<code>white/5</code> 到 <code>white/90</code>，靠目测挑值，没有语义</span></div>
+    <div><b>6 <small>种</small></b><span>字号，包括 <code>9px</code>（低于 macOS 最小 10 pt）和只用过一次的 <code>13px</code></span></div>
+    <div><b>5 <small>种</small></b><span>圆角，同类控件用的圆角也不一样</span></div>
+    <div><b>0</b><span>语义色 token。失败用 <code>red-400/70</code>，accent 同时被拿来当"成功"和"选中"</span></div>
+  </div>
+  <ul class="clean">
+    <li><strong>信息架构：</strong>标题栏同时放视图切换、搜索、类型过滤、日期和设置，两组分段控件挤在一起，"照片 / 图片"撞名就是这么来的。</li>
+    <li><strong>没有选中态：</strong>网格只能点开，不能先选再看信息，也没有批量操作的基础。</li>
+    <li><strong>原生集成缺失：</strong>没有自定义应用菜单（<code>Menu.setApplicationMenu</code> 未调用），快捷键在菜单里找不到；没有右键菜单。</li>
+    <li><strong>设置是模态弹窗：</strong>文件夹、模型和扫描入口都在一个 512 px 的对话框里，应该改成独立的设置窗口（<kbd>⌘,</kbd>，带分页标签）。</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">参考</span><h2>借鉴对象和具体借鉴的点</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>产品</th><th>借鉴</th><th>不借鉴</th></tr></thead>
+    <tbody>
+      <tr><td>Apple Photos</td><td>侧边栏的分组结构（资料库 / 合集 / 媒体类型）；<kbd>⌘⌥S</kbd>；网格滚到底部时显示"N 项 · 正在更新 · 暂停"</td><td>浮动的 Info 窗口：检查器应该停靠在窗口里</td></tr>
+      <tr><td>Lightroom Classic</td><td>Activity Center：顶部一个小进度条，点开是各任务明细，可分别暂停</td><td>密集的面板和模块切换，对搜索型产品太重</td></tr>
+      <tr><td>Lightroom（云端版）</td><td>两种网格：沉浸式（无边框、无角标）和信息式（方形 + 角标），按 <kbd>G</kbd> 切换</td><td>—</td></tr>
+      <tr><td>Eagle</td><td>三栏布局；右栏检查器；<kbd>Tab</kbd> 同时隐藏两侧面板</td><td>固定宽度的侧边栏（用户评价里的痛点），我们的要能拖动</td></tr>
+      <tr><td>Finder</td><td>状态栏写法：左边"N 项"，右边尺寸滑块</td><td>—</td></tr>
+      <tr><td>DaVinci Resolve</td><td>缩略图悬停时的进度细线；预览帧同步到大预览</td><td>按鼠标横向位置拖动预览（需要预生成 sprite，放到 P3）</td></tr>
+      <tr><td>Excire / Immich</td><td>"搜索"作为侧边栏分组（最近 / 已保存）；按队列列出待处理、进行中和失败数量</td><td>Immich 把任务放在管理后台页，我们放在抽屉里</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">Token · 颜色</span><h2>语义颜色</h2>
+  <p>组件只引用语义名，不直接写 <code>white/30</code>。文字、线条、填充各自只有几档，挑不到合适的值时应该新增一个语义 token，而不是临时写一个数字。</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Token</th><th>值（暗色）</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td class="k">bg.content</td><td class="num"><span class="sw" style="background:#0f0f0f"></span>#0f0f0f</td><td>网格、地图、详情页的背景</td></tr>
+      <tr><td class="k">bg.sidebar</td><td class="num"><span class="sw" style="background:#171615"></span>#171615</td><td>侧边栏、检查器（macOS 上可配合 <code>vibrancy: 'sidebar'</code>）</td></tr>
+      <tr><td class="k">bg.bar</td><td class="num"><span class="sw" style="background:#1b1a19"></span>#1b1a19 · blur 24</td><td>工具栏、状态栏；内容在下面滚动时透出</td></tr>
+      <tr><td class="k">bg.raised</td><td class="num"><span class="sw" style="background:#232120"></span>#232120</td><td>弹出层、菜单、抽屉、设置窗口</td></tr>
+      <tr><td class="k">bg.overlay</td><td class="num"><span class="sw" style="background:rgba(0,0,0,.6)"></span>black / 60%</td><td>模态遮罩；全屏详情用 95%</td></tr>
+      <tr><td class="k">ink · <code>text-ink</code></td><td class="num">white / 88%</td><td>正文、标题、选中项</td></tr>
+      <tr><td class="k">ink-2</td><td class="num">white / 60%</td><td>元数据的值、次要说明</td></tr>
+      <tr><td class="k">ink-3</td><td class="num">white / 38%</td><td>标签、计数、占位符</td></tr>
+      <tr><td class="k">ink-4</td><td class="num">white / 24%</td><td>不可用的控件。<strong>可读文字最低只到这一档</strong>，不再有 white/15 的文字</td></tr>
+      <tr><td class="k">ink-ghost</td><td class="num">white / 12%</td><td>只给装饰性图标（空状态插图），不承载文字</td></tr>
+      <tr><td class="k">line · strong · heavy</td><td class="num">white / 7% · 12% · 20%</td><td>面板分隔线 · 输入框与浮层描边 · 聚焦 / 强调描边</td></tr>
+      <tr><td class="k">fill · hover · active · strong</td><td class="num">white / 5% · 8% · 12% · 22%</td><td>控件静止 · 悬停 · 按下或选中 · 压在图片上的按钮</td></tr>
+      <tr><td class="k">accent</td><td class="num"><span class="sw" style="background:#d4a574"></span>#d4a574</td><td><strong>只用于</strong>选中、焦点环、命中片段、进度条。不用来表示成功</td></tr>
+      <tr><td class="k">accent.fill</td><td class="num">#d4a574 / 18%</td><td>侧边栏选中行、选中 chip</td></tr>
+      <tr><td class="k">status.ok · warn · bad · info</td><td class="num"><span class="sw" style="background:#30d158"></span><span class="sw" style="background:#ffd60a"></span><span class="sw" style="background:#ff453a"></span><span class="sw" style="background:#64d2ff"></span></td><td>macOS 暗色系统色。失败徽标统一用 <code>bad</code> 的 12% 底色加原色文字</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">Token · 字体</span><h2>字号阶梯</h2>
+  <p>使用系统字体（SF Pro / PingFang SC），不引入网络字体。共 7 档，最小 10 px。数字一律用 <code>tabular-nums</code>，时长和时间码用 <code>ui-monospace</code>。</p></div>
+  <div class="typescale">
+    <div class="ts"><span class="r">title.lg</span><span class="s">22 / 28 · 600</span><span class="x" style="font-size:22px;font-weight:600">设置 · 文件夹</span></div>
+    <div class="ts"><span class="r">title</span><span class="s">17 / 22 · 600</span><span class="x" style="font-size:17px;font-weight:600">空状态标题、对话框标题</span></div>
+    <div class="ts"><span class="r">headline</span><span class="s">13 / 18 · 600</span><span class="x" style="font-size:13px;font-weight:600">工具栏标题 · 检查器文件名</span></div>
+    <div class="ts"><span class="r">body</span><span class="s">13 / 18 · 400</span><span class="x" style="font-size:13px">侧边栏行、菜单、列表、搜索输入（基准字号）</span></div>
+    <div class="ts"><span class="r">callout</span><span class="s">12 / 16 · 400</span><span class="x" style="font-size:12px">检查器里的键值、按钮文字</span></div>
+    <div class="ts"><span class="r">caption</span><span class="s">11 / 14 · 400–500</span><span class="x" style="font-size:11px">状态栏、计数、分组标题、卡片角标</span></div>
+    <div class="ts"><span class="r">micro</span><span class="s">10 / 13 · 500</span><span class="x" style="font-size:10px">徽标数字，仅限这里</span></div>
+    <div class="ts ban"><span class="r">—</span><span class="s">9 px</span><span class="x" style="font-size:9px">禁用：现在有 3 处</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">Token · 间距、圆角、动效</span><h2>尺寸体系</h2></div>
+  <div class="cols">
+    <div class="tbl"><table style="min-width:0">
+      <thead><tr><th>间距</th><th>用途</th></tr></thead><tbody>
+      <tr><td class="num">4</td><td>图标和文字之间、网格缝隙下限</td></tr>
+      <tr><td class="num">8</td><td>相关控件之间、行内边距</td></tr>
+      <tr><td class="num">12</td><td>面板内边距（紧凑）</td></tr>
+      <tr><td class="num">16</td><td>面板内边距、分组之间</td></tr>
+      <tr><td class="num">24 / 32</td><td>页面区块、空状态</td></tr></tbody></table></div>
+    <div class="tbl"><table style="min-width:0">
+      <thead><tr><th>圆角</th><th>用途</th></tr></thead><tbody>
+      <tr><td class="num">4</td><td>徽标、角标、kbd</td></tr>
+      <tr><td class="num">6</td><td>按钮、输入框、侧边栏行</td></tr>
+      <tr><td class="num">8</td><td>缩略图卡片</td></tr>
+      <tr><td class="num">12</td><td>浮层、抽屉、对话框</td></tr>
+      <tr><td class="num">full</td><td>chip、进度条、头像</td></tr></tbody></table></div>
+    <div class="tbl"><table style="min-width:0">
+      <thead><tr><th>动效</th><th>用途</th></tr></thead><tbody>
+      <tr><td class="num">120 ms</td><td>hover、透明度变化（ease-out）</td></tr>
+      <tr><td class="num">200 ms</td><td>面板和抽屉的展开收起（ease-in-out）</td></tr>
+      <tr><td class="num">280 ms</td><td>视图切换、详情页打开（上限）</td></tr>
+      <tr><td class="num">0</td><td><code>prefers-reduced-motion</code> 时全部改为瞬时</td></tr></tbody></table></div>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>控件</th><th>尺寸</th><th>说明</th></tr></thead><tbody>
+    <tr><td>按钮 / 分段控件</td><td class="num">20 · 24 · 28</td><td>小号用于状态栏，常规用于面板，大号用于工具栏。点击区域不小于 24 × 24</td></tr>
+    <tr><td>搜索框</td><td class="num">28 h · 240–480 w</td><td>宽度随窗口变化。右侧有 <kbd>⌘F</kbd> 提示，聚焦后变为清除按钮</td></tr>
+    <tr><td>侧边栏行</td><td class="num">28 h</td><td>16 px 图标、13 px 文字，计数右对齐。分组标题 11 px 600</td></tr>
+    <tr><td>缩略图</td><td class="num">120 – 320</td><td>状态栏滑块控制，<kbd>⌘+</kbd>/<kbd>⌘−</kbd> 调整，默认 200，网格缝隙 4 px</td></tr>
+    <tr><td>窗口</td><td class="num">最小 960 × 600</td><td>宽度小于 1100 时检查器自动收起，小于 860 时侧边栏改为浮层</td></tr></tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">组件</span><h2>媒体卡片：四个角各有固定用途</h2>
+  <p>每张卡片的角标位置固定，扫视时眼睛知道去哪里找。悬停的操作按钮只出现在上方两个角，下方两个角始终留给信息。</p></div>
+  <div class="anat">
+    <div class="card-demo" role="img" aria-label="媒体卡片角标布局示例">
+      <span class="c tl">#3</span><span class="c tr">☆</span><span class="c bl">命中 1:04</span><span class="c br">▶ 2:18</span>
+      <span class="sb"><i></i></span>
+    </div>
+    <div style="display:grid;gap:14px">
+      <div class="corners">
+        <div><b>左上</b>排名，仅在搜索结果的信息式网格中显示</div>
+        <div><b>右上</b>悬停操作：收藏、更多（⋯）</div>
+        <div><b>左下</b>搜索命中的时间，accent 底色</div>
+        <div><b>右下</b>类型图标 + 时长，等宽数字</div>
+      </div>
+      <ul class="clean">
+        <li><strong>底边细线：</strong>视频悬停预览时显示播放进度，选中命中片段时标出片段在全长中的位置。</li>
+        <li><strong>状态：</strong>"索引中 / 失败 / N 份重复"不再放在卡片上，移到检查器。卡片只保留和浏览相关的信息。</li>
+        <li><strong>两种密度：</strong>沉浸式（默认浏览，只显示时长）和信息式（搜索结果，四个角全部显示），按 <kbd>G</kbd> 切换。</li>
+        <li><strong>音频卡片：</strong>显示封面或 accent 色波形，悬停不自动播放，按 <kbd>空格</kbd> 才播放。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">组件</span><h2>后台活动分三层</h2>
+  <p>索引会跑几个小时，进度信息要能看到但不打扰。三层逐级展开，同一份数据在每一层的详细程度不同。</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>层级</th><th>位置</th><th>内容</th></tr></thead><tbody>
+    <tr><td>被动</td><td>侧边栏文件夹行</td><td>正在索引的文件夹显示 accent 色小圆点，有失败时显示红色计数</td></tr>
+    <tr><td>概要</td><td>状态栏中间</td><td>细进度条 + "视频片段 12/86 · 约 14 分钟" + 失败徽标；空闲时显示"已是最新"</td></tr>
+    <tr><td>明细</td><td>活动面板（现在的 TaskDrawer）</td><td>按队列列出待处理、进行中和失败；可暂停、重试、清除。由"任务"改名为"活动"，入口也可以放在菜单"窗口 → 活动 <kbd>⌘⌥A</kbd>"</td></tr>
+  </tbody></table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">交互</span><h2>快捷键和菜单</h2>
+  <p>每个快捷键都要能在应用菜单里找到，这是 macOS 应用的基本要求，也是让快捷键能被发现的唯一方式。</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>快捷键</th><th>动作</th><th>菜单</th></tr></thead><tbody>
+    <tr><td><kbd>⌘1</kbd> – <kbd>⌘4</kbd></td><td>全部 / 图片 / 视频 / 音频</td><td>显示</td></tr>
+    <tr><td><kbd>⌘5</kbd> <kbd>⌘6</kbd></td><td>地图 / 人物</td><td>显示</td></tr>
+    <tr><td><kbd>⌘F</kbd></td><td>聚焦搜索框</td><td>编辑 → 查找</td></tr>
+    <tr><td><kbd>⌘⌥S</kbd> · <kbd>⌘I</kbd></td><td>侧边栏 / 检查器</td><td>显示</td></tr>
+    <tr><td><kbd>空格</kbd></td><td>快速查看（浮层预览，再按一次关闭）</td><td>文件</td></tr>
+    <tr><td><kbd>↩</kbd> · <kbd>Esc</kbd></td><td>打开详情 / 关闭详情（逐层退出）</td><td>—</td></tr>
+    <tr><td><kbd>⌘+</kbd> <kbd>⌘−</kbd> · <kbd>G</kbd></td><td>缩略图大小 / 切换网格密度</td><td>显示</td></tr>
+    <tr><td><kbd>⌘⇧R</kbd></td><td>在 Finder 中显示</td><td>文件、右键菜单</td></tr>
+    <tr><td><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> · <kbd>M</kbd></td><td>播放器：后退 / 暂停 / 前进 / 静音（K 对齐 YouTube 和剪辑软件）</td><td>播放</td></tr>
+    <tr><td><kbd>⌘,</kbd></td><td>设置窗口</td><td>Vixel</td></tr>
+  </tbody></table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">文案</span><h2>用词表</h2>
+  <p>按用户认得的东西命名，不按实现命名。同一个概念在全应用只用一个词。</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>用</th><th>不用</th><th>说明</th></tr></thead><tbody>
+    <tr><td>项 / 项目</td><td>照片（泛指时）</td><td>"42 项"。只有类型确实是图片时才说"图片"</td></tr>
+    <tr><td>图片 · 视频 · 音频</td><td>照片 · 影片 · 音乐</td><td>类型名固定这三个；"照片"只出现在产品介绍等营销文案里</td></tr>
+    <tr><td>资料库</td><td>图库 · 媒体库</td><td>侧边栏第一个分组的名称</td></tr>
+    <tr><td>片段</td><td>segment · 帧</td><td>音视频按 32 秒切分的单位</td></tr>
+    <tr><td>命中 1:04</td><td>帧时间 · 匹配度 0.83</td><td>默认不显示原始分数，分数只放在检查器里</td></tr>
+    <tr><td>活动</td><td>任务 · 队列 · Embedding</td><td>后台工作的统称。"生成索引"可以说，"Embedding"不出现在界面上</td></tr>
+    <tr><td>无法播放此格式</td><td>此格式无法在应用内播放</td><td>报错先说结果，再给操作："在系统播放器中打开"</td></tr>
+  </tbody></table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="eyebrow">落地</span><h2>迁移顺序</h2>
+  <p>每一阶段单独提交，做完都能直接用。第一阶段只换 token 不改结构，视觉回归风险最低。</p></div>
+  <div class="phases">
+    <div class="ph"><b>P0</b><div><h3>Token 化</h3><p>在 <code>tailwind.config</code> 里定义语义色（<code>text-primary</code>、<code>bg-raised</code>、<code>line-border</code>…）、字号阶梯和圆角，再用 codemod 把 15 级 <code>white/xx</code> 收敛到语义类上，同时去掉 9 px 字号。界面结构不动。</p></div></div>
+    <div class="ph"><b>P1</b><div><h3>窗口结构</h3><p>侧边栏（资料库 / 浏览 / 文件夹）、52 px 工具栏、状态栏（计数 + 活动 + 尺寸滑块）。标题栏里两组分段控件删除。加上原生应用菜单和快捷键。</p></div></div>
+    <div class="ph"><b>P2</b><div><h3>选中、检查器、右键菜单</h3><p>网格支持单选和多选，<kbd>⌘I</kbd> 打开检查器，<kbd>空格</kbd>快速查看，右键菜单（在 Finder 中显示、查找相似、复制路径）。全屏详情页的侧栏改为复用检查器组件。</p></div></div>
+    <div class="ph"><b>P3</b><div><h3>搜索作为一等公民</h3><p>侧边栏"搜索"分组（最近 / 已保存），设置改为独立窗口，网格密度切换，视频悬停时按鼠标位置拖动预览（索引阶段生成 sprite）。浅色模式另外评估。</p></div></div>
+  </div>
+  <p class="note"><strong>需要拍板的两点：</strong>① 侧边栏的"资料库"分组是否直接取代顶部的 照片/地图/人物 切换（本规范的建议是取代）；② 设置是否在 P1 就拆成独立窗口，还是等到 P3。</p>
+</section>
+</div>

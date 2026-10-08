@@ -47,7 +47,7 @@
 
 /* 搜索框聚焦效果 */
 .search-input:focus {
-  @apply ring-1 ring-white/20;
+  @apply ring-1 ring-line-heavy;
 }
 
 /* 图片加载占位符 */

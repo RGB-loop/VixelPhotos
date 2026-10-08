@@ -29,21 +29,21 @@ export function SegmentTimeline({ durationMs, segments, hit, currentMs, onSeek }
 
   return (
     <div className="w-full select-none">
-      <div className="flex items-center justify-between text-[10px] text-white/35 mb-1 h-4 tabular-nums">
+      <div className="flex items-center justify-between text-micro text-ink-3 mb-1 h-4 tabular-nums">
         <span>
           片段 {segments.length}
           {hit && <span className="text-accent/80"> · 命中 {formatDuration(hit.startMs)}–{formatDuration(hit.endMs)}</span>}
         </span>
-        {hover && <span className="text-white/60">{formatDuration(hover.startMs)} – {formatDuration(hover.endMs)}</span>}
+        {hover && <span className="text-ink-2">{formatDuration(hover.startMs)} – {formatDuration(hover.endMs)}</span>}
       </div>
-      <div className="relative h-5 rounded bg-white/5 overflow-hidden" onMouseLeave={() => setHover(null)}>
+      <div className="relative h-5 rounded bg-fill overflow-hidden" onMouseLeave={() => setHover(null)}>
         {segments.map((s) => (
           <button
             key={s.startMs}
             onClick={(e) => { e.stopPropagation(); onSeek(s.startMs) }}
             onMouseEnter={() => setHover(s)}
             className={`absolute top-0 bottom-0 border-r border-black/60 transition-colors ${
-              isHit(s) ? 'bg-accent/70 hover:bg-accent' : 'bg-white/12 hover:bg-white/25'
+              isHit(s) ? 'bg-accent/70 hover:bg-accent' : 'bg-fill-active hover:bg-fill-strong'
             }`}
             style={{ left: pct(s.startMs), width: `calc(${pct(s.endMs - s.startMs)})` }}
             title={`${formatDuration(s.startMs)} – ${formatDuration(s.endMs)}`}

@@ -71,7 +71,7 @@ export function SearchBar({ onSearch, isSearching, resultCount }: SearchBarProps
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
           </svg>
         ) : (
-          <svg className={`w-4 h-4 transition-colors ${focused ? 'text-white/50' : 'text-white/25'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={`w-4 h-4 transition-colors ${focused ? 'text-ink-2' : 'text-ink-4'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
         )}
@@ -87,13 +87,13 @@ export function SearchBar({ onSearch, isSearching, resultCount }: SearchBarProps
         onBlur={() => setFocused(false)}
         onKeyDown={handleKeyDown}
         placeholder="搜索：物体、场景、图内文字、文件名…"
-        className="w-full pl-9 pr-16 py-2 text-[13px] rounded-lg bg-surface-2 border border-white/10 text-white/90 placeholder-white/25 focus:outline-none focus:border-white/25 focus:bg-surface-3 transition-all"
+        className="w-full pl-9 pr-16 py-2 text-body rounded-lg bg-surface-2 border border-line-strong text-ink placeholder-ink-4 focus:outline-none focus:border-line-heavy focus:bg-surface-3 transition-all"
       />
 
       <div className="absolute inset-y-0 right-0 flex items-center pr-2 gap-1">
         {/* 结果计数 */}
         {showResultHint && (
-          <span className="text-[10px] text-white/25 tabular-nums">
+          <span className="text-micro text-ink-4 tabular-nums">
             {resultCount} 项
           </span>
         )}
@@ -102,9 +102,9 @@ export function SearchBar({ onSearch, isSearching, resultCount }: SearchBarProps
           <button
             type="button"
             onClick={handleClear}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-fill-hover transition-colors"
           >
-            <svg className="w-3.5 h-3.5 text-white/30 hover:text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-3.5 h-3.5 text-ink-3 hover:text-ink-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>

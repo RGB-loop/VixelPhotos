@@ -26,7 +26,7 @@ function countLine(results: SearchResult[]): string {
   const n = { image: 0, video: 0, audio: 0 }
   for (const r of results) n[mediaKindOf(r.photo)]++
   const parts: string[] = []
-  if (n.image) parts.push(`${n.image} 张照片`)
+  if (n.image) parts.push(`${n.image} 张图片`)
   if (n.video) parts.push(`${n.video} 个视频`)
   if (n.audio) parts.push(`${n.audio} 个音频`)
   return parts.join(' · ')
@@ -95,7 +95,7 @@ export function PhotoGrid({ results, onSelect, isSearching }: PhotoGridProps): J
             {Cell}
           </FixedSizeGrid>
           {results.length > 0 && (
-            <div className="h-6 text-center text-white/20 text-xs flex items-center justify-center flex-shrink-0">
+            <div className="h-6 text-center text-ink-4 text-callout flex items-center justify-center flex-shrink-0">
               {summary}
             </div>
           )}

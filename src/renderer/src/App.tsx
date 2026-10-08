@@ -21,7 +21,7 @@ const KIND_FILTERS: { value: KindFilter; label: string }[] = [
 
 const VIEW_ICONS: Record<ViewMode, { title: string; path: string }> = {
   grid: {
-    title: '照片',
+    title: '图片',
     path: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z',
   },
   map: {
@@ -190,15 +190,15 @@ function App(): JSX.Element {
         <div className="w-[68px] flex-shrink-0" />
 
         {/* 视图切换 */}
-        <div className="flex items-center bg-white/5 rounded-lg p-0.5 flex-shrink-0">
+        <div className="flex items-center bg-fill rounded-lg p-0.5 flex-shrink-0">
           {(Object.entries(VIEW_ICONS) as [ViewMode, typeof VIEW_ICONS['grid']][]).map(([mode, { title, path }]) => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
-              className={`px-2 py-1 rounded-md text-[11px] flex items-center gap-1 transition-all ${
+              className={`px-2 py-1 rounded-md text-caption flex items-center gap-1 transition-all ${
                 viewMode === mode
-                  ? 'bg-white/10 text-white/80'
-                  : 'text-white/30 hover:text-white/50'
+                  ? 'bg-fill-hover text-ink'
+                  : 'text-ink-3 hover:text-ink-2'
               }`}
               title={title}
             >
@@ -226,13 +226,13 @@ function App(): JSX.Element {
         <div className="flex items-center gap-1 flex-shrink-0">
           {/* 类型过滤 — 仅网格视图 */}
           {viewMode === 'grid' && (
-            <div className="flex items-center bg-white/5 rounded-lg p-0.5 mr-1">
+            <div className="flex items-center bg-fill rounded-lg p-0.5 mr-1">
               {KIND_FILTERS.map(({ value, label }) => (
                 <button
                   key={value}
                   onClick={() => handleKindFilterChange(value)}
-                  className={`px-2 py-0.5 rounded-md text-[11px] transition-all ${
-                    kindFilter === value ? 'bg-white/10 text-white/80' : 'text-white/30 hover:text-white/50'
+                  className={`px-2 py-0.5 rounded-md text-caption transition-all ${
+                    kindFilter === value ? 'bg-fill-hover text-ink' : 'text-ink-3 hover:text-ink-2'
                   }`}
                 >
                   {label}
@@ -247,7 +247,7 @@ function App(): JSX.Element {
               className={`p-1.5 rounded-md transition-colors ${
                 showDateFilter || hasDateFilter
                   ? 'bg-accent/20 text-accent'
-                  : 'hover:bg-white/10 text-white/25'
+                  : 'hover:bg-fill-hover text-ink-4'
               }`}
               title="时间过滤"
             >
@@ -259,10 +259,10 @@ function App(): JSX.Element {
           {/* 设置 */}
           <button
             onClick={() => setShowFolderManager(true)}
-            className="p-1.5 rounded-md hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded-md hover:bg-fill-hover transition-colors"
             title="设置 (Cmd+,)"
           >
-            <svg className="w-4 h-4 text-white/25 hover:text-white/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-4 h-4 text-ink-4 hover:text-ink-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
@@ -272,25 +272,25 @@ function App(): JSX.Element {
 
       {/* 日期过滤栏 */}
       {showDateFilter && viewMode === 'grid' && (
-        <div className="px-4 py-2 bg-surface-1 border-b border-white/5 flex items-center gap-3 animate-fade-in">
-          <span className="text-[11px] text-white/30">时间</span>
+        <div className="px-4 py-2 bg-surface-1 border-b border-line flex items-center gap-3 animate-fade-in">
+          <span className="text-caption text-ink-3">时间</span>
           <input
             type="date"
             value={dateFrom}
             onChange={(e) => handleDateFilterChange(e.target.value, dateTo)}
-            className="px-2 py-1 text-[11px] bg-surface-2 border border-white/10 rounded text-white/70 focus:outline-none focus:border-white/20"
+            className="px-2 py-1 text-caption bg-surface-2 border border-line-strong rounded text-ink focus:outline-none focus:border-line-heavy"
           />
-          <span className="text-white/15 text-[11px]">—</span>
+          <span className="text-ink-4 text-caption">—</span>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => handleDateFilterChange(dateFrom, e.target.value)}
-            className="px-2 py-1 text-[11px] bg-surface-2 border border-white/10 rounded text-white/70 focus:outline-none focus:border-white/20"
+            className="px-2 py-1 text-caption bg-surface-2 border border-line-strong rounded text-ink focus:outline-none focus:border-line-heavy"
           />
           {hasDateFilter && (
             <button
               onClick={() => { handleDateFilterChange('', ''); setShowDateFilter(false) }}
-              className="text-[10px] text-white/30 hover:text-white/60 px-1.5 py-0.5 rounded hover:bg-white/5"
+              className="text-micro text-ink-3 hover:text-ink-2 px-1.5 py-0.5 rounded hover:bg-fill"
             >
               清除
             </button>
@@ -309,13 +309,13 @@ function App(): JSX.Element {
         ) : hasSearchQuery || (hasPhotos && (kindFilter !== 'all' || hasDateFilter)) ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center animate-fade-in">
-              <svg className="w-10 h-10 mx-auto mb-3 text-white/10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-10 h-10 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              <p className="text-white/40 text-sm">
+              <p className="text-ink-3 text-body">
                 {hasSearchQuery ? '没有找到匹配的内容' : '没有符合筛选条件的内容'}
               </p>
-              <p className="text-white/20 text-xs mt-2">
+              <p className="text-ink-4 text-callout mt-2">
                 {kindFilter !== 'all' || hasDateFilter
                   ? '试试放宽类型或时间过滤'
                   : '试试其他关键词、图内的文字片段，或换种说法'}
@@ -327,19 +327,19 @@ function App(): JSX.Element {
             <div className="text-center animate-fade-in">
               {!hasPhotos ? (
                 <>
-                  <svg className="w-10 h-10 mx-auto mb-3 text-white/10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-10 h-10 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                   </svg>
-                  <p className="text-white/40 text-sm">还没有照片</p>
+                  <p className="text-ink-3 text-body">资料库还是空的</p>
                   <button
                     onClick={() => setShowFolderManager(true)}
-                    className="mt-3 px-4 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 text-xs rounded-md transition-colors"
+                    className="mt-3 px-4 py-1.5 bg-fill hover:bg-fill-hover text-ink-2 text-callout rounded-md transition-colors"
                   >
-                    添加照片文件夹
+                    添加文件夹
                   </button>
                 </>
               ) : (
-                <p className="text-white/30 text-xs">加载中...</p>
+                <p className="text-ink-3 text-callout">加载中...</p>
               )}
             </div>
           </div>
