@@ -13,6 +13,7 @@ import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
+import { serveMediaFile } from '../core/media/serve'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
@@ -479,6 +480,7 @@ function registerIpcHandlers(): void {
  *
  *   vixel://thumb/<photoId>           → <userData>/thumbnails/<hash>.webp
  *   vixel://image/<photoId>           → 原图文件路径
+ *   vixel://media/<videoId>           → 音视频源文件（手写 Range，供 <video>/<audio> seek）
  *
  * 比 base64-over-IPC 显著省事：
  *   - 主进程不必把文件读进字符串再 base64
@@ -510,6 +512,14 @@ function registerVixelProtocol(): void {
         const photo = db.getPhoto(id)
         if (!photo || !existsSync(photo.filePath)) return new Response('not found', { status: 404 })
         return net.fetch(pathToFileURL(photo.filePath).toString())
+      }
+
+      if (host === 'media' && pathParts.length === 1) {
+        const id = parseInt(pathParts[0], 10)
+        if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
+        const video = db.getVideoById(id)
+        if (!video || !existsSync(video.filePath)) return new Response('not found', { status: 404 })
+        return serveMediaFile(video.filePath, request.headers.get('range'))
       }
 
       return new Response('unknown vixel path', { status: 404 })
