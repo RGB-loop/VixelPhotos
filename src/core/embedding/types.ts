@@ -1,9 +1,9 @@
 /**
  * 统一的 Embedding 接口定义
- * 支持文本、图片、混合输入
+ * 支持文本、图片、音频、视频（EmbeddingGemma 2 多模态）
  */
 
-export type EmbeddingInputType = 'text' | 'image' | 'mixed'
+export type EmbeddingInputType = 'text' | 'image' | 'audio' | 'video' | 'multimodal'
 
 export interface TextInput {
   type: 'text'
@@ -15,13 +15,29 @@ export interface ImageInput {
   content: Buffer
 }
 
-export interface MixedInput {
-  type: 'mixed'
-  text: string
-  image: Buffer
+export interface AudioInput {
+  type: 'audio'
+  /** mono 16kHz Float32Array，符合 Gemma 2 audio encoder 要求 */
+  samples: Float32Array
 }
 
-export type EmbeddingInput = TextInput | ImageInput | MixedInput
+export interface VideoInput {
+  type: 'video'
+  /** 帧序列（processor max_frames = 32，超出均匀降采样），RawImage[] 或 Buffer[] */
+  frames: Buffer[]
+  /** 视频时长（秒），用于 RawVideo 构造 */
+  durationSec: number
+}
+
+export interface MultimodalInput {
+  type: 'multimodal'
+  text?: string
+  image?: Buffer
+  audio?: Float32Array
+  video?: { frames: Buffer[]; durationSec: number }
+}
+
+export type EmbeddingInput = TextInput | ImageInput | AudioInput | VideoInput | MultimodalInput
 
 /**
  * Embedding Provider 接口
@@ -37,37 +53,33 @@ export interface EmbeddingProvider {
 
 /**
  * Provider 类型
- *  - `onnx-local`（默认）：本地 ONNX，SigLIP 2 base/16-256，零网络
- *  - `api`：外部 OpenAI 兼容多模态 API（可选/兜底）
+ *  - `gemma2-local`：本地 ONNX，EmbeddingGemma 2 (768D，多模态：文本/图像/音频/视频)
  */
-export type ProviderType = 'onnx-local' | 'api'
+export type ProviderType = 'gemma2-local'
 
-export interface OnnxProviderConfig {
-  type: 'onnx-local'
-  modelsDir: string             // 模型根目录（包含 siglip2/ 子目录）
-  modelDirName?: string         // 默认 'siglip2'
-  quantized?: boolean           // 默认 true（q8 量化），false 用 fp32
+export interface Gemma2ProviderConfig {
+  type: 'gemma2-local'
+  modelsDir: string             // 模型根目录（包含 gemma2/ 子目录）
+  modelDirName?: string         // 默认 'gemma2'
+  /**
+   * 量化档位：
+   *  - text/vision: q4 (默认，284MB)
+   *  - audio: q8 (默认，340MB，官方建议)
+   */
+  textQuantization?: 'q4' | 'q8' | 'fp32'
+  visionQuantization?: 'q4' | 'q8' | 'fp32'
+  audioQuantization?: 'q8' | 'q4' | 'fp32'
   device?: 'cpu' | 'webgpu'     // 默认 cpu
 }
 
-export interface ApiProviderConfig {
-  type: 'api'
-  endpoint: string
-  apiKey?: string
-  model?: string
-}
-
-export type EmbeddingProviderConfig =
-  | OnnxProviderConfig
-  | ApiProviderConfig
+export type EmbeddingProviderConfig = Gemma2ProviderConfig
 
 /**
  * 向量维度常量
  */
 export const EMBEDDING_DIMENSIONS = {
-  SIGLIP2_BASE: 768,
-  SIGLIP2_LARGE: 1024,
-  CLIP_BASE: 512,
-  // legacy（API 后端用过的）
-  QWEN3_VL_EMBEDDING: 2048,
+  GEMMA2_BASE: 768,        // EmbeddingGemma 2 基础输出
+  GEMMA2_MRL_512: 512,     // Matryoshka 截断
+  GEMMA2_MRL_256: 256,
+  GEMMA2_MRL_128: 128,
 } as const

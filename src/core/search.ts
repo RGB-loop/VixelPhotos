@@ -1,5 +1,5 @@
 /**
- * 搜索引擎 — 4-way RRF（vector + caption BM25 + ocr BM25 + filename）
+ * 搜索引擎 — 5-way RRF（image vec + video segment vec + ocr BM25 + filename + [caption已删除]）
  */
 
 import type { DatabaseInstance } from './db'
@@ -9,6 +9,13 @@ import { rrfFuse } from './fusion'
 
 interface VecSearchResult {
   fileHash: string
+  distance: number
+}
+
+interface VideoSegmentSearchResult {
+  videoId: number
+  startMs: number
+  endMs: number
   distance: number
 }
 
@@ -46,19 +53,32 @@ export class SearchEngine {
     }
 
     try {
-      // 并行四路：vec 语义 / caption FTS5 / ocr FTS5 / 文件名 LIKE
-      const [vecResults, captionResults, ocrResults, fileNameResults] = await Promise.all([
-        this.searchByVector(trimmedQuery, limit * 2),
-        Promise.resolve(this.searchByBM25(trimmedQuery, limit * 2)),
-        Promise.resolve(this.searchByOcr(trimmedQuery, limit * 2)),
-        Promise.resolve(this.db.searchByFileName(trimmedQuery, limit * 2)),
-      ])
+      // 查询向量只编码一次，图片通道和视频片段通道共用。
+      // 这是唯一的异步步骤，之后四路检索都是同步的 SQLite 查询。
+      const queryVec = await this.encodeQuery(trimmedQuery)
+
+      // 四路召回（caption 通道已删除）：图片 vec / 视频片段 vec / ocr BM25 / 文件名 LIKE
+      const imageVecResults = this.searchByVector(queryVec, limit * 2)
+      const videoSegmentResults = this.searchVideoSegments(queryVec, limit * 2)
+      const ocrResults = this.searchByOcr(trimmedQuery, limit * 2)
+      const fileNameResults = this.db.searchByFileName(trimmedQuery, limit * 2)
+
+      // 视频片段命中 → 映射到该视频首帧 photo 的 fileHash，
+      // 这样才能和图片通道在同一个 id 空间里融合。
+      const videoSegmentAsFileHash: VecSearchResult[] = []
+      for (const seg of videoSegmentResults) {
+        const frames = this.db.getFramePhotosByVideo(seg.videoId)
+        const frame = frames.find((f) => !f.deletedAt) ?? frames[0]
+        if (frame?.fileHash) {
+          videoSegmentAsFileHash.push({ fileHash: frame.fileHash, distance: seg.distance })
+        }
+      }
 
       // RRF 融合（各通道先按相关性排序好，再交给 fusion）
       const mergedResults = rrfFuse(
         [
-          [...vecResults].sort((a, b) => a.distance - b.distance),
-          [...captionResults].sort((a, b) => b.score - a.score),
+          [...imageVecResults].sort((a, b) => a.distance - b.distance),
+          [...videoSegmentAsFileHash].sort((a, b) => a.distance - b.distance),
           [...ocrResults].sort((a, b) => b.score - a.score),
           fileNameResults,
         ],
@@ -120,11 +140,20 @@ export class SearchEngine {
     return photos
   }
 
-  private async searchByVector(query: string, limit: number): Promise<VecSearchResult[]> {
+  private async encodeQuery(query: string): Promise<Float32Array | null> {
     try {
       const embeddingService = getEmbeddingService()
-      if (!embeddingService.isReady()) return []
-      const queryVec = await embeddingService.encodeText(query)
+      if (!embeddingService.isReady()) return null
+      return await embeddingService.encodeText(query)
+    } catch (error) {
+      console.error('Query encoding failed:', error)
+      return null
+    }
+  }
+
+  private searchByVector(queryVec: Float32Array | null, limit: number): VecSearchResult[] {
+    if (!queryVec) return []
+    try {
       return this.db.searchByVec(queryVec, limit)
     } catch (error) {
       console.error('Vector search failed:', error)
@@ -132,11 +161,21 @@ export class SearchEngine {
     }
   }
 
-  private searchByBM25(query: string, limit: number): TextSearchResult[] {
+  private searchVideoSegments(queryVec: Float32Array | null, limit: number): VideoSegmentSearchResult[] {
+    if (!queryVec) return []
     try {
-      return this.db.searchByText(query, limit)
+      const rawResults = this.db.searchVideoSegmentsByVec(queryVec, limit)
+      // 按 videoId 去重，保留每个视频的最佳片段
+      const bestPerVideo = new Map<number, VideoSegmentSearchResult>()
+      for (const seg of rawResults) {
+        const existing = bestPerVideo.get(seg.videoId)
+        if (!existing || seg.distance < existing.distance) {
+          bestPerVideo.set(seg.videoId, seg)
+        }
+      }
+      return Array.from(bestPerVideo.values())
     } catch (error) {
-      console.error('BM25 search failed:', error)
+      console.error('Video segment search failed:', error)
       return []
     }
   }

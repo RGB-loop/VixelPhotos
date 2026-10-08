@@ -246,7 +246,6 @@ function cmdStats(db: DatabaseInstance, flags: Record<string, string | boolean>)
     uniquePhotos: stats.uniqueTotal,
     thumbnailed: stats.thumbnailed,
     indexed: stats.indexed,
-    captioned: stats.captioned,
     people: people.length,
     queuePending: queueStats.pending,
   }
@@ -258,7 +257,6 @@ function cmdStats(db: DatabaseInstance, flags: Record<string, string | boolean>)
     console.log(`  Photos:     ${stats.total} (${stats.uniqueTotal} unique)`)
     console.log(`  Thumbnails: ${stats.thumbnailed}`)
     console.log(`  Indexed:    ${stats.indexed}`)
-    console.log(`  Captioned:  ${stats.captioned}`)
     console.log(`  People:     ${people.length}`)
     if (queueStats.pending > 0) {
       console.log(`  Queue:      ${queueStats.pending} pending`)

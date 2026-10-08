@@ -13,7 +13,7 @@ import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
-import { IPC_CHANNELS, type IndexProgress, type FaceBbox } from '../shared/types'
+import { IPC_CHANNELS, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
 const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -98,7 +98,7 @@ async function initServices(): Promise<void> {
 
   // 后台预加载：
   //   - jieba 首次切词约 150 ms，提前热掉避免第一次写入/搜索阻塞 SQLite 触发器
-  //   - SigLIP 2 首次推理 2-5 s，预拉模型权重到内存
+  //   - EmbeddingGemma 2 首次加载较慢，预拉模型权重到内存
   // 都是 fire-and-forget，失败不阻塞应用。
   preloadJieba().catch(() => {})
   setTimeout(() => {
@@ -276,43 +276,45 @@ function registerIpcHandlers(): void {
     return app.getPath('userData')
   })
 
-  // 模型状态（v0.2：SigLIP 2 本地模型 + 可选 API 兜底）
+  // 模型状态（EmbeddingGemma 2 本地模型）
   ipcMain.handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
     const embeddingService = getEmbeddingService()
     const config = embeddingService.getConfig()
-    const siglipDir = join(bundledModelsDir, 'siglip2')
-    const localModelExists = existsSync(siglipDir)
+    const gemma2Dir = join(bundledModelsDir, config.modelDirName || 'gemma2')
+    const localModelExists = existsSync(gemma2Dir)
 
     return {
       modelsDir: bundledModelsDir,
-      providerType: config.type, // 'onnx-local' | 'api'
+      providerType: config.type, // 'gemma2-local'
       localModelExists,
       embeddingReady: embeddingService.isReady(),
-      apiConfigured: config.type === 'api' && !!config.endpoint,
-      apiEndpoint: config.type === 'api' ? config.endpoint : undefined,
+      textQuantization: config.textQuantization,
+      visionQuantization: config.visionQuantization,
+      audioQuantization: config.audioQuantization,
       initError: embeddingService.getInitError(),
     }
   })
 
-  // Embedding 配置：切到 API 后端（高级选项）
+  // Embedding 配置：量化档位 / 推理设备（纯本地，无 API 后端）
   ipcMain.handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
     const config = getEmbeddingService().getConfig()
-    if (config.type === 'api') {
-      return { endpoint: config.endpoint, apiKey: config.apiKey, model: config.model }
+    return {
+      textQuantization: config.textQuantization,
+      visionQuantization: config.visionQuantization,
+      audioQuantization: config.audioQuantization,
+      device: config.device,
     }
-    return null
   })
 
+  // 改量化档位会丢弃已加载的 provider，下次 encode 时按新档位重新加载。
+  // 注意：换档位不会重建已有向量 —— 不同量化档位的向量仍在同一嵌入空间，
+  // 可以混用，只是精度略有差异。
   ipcMain.handle(
     IPC_CHANNELS.SET_EMBEDDING_CONFIG,
-    async (_event, config: { endpoint: string; apiKey?: string; model?: string } | null) => {
+    async (_event, patch: EmbeddingQuantizationConfig) => {
       try {
         const svc = getEmbeddingService()
-        if (config === null) {
-          svc.useLocal()
-        } else {
-          svc.setApiConfig(config)
-        }
+        svc.setConfig(patch)
         await svc.init()
         return { success: true, ready: svc.isReady() }
       } catch (error) {
@@ -320,19 +322,6 @@ function registerIpcHandlers(): void {
       }
     }
   )
-
-  ipcMain.handle(IPC_CHANNELS.TEST_EMBEDDING_API, async () => {
-    try {
-      const svc = getEmbeddingService()
-      if (!svc.isConfigured()) {
-        return { success: false, error: 'Provider not configured' }
-      }
-      const testVec = await svc.encodeText('test')
-      return { success: true, dimension: testVec.length }
-    } catch (error) {
-      return { success: false, error: String(error) }
-    }
-  })
 
   // 手动更新 caption（用户编辑）
   ipcMain.handle(IPC_CHANNELS.UPDATE_CAPTION, async (_event, photoId: number, text: string) => {
@@ -454,7 +443,6 @@ function registerIpcHandlers(): void {
  *
  *   vixel://thumb/<photoId>           → <userData>/thumbnails/<hash>.webp
  *   vixel://image/<photoId>           → 原图文件路径
- *   vixel://video-frame/<videoHash>/<ms>  → 视频帧 jpg
  *
  * 比 base64-over-IPC 显著省事：
  *   - 主进程不必把文件读进字符串再 base64
@@ -486,11 +474,6 @@ function registerVixelProtocol(): void {
         const photo = db.getPhoto(id)
         if (!photo || !existsSync(photo.filePath)) return new Response('not found', { status: 404 })
         return net.fetch(pathToFileURL(photo.filePath).toString())
-      }
-
-      if (host === 'video-frame' && pathParts.length === 2) {
-        // 已废弃 — frame 现在以普通 photo 行存在，使用 thumb/<id>。
-        return new Response('use vixel://thumb/<photoId> for frames', { status: 410 })
       }
 
       return new Response('unknown vixel path', { status: 404 })

@@ -11,10 +11,20 @@
 > **重大变更（v0.1 → v0.2）：**
 > - 移除 Qwen3.5-4B caption 生成（3.4 GB LLM 下载已删除）
 > - SigLIP 2 base/16-256 ONNX 取代外部 Embedding API 成为默认 provider
+>   （**2026-10 已被 EmbeddingGemma 2 取代**，见下）
 > - 新增 PaddleOCR v5 全本地 OCR
 > - 人脸匹配从 O(N) JS 余弦切换到 sqlite-vec ANN
 > - 新增视频抽帧（ffmpeg-static + 关键帧 → 复用图像流水线）
 > - FTS5 中文搜索：jieba 分词替代字符级 unicode61
+>
+> **重大变更（2026-10 重构，EmbeddingGemma 2）：**
+> - 所有 embedding 任务统一到 **EmbeddingGemma 2**（文本/图像/音频/视频同一 768 维空间），
+>   删除 SigLIP 2 provider 与外部 Embedding API provider —— 纯本地，无 API 兜底
+> - 视频从"逐帧当照片"改为 **32s 片段语义向量**（1fps 帧序列 + 音轨 → 单向量），
+>   新表 `video_segments` + `video_segment_vecs`
+> - 新增音轨抽取（`src/core/audio/extract.ts`，ffmpeg → mono 16 kHz f32le）
+> - 搜索：删除 caption BM25 通道；新增视频片段向量通道；query 只编码一次
+> - 人脸（MobileFaceNet）与 OCR（PaddleOCR）不是 embedding 任务，保持不变
 
 ---
 
@@ -49,20 +59,20 @@
 │  │  Map / People  │    │  ┌──────────────────────────────────────┐ │    │
 │  │  PhotoDetail   │    │  │     ONNX Runtime (onnxruntime-node)  │ │    │
 │  └────────────────┘    │  │  ┌──────────┐ ┌──────┐ ┌──────────┐ │ │    │
-│                        │  │  │ SigLIP 2 │ │PaddOCR│ │SCRFD +   │ │ │    │
-│                        │  │  │ via 🤗   │ │ det/  │ │MobileFace│ │ │    │
-│                        │  │  │ Transfor-│ │ rec/  │ │Net       │ │ │    │
-│                        │  │  │ mers.js  │ │ cls   │ │          │ │ │    │
+│                        │  │  │Embedding-│ │PaddOCR│ │SCRFD +   │ │ │    │
+│                        │  │  │Gemma 2   │ │ det/  │ │MobileFace│ │ │    │
+│                        │  │  │txt/img/  │ │ rec/  │ │Net       │ │ │    │
+│                        │  │  │aud/video │ │ cls   │ │          │ │ │    │
 │                        │  │  └──────────┘ └──────┘ └──────────┘ │ │    │
 │                        │  └──────────────────────────────────────┘ │    │
 │                        │  ┌──────────────────────────────────────┐ │    │
 │                        │  │      ffmpeg-static (subprocess)      │ │    │
-│                        │  │     视频抽帧 → 复用图像流水线         │ │    │
+│                        │  │  32s 片段：1fps 帧 + 音轨 → 片段向量 │ │    │
 │                        │  └──────────────────────────────────────┘ │    │
 │                        │  ┌──────────────────────────────────────┐ │    │
 │                        │  │    better-sqlite3 + sqlite-vec       │ │    │
 │                        │  │  photos | image_vecs(768)            │ │    │
-│                        │  │  captions+FTS5 (jieba UDF)           │ │    │
+│                        │  │  video_segments | video_segment_vecs │ │    │
 │                        │  │  image_ocr+FTS5 (jieba UDF)          │ │    │
 │                        │  │  faces | face_vecs(128) ANN          │ │    │
 │                        │  │  people | videos | meta_state        │ │    │
@@ -73,7 +83,7 @@
 │                        └────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
   ↑ 零网络请求    ↑ 所有数据本地    ↑ 照片文件原位引用，不复制
-  ↑ 无 Python，无 llama-server，无外部 API（除非用户显式启用 API fallback）
+  ↑ 无 Python，无 llama-server，无外部 API（API provider 已删除）
 ```
 
 ### 1.2 技术栈总览
@@ -83,14 +93,14 @@
 | 应用框架 | **Electron 33+** | 单进程；不再依赖 llama-server / Python 子进程 |
 | 构建工具 | **electron-vite** | 主+预加载+渲染三套 entry |
 | UI 框架 | **React 18 + TypeScript + Tailwind CSS** | — |
-| 图文 Embedding | **SigLIP 2 base/16-256**（ONNX 量化） | 768 维；视觉 + 文本同空间；多语言（含中日韩） |
+| 多模态 Embedding | **EmbeddingGemma 2**（ONNX，文本/视觉 q4、音频 q8） | 768 维；文本 / 图像 / 音频 / 视频同一空间；多语言 |
 | ONNX 运行时 | **onnxruntime-node + @huggingface/transformers** | CoreML / CPU EP；Transformers.js 负责 tokenizer + processor |
 | OCR（图内文字） | **PaddleOCR v5**（det + cls + rec ONNX） | RapidAI 社区导出；charset 用 ppocr_keys_v1 |
 | 人脸检测 | **SCRFD-2.5G-KPS**（InsightFace ONNX） | ~3 MB |
 | 人脸 embedding | **MobileFaceNet**（ONNX） | 128 维，L2 归一化 |
 | 人脸聚类 | **sqlite-vec ANN** | 取代 v0.1 的 O(N) JS 余弦扫描 |
-| 视频抽帧 | **ffmpeg-static** | 每 5s 一帧、上限 20；temp dir → image2 输出 |
-| 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + face_vecs(128) |
+| 视频 / 音频抽取 | **ffmpeg-static** | 32s 片段，1fps 帧（≤32 帧）+ mono 16 kHz 音轨；时长解析 `ffmpeg -i` stderr |
+| 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + video_segment_vecs(768) + face_vecs(128) |
 | 元数据存储 | **better-sqlite3 + FTS5** | 同进程 sync API |
 | 中文分词 | **@node-rs/jieba**（UDF jiebatok） | FTS5 写入/查询两端对称切词 |
 | 文件监听 | **chokidar** | 图片 + 视频统一 add/change/unlink |
@@ -107,53 +117,70 @@
 > onnxruntime-node 跑、统一收口到 SQLite/sqlite-vec。这是 v0.2 取代 v0.1 的
 > "Qwen3.5-4B 包打天下"路线后留下来的核心原则。
 
-### 2.1 图文检索（语义搜索）：SigLIP 2 base/16-256
+### 2.1 多模态检索（语义搜索）：EmbeddingGemma 2
 
 | 维度 | 取值 |
 |---|---|
-| 模型 ID | `onnx-community/siglip2-base-patch16-256` |
-| 视觉 + 文本编码器 | 同空间（直接内积比相似度） |
-| 嵌入维度 | **768** |
-| 量化 | q8 ONNX，~190 MB |
-| 多语言 | 30+（含中、日、韩、英） |
-| 许可 | Apache 2.0 |
+| 模型 ID | `onnx-community/embeddinggemma-2-ONNX` |
+| 规模 | 740M（文本 270M + 视觉 170M + 音频 300M，模块化编码器） |
+| 模态 | 文本 / 图像 / 音频 / 视频，**统一嵌入空间** |
+| 嵌入维度 | **768**（Matryoshka 可截断到 512/256/128；当前用满 768） |
+| 上下文 | 8K token |
+| 默认量化 | 文本 q4、视觉 q4、音频 q8 —— 合计 ~620 MB |
+| 量化可调 | 设置页按编码器选 q4 / q8，写入 `embedding-config.json` |
 
-#### 为什么是 SigLIP 2 而不是 Chinese-CLIP / OpenCLIP
+模型文件（每个 `.onnx` 都配一个必需的 `.onnx_data` 外部权重文件）：
 
-| 候选 | 中文 | 多语言 | 公开 benchmark | 体积 |
-|---|---|---|---|---|
-| **SigLIP 2 base ★** | ✓ | ✓✓ (30+) | XM3600 / Crossmodal | ~190 MB |
-| Chinese-CLIP B/16 | ✓✓ (强) | ✗ (中英为主) | COCO-CN / MUGE | ~190 MB |
-| MobileCLIP S2 | 弱 | ✗ | DataCompDR | ~140 MB |
+| 文件 | 内容 | 大小 |
+|---|---|---|
+| `onnx/model_q4.onnx` | 文本编码器 + 多模态融合（session `model`） | ~174 MB |
+| `onnx/vision_encoder_q4.onnx` | 视觉编码器（图像 + 视频帧） | ~109 MB |
+| `onnx/audio_encoder_quantized.onnx` | 音频编码器（q8 → `_quantized` 后缀） | ~340 MB |
+| `processor_config.json` | `video_processor.max_frames = 32`，每帧 140 soft token | — |
 
-PRD 明确要求"日语搜樱花照片"这类多语言场景；如果未来用户群偏中文重度，
-可加 Chinese-CLIP 作为"中文专项模式"二选一。
+#### 为什么从 SigLIP 2 换到 EmbeddingGemma 2
+
+| 维度 | SigLIP 2 base（旧） | EmbeddingGemma 2（现） |
+|---|---|---|
+| 模态 | 文本 + 图像 | 文本 + 图像 + **音频 + 视频** |
+| 视频表示 | 每帧一个向量，帧之间互不知情 | 一个片段（帧序列 + 音轨）→ **单向量** |
+| 音频 | 无 | 原生音频编码器 |
+| 体积 | ~190 MB | ~620 MB |
+| 推理成本 | 低 | 更高（待测） |
+
+取舍：体积 ×3、推理更慢，换来的是"视频里**听到**的内容也能搜"和片段级语义
+（"狗在沙滩上叫"这种跨帧 + 跨模态的 query）。产品未上线，无存量向量兼容负担，
+所以一次性替换，不保留 SigLIP 2 / 外部 API 双轨。
 
 #### 集成
 
 ```typescript
-// src/core/embedding/providers/onnxProvider.ts
-import { AutoTokenizer, AutoProcessor, AutoModel, RawImage, env }
-  from '@huggingface/transformers'
+// src/core/embedding/providers/gemma2Provider.ts（简化）
+import { AutoTokenizer, AutoProcessor, AutoModel, RawImage, RawVideo, env }
+  from '@huggingface/transformers'   // ≥ 4.3.1
 
 env.allowRemoteModels = false
 env.allowLocalModels = true
 env.localModelPath = bundledModelsDir  // <Resources>/models
 
-const tokenizer = await AutoTokenizer.from_pretrained('siglip2')
-const processor = await AutoProcessor.from_pretrained('siglip2')
-const model = await AutoModel.from_pretrained('siglip2', { dtype: 'q8' })
+const tokenizer = await AutoTokenizer.from_pretrained('gemma2')
+const processor = await AutoProcessor.from_pretrained('gemma2')
+// dtype 按 session 名指定；键写错会静默回退到设备默认 dtype
+const model = await AutoModel.from_pretrained('gemma2', {
+  dtype: { model: 'q4', vision_encoder: 'q4', audio_encoder: 'q8' },
+})
 
-// 图像 → 768d
-const inputs = await processor(await RawImage.read(blob))
-const { data } = await model.get_image_features(inputs)
-// 文本 → 768d（同空间，直接内积比相似度）
-const ti = tokenizer(query, { padding: 'max_length', truncation: true })
-const { data: tdata } = await model.get_text_features(ti)
+// 文本 query：必须带任务前缀
+const ti = tokenizer('task: query | text: 海边日落', { padding: true, truncation: true })
+const { sentence_embedding } = await model(ti)          // 768d，已 L2 归一化
+
+// 图像 / 音频 / 视频：processor(text, images, audio, videos)
+await model(await processor(null, rawImage))                    // 图像
+await model(await processor(null, null, samples16k))             // 音频
+await model(await processor(null, null, audio, new RawVideo(frames, durationSec)))  // 视频片段
 ```
 
-预热在 main 启动后 2s 触发；首次推理冷启动 2-5s，之后 ~80 ms/张 CPU、
-~25 ms/张 CoreML（M2）。
+预热仍在 main 启动后 2s fire-and-forget 触发；冷启动与单次推理耗时**待测**。
 
 ---
 
@@ -232,20 +259,28 @@ return createNewPerson()
 
 ---
 
-### 2.4 视频抽帧：ffmpeg-static
+### 2.4 视频片段语义：ffmpeg-static + EmbeddingGemma 2
 
 | 维度 | 配置 |
 |---|---|
-| 二进制来源 | `ffmpeg-static` npm（per-platform prebuilt，~80 MB） |
-| 抽帧策略 | 固定 5s 一帧，cap 20 帧/视频 |
-| 输出 | 长边 ≤ 512 px JPEG，落到 `<userData>/video_frames/<videoHash>/<ms>.jpg` |
-| 编排 | indexer 新 task 类型 `extract_frames` |
+| 二进制来源 | `ffmpeg-static` npm（per-platform prebuilt，~80 MB；不带 ffprobe） |
+| 时长 | `probeDurationMs()`：解析 `ffmpeg -i` stderr 的 `Duration:`，30s 超时 |
+| 切片 | **32s** 一段（`-ss` 在 `-i` 前快速 seek，`-t` 限长） |
+| 帧 | 1 fps，≤ 32 帧，长边 ≤ 512 px JPEG |
+| 音轨 | `src/core/audio/extract.ts`：ffmpeg → mono 16 kHz f32le |
+| 编码 | 帧序列 + 音轨 → `encode({ type: 'multimodal', video, audio })` → 单向量；无音轨退化为纯视频 |
+| 存储 | `video_segments`（时间区间）+ `video_segment_vecs`（vec0, 768d） |
+| 编排 | indexer task 类型 `extract_frames` |
 
-抽出来的每一帧都作为常规 `photos` 行入库，反向引用 `videos.id`：
-图像流水线（thumbnail / embed / face / OCR）**零分支**复用。
+为什么是 32s：`processor_config.json` 的 `video_processor.max_frames = 32`，
+超出会被均匀降采样（白抽）。32 帧 × 140 token ≈ 4.5K，加 32s 音频（~40 ms/token
+≈ 800 token）≈ 5.3K，在 8K 上下文内留足余量。
 
-为什么固定间隔而非 scene-change：scene detection 对静态长视频会返回
-0 帧；固定间隔行为可预测，对个人相册的搜索召回足够。
+代表帧：首段首帧落成 `segment_0_0ms.jpg`，作为一行 `photos`（`video_id`,
+`frame_time_ms = 0`）入库，走缩略图 + 图像 embed —— 网格展示、搜索结果落点、
+"相似照片"入口都靠它。它**在编码前**写入，所以模型未就绪时视频也会出现在网格里。
+
+单片段失败（抽帧 / 编码异常）只跳过该片段，不让整个视频失败。
 
 ---
 
@@ -255,6 +290,24 @@ return createNewPerson()
 |---|---|---|
 | Qwen3.5-4B + llama.cpp | 自动 caption | 3.4 GB 下载 + 秒级推理，对"灌进 FTS5 让人能搜到"严重过设计；OCR + 图文 CLIP 双通道已覆盖搜索需求 |
 | EmbeddingGemma-300M | 独立文本 embedding | SigLIP 2 文本编码器与图像编码器**同空间**，query 直接走它就够；多一个文本模型是冗余 |
+
+> **2026-10 复议**：上表第二行针对的是 **EmbeddingGemma v1（300M，纯文本）**，
+> 当时"冗余"的判断前提是"它只能编码文本，而 SigLIP 2 已经覆盖了文本+图像"。
+> Google 于 2026-10-06 发布 **EmbeddingGemma 2**，前提已不成立：
+>
+> - 它是 740M 的**多模态**模型（文本 270M + 视觉 170M + 音频 300M，模块化），
+>   四种模态**统一嵌入空间**——跟 SigLIP 2 不是一个品类，不是"多一个文本模型"。
+> - 基础输出 **768 维**，与本文档的 `EMBEDDING_DIM = 768` 一致，MRL 可截断到 512/256/128。
+> - **8K 上下文**（约 58 帧视频 / 5.5 分钟音频），能把一个视频片段编码成**单向量**，
+>   而非现在"每帧一个向量、彼此不知情"的做法。
+> - **音频编码器**是 Vixel 当前完全空白的能力（全库零 audio 代码）。
+>
+> 结论：v1 的否决理由**继续成立**（换纯文本模型仍是冗余），但**不再能用来否决 v2**。
+>
+> **已采纳（2026-10）**：`onnx-community/embeddinggemma-2-ONNX` 提供了 ONNX 导出，
+> `@huggingface/transformers` 4.3.1 原生支持 `EmbeddingGemma2Model` /
+> `EmbeddingGemma2Processor`，原先的部署阻塞项解除。EmbeddingGemma 2 现在是唯一
+> embedding 模型，见 §2.1 / §2.4。
 
 ---
 
@@ -289,16 +342,15 @@ CREATE TABLE photos (
   lat             REAL,
   lng             REAL,
   embed_status    TEXT DEFAULT 'pending',
-  caption_status  TEXT DEFAULT 'pending',
-  face_status     TEXT DEFAULT 'pending',     -- ALTER 加入
-  video_id        INTEGER REFERENCES videos(id), -- ALTER 加入；null=独立照片
-  frame_time_ms   INTEGER,                    -- ALTER 加入；视频帧时间戳
+  face_status     TEXT DEFAULT 'pending',
+  video_id        INTEGER REFERENCES videos(id), -- null=独立照片；否则是视频代表帧
+  frame_time_ms   INTEGER,                    -- 视频代表帧时间戳
   deleted_at      DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_photos_folder    ON photos(folder_id);
-CREATE INDEX idx_photos_status    ON photos(embed_status, caption_status);
+CREATE INDEX idx_photos_status    ON photos(embed_status);
 CREATE INDEX idx_photos_deleted   ON photos(deleted_at);
 CREATE INDEX idx_photos_file_hash ON photos(file_hash);
 CREATE INDEX idx_photos_video     ON photos(video_id);
@@ -307,7 +359,7 @@ CREATE INDEX idx_photos_video     ON photos(video_id);
 CREATE TABLE index_queue (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   photo_id    INTEGER REFERENCES photos(id),  -- task_type='extract_frames' 时是 videos.id
-  task_type   TEXT NOT NULL,                  -- thumbnail/embed/face/ocr/extract_frames/caption(legacy)
+  task_type   TEXT NOT NULL,                  -- thumbnail/embed/face/ocr/extract_frames
   priority    INTEGER DEFAULT 0,
   status      TEXT DEFAULT 'pending',
   retry_count INTEGER DEFAULT 0,
@@ -316,7 +368,7 @@ CREATE TABLE index_queue (
 );
 CREATE INDEX idx_queue_status ON index_queue(status, priority DESC);
 
--- Caption（用户手写；保留 schema 但 v0.2 indexer 不再自动写）
+-- Caption（用户手写，详情页展示；不建 FTS，不参与搜索）
 CREATE TABLE captions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   file_hash   TEXT NOT NULL UNIQUE,
@@ -325,7 +377,7 @@ CREATE TABLE captions (
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 图像向量（SigLIP 2，768d）
+-- 图像向量（EmbeddingGemma 2，768d；视频代表帧也在这里）
 -- vec0 要求 rowid 是整数；image_vec_map 把 file_hash → rowid 映射
 CREATE TABLE image_vec_map (
   rowid     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,14 +394,13 @@ CREATE TABLE image_ocr (
 );
 
 -- FTS5（unicode61，但插入/查询前由 jiebatok UDF 切词；中英都好）
-CREATE VIRTUAL TABLE captions_fts  USING fts5(text, tokenize='unicode61');
 CREATE VIRTUAL TABLE image_ocr_fts USING fts5(text, tokenize='unicode61');
 
 -- INSERT/UPDATE 触发器调用 jiebatok(new.text)
-CREATE TRIGGER captions_ai AFTER INSERT ON captions BEGIN
-  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
+CREATE TRIGGER image_ocr_ai AFTER INSERT ON image_ocr BEGIN
+  INSERT INTO image_ocr_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
 END;
--- (... 对应 _ad / _au；image_ocr 三份同型)
+-- (... 对应 _ad / _au)
 
 -- 人脸
 CREATE TABLE faces (
@@ -396,15 +447,34 @@ CREATE TABLE videos (
 );
 CREATE INDEX idx_videos_folder ON videos(folder_id);
 CREATE INDEX idx_videos_hash   ON videos(file_hash);
+-- frame_count 现在表示片段数；duration_ms 缺失时由 indexer 用 probeDurationMs 补齐
 
--- 一次性迁移标记 / 内部状态
+-- 视频片段（32s 一段；EmbeddingGemma 2 多模态向量）
+CREATE TABLE video_segments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id     INTEGER NOT NULL REFERENCES videos(id),
+  start_ms     INTEGER NOT NULL,
+  end_ms       INTEGER NOT NULL,
+  file_hash    TEXT NOT NULL,  -- hash(视频 hash + 时间区间)，dedup 用
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_video_segments_video ON video_segments(video_id);
+CREATE INDEX idx_video_segments_hash  ON video_segments(file_hash);
+
+-- 片段向量 ANN 索引 + segment_id → rowid 映射
+CREATE VIRTUAL TABLE video_segment_vecs USING vec0(embedding FLOAT[768]);
+CREATE TABLE video_segment_vec_map (
+  rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+  segment_id  INTEGER NOT NULL UNIQUE REFERENCES video_segments(id)
+);
+
+-- 内部状态（KV）
 CREATE TABLE meta_state (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
 -- 已记录的 keys:
---   fts5_jieba_rebuilt_v1            (PR4.4)
---   face_vecs_backfilled_dim128_v1   (PR5.4)
+--   last_backup_at   (备份调度节流)
 ```
 
 ### 3.2 中文分词 UDF：`jiebatok(text)`
@@ -427,14 +497,16 @@ db.function('jiebatok', { deterministic: true, varargs: false }, (text) => {
 
 ```typescript
 // src/core/search.ts （简化）
-const [vec, captionBm25, ocrBm25, fileName] = await Promise.all([
-  searchByVector(query, limit * 2),                // SigLIP 2 文本 → KNN
-  db.searchByText(query, limit * 2),               // captions_fts BM25
-  db.searchByOcr(query, limit * 2),                // image_ocr_fts BM25
-  db.searchByFileName(query, limit * 2),           // photos.file_name LIKE
-])
-const fused = rrfFuse([vec, captionBm25, ocrBm25, fileName], 60)
+const queryVec = await encodeQuery(query)          // EmbeddingGemma 2，只编码一次
+const vec      = searchByVector(queryVec, limit * 2)        // image_vecs KNN
+const segments = searchVideoSegments(queryVec, limit * 2)   // video_segment_vecs KNN，每视频取最佳片段
+const ocrBm25  = db.searchByOcr(query, limit * 2)           // image_ocr_fts BM25
+const fileName = db.searchByFileName(query, limit * 2)      // photos.file_name LIKE
+// 片段命中 → 该视频代表帧的 fileHash，与照片共用 id 空间
+const fused = rrfFuse([vec, segmentHits, ocrBm25, fileName], 60)
 ```
+
+手写 caption 不参与搜索（caption BM25 通道与 captions_fts 已删除）。
 
 `rrfFuse` 是 `src/core/fusion.ts` 里的纯函数（带 7 个单测）。
 
@@ -443,7 +515,7 @@ const fused = rrfFuse([vec, captionBm25, ocrBm25, fileName], 60)
 ```
 # macOS（生产）
 /Applications/Vixel.app/Contents/Resources/models/
-├── siglip2/         (~190 MB, q8 ONNX, 打进 DMG)
+├── gemma2/          (~620 MB, 文本/视觉 q4 + 音频 q8 ONNX + .onnx_data, 打进 DMG)
 ├── paddleocr/       (~12 MB, 4 个 ONNX + ppocr_keys_v1.txt)
 ├── scrfd_2.5g_kps.onnx
 └── mobilefacenet.onnx
@@ -456,35 +528,27 @@ const fused = rrfFuse([vec, captionBm25, ocrBm25, fileName], 60)
 ├── thumbnails/
 │   └── {file_hash}.webp           ← 共享去重缩略图
 ├── video_frames/
-│   └── {videoHash}/{ms}.jpg       ← 每个视频的关键帧
-└── embedding-config.json          ← 仅当用户切到外部 API 兜底时存在
+│   └── {videoHash}/segment_0_0ms.jpg  ← 每个视频的代表帧
+└── embedding-config.json          ← 各编码器量化档位（q4/q8）
 ```
 
 > 注：模型权重**不在用户目录**，因此卸载应用 = 删除模型；只删用户数据
 > 不会影响搜索能力。
 
-### 3.5 迁移与启动顺序
+### 3.5 启动顺序
 
 ```
 initDatabase(dbPath)
   1. open DB + WAL + busy_timeout
   2. sqlite-vec.load
   3. db.function('jiebatok', ...)        ← 注册 UDF
-  4. migrateIfNeeded                     ← v0.0 → v0.1 旧 schema 兜底
-  5. migrateToVec0                       ← 普通表 → vec0 虚表
-  6. migrateVectorDimension(768)         ← 旧 2048 (Qwen3-VL) → 768 (SigLIP 2)
-  7. migrateFtsTriggersToJieba           ← 触发器替换为带 jiebatok 的版本
-  8. db.exec(SCHEMA)                     ← 创建所有缺失的表 / 触发器
-  9. wal_checkpoint(PASSIVE)
- 10. ensureFaceStatusColumn              ← face_status 列若缺则 ALTER
- 11. ensureVideoFrameColumns             ← video_id / frame_time_ms 若缺则 ALTER
- 12. cleanupStaleVecMap                  ← image_vec_map 孤立条目清理
- 13. rebuildFtsIndicesIfNeeded           ← 旧 FTS5 数据用 jieba 重切一遍
- 14. backfillFaceVecsIfNeeded            ← faces.embedding BLOB → face_vecs
+  4. db.exec(SCHEMA)                     ← CREATE ... IF NOT EXISTS，幂等
+  5. wal_checkpoint(PASSIVE)
+  6. cleanupStaleVecMap                  ← image_vec_map 孤立条目清理
 ```
 
-每一步都是 **idempotent**，靠 `meta_state` flag 或 `IF NOT EXISTS`/`PRAGMA table_info` 检测。
-失败统一软降级（搜索仍工作）+ 下次启动重试。
+产品未发布，**不做 schema 迁移**：schema 变更后直接删掉开发库 `library.db` 重建。
+注意 SigLIP 2 与 EmbeddingGemma 2 同为 768d，旧库不会报维度错误，但向量空间不同，必须删库。
 
 ---
 
@@ -493,8 +557,8 @@ initDatabase(dbPath)
 ### 4.1 进程模型
 
 v0.2 是**单 Electron 进程**：main 同时负责 UI 路由、SQLite、ONNX 推理。
-没有 Worker 线程、没有 llama-server 子进程、没有 Python。视频抽帧是
-唯一的外部子进程（ffmpeg）—— 短命的 spawn-and-wait，不常驻。
+没有 Worker 线程、没有 llama-server 子进程、没有 Python。视频抽帧 / 音轨
+抽取是唯一的外部子进程（ffmpeg）—— 短命的 spawn-and-wait，不常驻。
 
 ```
 ┌───────────────────────────────────────────────────┐
@@ -506,12 +570,12 @@ v0.2 是**单 Electron 进程**：main 同时负责 UI 路由、SQLite、ONNX �
 │        │                                          │
 │        ▼   onnxruntime-node / 🤗 Transformers.js  │
 │  ┌──────────────────────────────────────────────┐ │
-│  │ SigLIP 2 / SCRFD / MobileFaceNet / PaddleOCR │ │
+│  │ EmbeddingGemma 2 / SCRFD / MobileFace / OCR  │ │
 │  └──────────────────────────────────────────────┘ │
 │        │   spawn (fire-and-wait)                  │
 │        ▼                                          │
 │  ┌──────────────┐                                 │
-│  │ ffmpeg-static│  仅在抽视频帧时启动              │
+│  │ ffmpeg-static│  仅在抽视频帧 / 音轨时启动       │
 │  └──────────────┘                                 │
 └──────────────┬────────────────────────────────────┘
                │ contextBridge + ipcMain/Renderer
@@ -552,9 +616,9 @@ window.api = {
   mergePeople(target, sources[]) / getFaceThumbnail(faceId)
   getPhotoFaces(photoId)
 
-  // 模型状态 / Embedding provider 切换
-  getModelStatus() / getEmbeddingConfig() / setEmbeddingConfig(c|null)
-  testEmbeddingApi()
+  // 模型状态 / 量化档位（EmbeddingGemma 2，纯本地）
+  getModelStatus() / getEmbeddingConfig() / setEmbeddingConfig(quantPatch)
+  openSourceVideo(videoId)
 
   // 进度
   onIndexProgress(cb)  // → { stage, totalPhotos, indexedPhotos, ocrPhotos, ... }
@@ -562,7 +626,8 @@ window.api = {
 ```
 
 > 历史 channel（`download-model` / `download-llama-server` /
-> `init-caption-generator` / `regenerate-caption` 等）已在 PR2 全部删除，
+> `init-caption-generator` / `regenerate-caption` 等）已在 PR2 全部删除；
+> `test-embedding-api` 随 API provider 在 2026-10 重构中删除，
 > renderer 不再持有对应回调。
 
 ### 4.3 Indexer 任务流水线
@@ -583,7 +648,7 @@ indexer.processNext() loop:
                             → <userData>/thumbnails/<hash>.webp
   embed                   processEmbedding
                             decodeImage()
-                            getEmbeddingService().encodeImage(decoded)
+                            getEmbeddingService().encodeImage(decoded)   ← EmbeddingGemma 2
                             → db.saveImageVec(hash, Float32Array<768>)
   face                    processFace
                             decodeImage()
@@ -595,10 +660,16 @@ indexer.processNext() loop:
                             processPhotoOcr()        ← det/cls/rec
                             → db.saveOcrText(hash, joined)
   extract_frames          processExtractFrames (task.photoId 是 videos.id)
-                            extractKeyframes()       ← ffmpeg-static
-                            → 每帧落 <userData>/video_frames/<vh>/<ms>.jpg
-                            → 每帧 addPhoto(videoCtx={videoId, frameTimeMs})
-                            → 每帧 enqueue('thumbnail', 'embed')
+                            清理旧 segments + 旧帧 photo 行 + 帧目录
+                            probeDurationMs()        ← 无时长 → frameCount=0 返回
+                            for 每个 32s 片段:
+                              extractKeyframes({startSec, durationSec, 1fps, ≤32})
+                              首段：首帧 → segment_0_0ms.jpg → addPhoto(videoId, 0)
+                                    → enqueue('thumbnail', 'embed')（编码前写入）
+                              extractAudioTrack()    ← 失败则纯视频
+                              encode(multimodal) / encodeVideo()
+                              → db.saveVideoSegment(videoId, startMs, endMs, hash, vec)
+                            frameCount = 片段数
 
   caption                 legacy queue 残留，直接 completeTask
 ```
@@ -624,7 +695,8 @@ indexer.processNext() loop:
 | 其它 | 忽略 |
 
 视频条目的 `file_hash` 用 `(path|size|mtime)` 轻量哈希，避免 watcher 在
-GB 级文件上读取全部字节阻塞。真正的内容 hash 在 indexer 抽出帧后逐帧算。
+GB 级文件上读取全部字节阻塞。代表帧的内容 hash 在 indexer 抽帧后计算；
+片段 hash = hash(视频 hash + 时间区间)。
 
 ### 4.5 搜索引擎
 
@@ -633,16 +705,21 @@ GB 级文件上读取全部字节阻塞。真正的内容 hash 在 indexer 抽�
 async search(query, limit, options) {
   if (!query.trim()) return getRecentPhotos(limit) // 含日期过滤分支
 
-  const [vec, captionBm25, ocrBm25, fileName] = await Promise.all([
-    searchByVector(query, limit * 2),       // SigLIP text encoder → vec0 KNN
-    db.searchByText(query, limit * 2),      // captions_fts BM25
-    db.searchByOcr(query, limit * 2),       // image_ocr_fts BM25
-    db.searchByFileName(query, limit * 2),  // LIKE %query%
-  ])
+  const queryVec = await this.encodeQuery(query)        // 模型未就绪 → null，向量通道为空
+  const vec      = this.searchByVector(queryVec, limit * 2)
+  const segments = this.searchVideoSegments(queryVec, limit * 2) // 每视频最佳片段
+  const ocrBm25  = db.searchByOcr(query, limit * 2)       // image_ocr_fts BM25
+  const fileName = db.searchByFileName(query, limit * 2)  // LIKE %query%
+
+  // 片段 → 视频代表帧（第一个未删除的帧 photo）的 fileHash
+  const segmentHits = segments.flatMap((seg) => {
+    const frame = db.getFramePhotosByVideo(seg.videoId).find((p) => !p.deletedAt)
+    return frame ? [{ fileHash: frame.fileHash, distance: seg.distance }] : []
+  })
 
   const fused = rrfFuse([
     [...vec].sort((a, b) => a.distance - b.distance),
-    [...captionBm25].sort((a, b) => b.score - a.score),
+    segmentHits,
     [...ocrBm25].sort((a, b) => b.score - a.score),
     fileName,
   ], 60)
@@ -682,10 +759,10 @@ async search(query, limit, options) {
 | decodeImage | < 5 ms (JPEG) / ~200 ms (HEIC via sips) / ~600 ms (HEIC via heic-convert WASM) | |
 | parseAndUpdateMeta | ~10 ms | exifr |
 | generateThumbnail | ~20 ms | sharp resize → webp 512px |
-| processEmbedding | ~80 ms CPU / ~25 ms CoreML | SigLIP 2 |
+| processEmbedding | 待测 | EmbeddingGemma 2 视觉 q4（旧 SigLIP 2 为 ~80 ms CPU / ~25 ms CoreML） |
 | processFace（按需） | ~30 ms / 张（不含 detect） | SCRFD + MobileFaceNet |
 | processOcr（按需） | ~150–400 ms / 张 | PaddleOCR det+rec |
-| 单视频抽帧 | ~2 s + (每帧 embedding ~80 ms) | ffmpeg + 20 帧上限 |
+| 单视频片段（32s） | 待测 | ffmpeg 抽 ≤32 帧 + 音轨 + 一次多模态编码 |
 
 ### 5.2 大库性能 (PR5 前后)
 
@@ -700,21 +777,22 @@ async search(query, limit, options) {
 | 组件 | 内存（M2 实测，加载完） |
 |---|---|
 | Electron 基础 + React UI | ~250 MB |
-| SigLIP 2 模型（q8 + tokenizer + processor） | ~400 MB |
+| EmbeddingGemma 2（q4/q4/q8 + tokenizer + processor） | 待测（权重 ~620 MB，预计显著高于旧 SigLIP 2 的 ~400 MB） |
 | onnxruntime + face / OCR sessions | ~150 MB |
 | SQLite WAL + caches | < 100 MB |
-| **稳态总计** | **< 1 GB** |
+| **稳态总计** | **待测**（旧 SigLIP 2 版本 < 1 GB） |
 
-视频抽帧期间 ffmpeg 短暂吃额外 ~100 MB，结束后释放。
+视频抽帧 / 音轨抽取期间 ffmpeg 短暂吃额外内存，结束后释放。
 
 ### 5.4 已应用的优化
 
-1. **模型预热**：jieba + SigLIP 2 在启动后 fire-and-forget 预加载
+1. **模型预热**：jieba + EmbeddingGemma 2 在启动后 fire-and-forget 预加载
 2. **SQL UDF `deterministic: true`**：FTS5 触发器密集写入时缓存 jieba 结果
 3. **decodeImage 单读**：避免对 HEIC 重复触发 sharp metadata 探测
 4. **缩略图共享**：按 file_hash 复用，重复文件零额外存储
-5. **vec0 ANN**：所有向量搜索（image + face）O(log N)
-6. **CoreML execution provider 优先**：Apple Silicon 上 ONNX 3-4x 加速
+5. **vec0 ANN**：所有向量搜索（image + video segment + face）走 vec0
+6. **query 只编码一次**：图像通道与视频片段通道共享同一个 query 向量
+7. **CoreML execution provider 优先**：Apple Silicon 上 ONNX 3-4x 加速
 
 ### 5.5 仍是单线程的部分（后续优化方向）
 
@@ -799,43 +877,34 @@ app.on('ready', () => {
 ```
 vixel/
 ├── src/
-│   ├── main/                      # Electron 主进程
-│   │   ├── index.ts               # 入口
-│   │   ├── ipc.ts                 # IPC 处理
-│   │   ├── db/
-│   │   │   ├── index.ts           # 数据库初始化
-│   │   │   ├── schema.ts          # 建表 SQL
-│   │   │   └── migrations/
-│   │   ├── services/
-│   │   │   ├── indexer.ts         # 索引调度
-│   │   │   ├── embedding.ts       # SigLIP + EmbeddingGemma
-│   │   │   ├── caption.ts         # Qwen3.5-4B
-│   │   │   ├── search.ts          # 搜索引擎
-│   │   │   ├── watcher.ts         # 文件监听
-│   │   │   └── thumbnail.ts       # 缩略图生成
-│   │   └── workers/
-│   │       └── indexWorker.ts     # AI 推理 Worker
-│   ├── preload/
-│   │   └── index.ts               # 预加载脚本
-│   ├── renderer/                  # React 前端
-│   │   ├── App.tsx
-│   │   ├── components/
-│   │   │   ├── SearchBar.tsx
-│   │   │   ├── PhotoGrid.tsx
-│   │   │   ├── PhotoDetail.tsx
-│   │   │   ├── FolderManager.tsx
-│   │   │   └── IndexProgress.tsx
-│   │   ├── hooks/
-│   │   │   ├── useSearch.ts
-│   │   │   └── useIndexProgress.ts
-│   │   └── styles/
-│   │       └── globals.css
-│   └── shared/
-│       └── types.ts               # 共享类型定义
-├── resources/                     # 静态资源
+│   ├── main/index.ts              # Electron 入口 + IPC handlers + vixel:// 协议
+│   ├── preload/index.ts           # contextBridge 暴露 window.api
+│   ├── shared/types.ts            # main / renderer 共享类型
+│   ├── cli/index.ts               # 命令行入口
+│   ├── core/
+│   │   ├── db.ts                  # SQLite schema + 全部查询
+│   │   ├── watcher.ts             # chokidar；classifyMedia(image/video)
+│   │   ├── indexer.ts             # 任务队列 + 各阶段 handler（含视频片段流水线）
+│   │   ├── search.ts              # 4-way RRF
+│   │   ├── fusion.ts              # 纯函数 rrfFuse()
+│   │   ├── backup.ts              # SQLite 在线备份 + 轮换
+│   │   ├── embedding/
+│   │   │   ├── index.ts           # EmbeddingService 单例 + embedding-config.json
+│   │   │   ├── types.ts           # EmbeddingInput / 维度常量
+│   │   │   └── providers/gemma2Provider.ts  # EmbeddingGemma 2（唯一 provider）
+│   │   ├── video/extract.ts       # 片段抽帧 + probeDurationMs
+│   │   ├── audio/extract.ts       # 音轨抽取（mono 16 kHz f32le）
+│   │   ├── face/                  # SCRFD + MobileFaceNet + ANN 匹配
+│   │   ├── ocr/                   # PaddleOCR det / cls / rec
+│   │   ├── image/decode.ts        # sharp + sips / heic-convert 兜底
+│   │   └── text/                  # jieba 分词 + FTS5 query 转义
+│   └── renderer/src/              # React 前端
+│       ├── App.tsx
+│       └── components/            # SearchBar / PhotoGrid / PhotoDetail / MapView /
+│                                  # PeopleView / FolderManager / IndexProgress / ModelStatus
+├── scripts/download-models.mjs    # 模型下载（gemma2 / paddleocr / face）
+├── resources/models/              # 开发期模型目录
 ├── electron.vite.config.ts
-├── tailwind.config.js
-├── tsconfig.json
 └── package.json
 ```
 
@@ -847,12 +916,19 @@ vixel/
 | P0 | SQLite + sqlite-vec 集成 | 1 天 |
 | P0 | 照片导入 + 文件扫描 + EXIF 解析 | 2 天 |
 | P0 | chokidar 文件监听 | 1 天 |
-| P0 | SigLIP 2 ONNX 集成 | 2 天 |
+| P0 | ~~SigLIP 2 ONNX 集成~~ | ~~2 天~~ **已被 EmbeddingGemma 2 取代** |
+| P0 | EmbeddingGemma 2 provider（文本 / 图像 / 音频 / 视频） | ✅ 已完成 |
+| P0 | 视频 32s 片段 + 音轨抽取 + video_segments 存储 | ✅ 已完成 |
+| P0 | 搜索：删 caption 通道，加视频片段通道，query 单次编码 | ✅ 已完成 |
+| P0 | 删除外部 Embedding API provider；设置页改为量化档位选择 | ✅ 已完成 |
+| P0 | gemma2Provider 端到端冒烟（真实模型文件 + 多模态编码） | 待做 |
+| P1 | 检索质量验证（~200 图 + ~30 中文 query）；性能 / 内存实测回填 §5 | 待做 |
+| P1 | 模型未就绪时视频片段任务应失败重试，而非静默完成 | 待做 |
 | P0 | 向量存取 + 基础搜索 | 2 天 |
 | P0 | 搜索 UI + 结果展示 | 2 天 |
-| P1 | EmbeddingGemma 文本向量化 | 1 天 |
-| P1 | Qwen3.5-4B Caption 生成 | 3 天 |
-| P1 | 双路搜索 + RRF 融合 | 1 天 |
+| P1 | ~~EmbeddingGemma 文本向量化~~ | ~~1 天~~ **已删除** |
+| P1 | ~~Qwen3.5-4B Caption 生成~~ | ~~3 天~~ **已删除** |
+| P1 | 多路搜索 + RRF 融合 | 1 天 |
 | P1 | 缩略图生成 + 虚拟列表 | 2 天 |
 | P1 | PhotoDetail + EXIF 展示 | 1 天 |
 | P2 | 索引进度条 | 1 天 |

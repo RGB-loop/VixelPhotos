@@ -8,7 +8,6 @@
 
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { readFile } from 'fs/promises'
 import { initDetection, isDetectionReady, detectFaces } from './detection'
 import { initFaceEmbedding, isEmbeddingReady, embedFace } from './embedding'
 import { alignFace, cropFace } from './alignment'

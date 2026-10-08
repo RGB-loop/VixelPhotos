@@ -10,9 +10,10 @@ without sending a single byte to the cloud.
 ## Features
 
 - **Semantic Search** — Type "sunset over the ocean" and find matching
-  photos. Four-way hybrid: SigLIP 2 image-text vectors + caption BM25 +
-  OCR text BM25 + filename, fused with RRF. Works in 30+ languages
-  out of the box.
+  photos. Four-way hybrid: EmbeddingGemma 2 image vectors + video
+  segment vectors + OCR text BM25 + filename, fused with RRF. One
+  unified, multilingual embedding space for text, images, video and
+  audio.
 - **OCR (image text search)** — Local PaddleOCR v5 scans screenshots,
   receipts, posters, and signs. Find "2024 财报" inside a screenshot
   even if no one labelled it.
@@ -20,9 +21,10 @@ without sending a single byte to the cloud.
   sqlite-vec ANN clustering. Automatic person grouping, scales to
   50k+ faces. Manual merge and naming.
 - **Video Search** — Drop in `.mp4 / .mov / .webm / .mkv / .avi` and
-  Vixel extracts keyframes (every 5s, max 20 frames per video) and
-  runs them through the full image pipeline. Videos appear in search
-  results with a ▶ time-code badge.
+  Vixel cuts each video into 32s segments, samples 1 frame/s plus the
+  audio track, and embeds each segment as one vector with EmbeddingGemma 2
+  — so "dog barking at the beach" matches what is *heard* as well as
+  seen. Videos appear in search results with a ▶ badge.
 - **HEIC / RAW** — On macOS, HEIC + CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
   are decoded via system `sips`. EXIF (timestamps, GPS) preserved.
 - **Map View** — Photos with GPS data on an interactive dark map
@@ -42,7 +44,7 @@ without sending a single byte to the cloud.
 # Install dependencies
 npm install
 
-# Download local models (~210 MB total — SigLIP 2 + PaddleOCR)
+# Download local models (~640 MB total — EmbeddingGemma 2 + PaddleOCR)
 npm run models:download
 
 # Run in development
@@ -60,12 +62,9 @@ npm run build && npm run package
 4. (Optional) Switch to **People** view → **Start Face Scan**.
 
 No cloud, no API keys. All models live inside the app bundle.
-
-### Advanced: External Embedding API (optional fallback)
-
-If the bundled SigLIP 2 cannot run on your hardware, Settings →
-"高级：外部 Embedding API" lets you point Vixel at an OpenAI-compatible
-multimodal embedding endpoint (e.g. a self-hosted Qwen3-VL-Embedding).
+Settings → 模型 lets you pick q4 / q8 per encoder (text, vision, audio);
+the defaults are q4 / q4 / q8. `npm run models:download` fetches only the
+default files, so download the other variant before switching.
 
 ## Architecture
 
@@ -75,19 +74,20 @@ Electron App (single Node.js process)
 │   ├── SQLite + sqlite-vec (better-sqlite3)
 │   │   ├─ photos, faces, people, videos
 │   │   ├─ image_vecs   (vec0 ANN, 768d)
+│   │   ├─ video_segments + video_segment_vecs (vec0 ANN, 768d)
 │   │   ├─ face_vecs    (vec0 ANN, 128d)
-│   │   ├─ captions     + captions_fts   (FTS5 + jiebatok UDF)
+│   │   ├─ captions     (手写描述，不参与搜索)
 │   │   └─ image_ocr    + image_ocr_fts  (FTS5 + jiebatok UDF)
 │   ├── File Watcher (chokidar)              ← images + videos
 │   ├── Indexer pipeline
-│   │   thumbnail → embed → face → ocr + extract_frames
+│   │   thumbnail → embed → face → ocr + extract_frames (32s segments)
 │   ├── Search Engine (4-way RRF)
 │   ├── ONNX Runtime (onnxruntime-node + @huggingface/transformers)
-│   │   ├─ SigLIP 2 base/16-256             (image + text, ~190 MB)
+│   │   ├─ EmbeddingGemma 2                 (text/image/video/audio, ~620 MB)
 │   │   ├─ PaddleOCR v5 (det + cls + rec)   (~12 MB)
 │   │   ├─ SCRFD-2.5G-KPS                   (face detection, ~3 MB)
 │   │   └─ MobileFaceNet                    (face embedding, ~5 MB)
-│   └── ffmpeg-static (subprocess)           ← video keyframe extraction
+│   └── ffmpeg-static (subprocess)           ← video frames + audio track
 └── Renderer Process (React)
     └── PhotoGrid · MapView · PeopleView · PhotoDetail
 ```
@@ -97,7 +97,7 @@ Electron App (single Node.js process)
 ```
 # Inside the app bundle (read-only, ships with DMG)
 Vixel.app/Contents/Resources/models/
-├── siglip2/             # ~190 MB ONNX (q8)
+├── gemma2/              # ~620 MB ONNX (text/vision q4, audio q8)
 ├── paddleocr/           # ~12 MB ONNX + charset
 ├── scrfd_2.5g_kps.onnx
 └── mobilefacenet.onnx
@@ -106,8 +106,8 @@ Vixel.app/Contents/Resources/models/
 ~/Library/Application Support/vixel/   # macOS
 ├── library.db                # SQLite (WAL)
 ├── thumbnails/<hash>.webp    # shared, hash-keyed
-├── video_frames/<vh>/<ms>.jpg
-└── embedding-config.json     # only when user opts into API fallback
+├── video_frames/<vh>/segment_0_0ms.jpg   # representative frame
+└── embedding-config.json     # quantization choices (q4/q8 per encoder)
 ```
 
 ### Tech Stack
@@ -118,7 +118,7 @@ Vixel.app/Contents/Resources/models/
 - **Image processing**: sharp (libvips, EXIF auto-rotate) + system `sips`
   fallback for HEIC/RAW on macOS
 - **AI**: onnxruntime-node + @huggingface/transformers
-  (SigLIP 2, PaddleOCR v5, SCRFD, MobileFaceNet)
+  (EmbeddingGemma 2, PaddleOCR v5, SCRFD, MobileFaceNet)
 - **Video**: ffmpeg-static (per-platform prebuilt binary)
 - **Maps**: Leaflet + leaflet.markercluster
 - **File hashing**: xxhash-wasm
@@ -143,10 +143,11 @@ src/
 │   ├── indexer.ts             # Task queue + per-stage handlers
 │   ├── search.ts              # 4-way RRF
 │   ├── fusion.ts              # Pure rrfFuse()  (7 unit tests)
-│   ├── embedding/             # SigLIP 2 (onnx) + optional API provider
+│   ├── embedding/             # EmbeddingGemma 2 provider (onnx, fully local)
 │   ├── face/                  # SCRFD + MobileFaceNet + ANN matcher
 │   ├── ocr/                   # PaddleOCR det / cls / rec / orchestrator
-│   ├── video/                 # ffmpeg-static keyframe extractor
+│   ├── video/                 # ffmpeg-static segment frame extractor + duration probe
+│   ├── audio/                 # ffmpeg-static audio track extractor (16 kHz mono)
 │   ├── image/decode.ts        # sharp + sips fallback decoder
 │   └── text/
 │       ├── tokenize.ts        # jieba helper (4 tests)

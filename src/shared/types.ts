@@ -17,7 +17,6 @@ export interface Photo {
   lng?: number
   caption?: string
   embedStatus: 'pending' | 'done' | 'error'
-  captionStatus: 'pending' | 'done' | 'error'
   faceStatus?: 'pending' | 'done' | 'error'
   faceCount?: number
   duplicateCount?: number
@@ -73,7 +72,6 @@ export interface IndexProgress {
   totalPhotos: number           // 总照片数
   thumbnailedPhotos: number     // 已生成缩略图的照片数
   indexedPhotos: number         // 已完成 embedding 的照片数
-  captionedPhotos: number       // 已生成 AI 描述的照片数
 
   // 当前状态
   stage: 'idle' | 'indexing' | 'ocr' | 'detecting_faces'
@@ -133,10 +131,9 @@ export const IPC_CHANNELS = {
   GET_APP_PATH: 'get-app-path',
   GET_MODEL_STATUS: 'get-model-status',
 
-  // Embedding（默认本地 SigLIP 2；可切外部 API 兜底）
+  // Embedding（EmbeddingGemma 2，纯本地；可调量化档位）
   GET_EMBEDDING_CONFIG: 'get-embedding-config',
   SET_EMBEDDING_CONFIG: 'set-embedding-config',
-  TEST_EMBEDDING_API: 'test-embedding-api',
 
   // Caption（v0.2：仅手动编辑，无自动生成）
   UPDATE_CAPTION: 'update-caption',
@@ -169,22 +166,24 @@ export const IPC_CHANNELS = {
 
 export interface ModelStatus {
   modelsDir: string
-  providerType: 'onnx-local' | 'api'
-  localModelExists: boolean   // resources/models/siglip2/ 是否存在
+  providerType: 'gemma2-local'
+  localModelExists: boolean   // resources/models/gemma2/ 是否存在
   embeddingReady: boolean
-  apiConfigured: boolean
-  apiEndpoint?: string
+  textQuantization?: 'q4' | 'q8'
+  visionQuantization?: 'q4' | 'q8'
+  audioQuantization?: 'q4' | 'q8'
   initError: string | null
 }
 
-export interface EmbeddingApiConfig {
-  endpoint: string
-  apiKey?: string
-  model?: string
+export interface EmbeddingQuantizationConfig {
+  textQuantization?: 'q4' | 'q8'
+  visionQuantization?: 'q4' | 'q8'
+  audioQuantization?: 'q4' | 'q8'
+  device?: 'cpu' | 'webgpu'
 }
 
 // Embedding provider 选项（renderer 用来切换 UI 状态）
-export type EmbeddingProviderType = 'onnx-local' | 'api'
+export type EmbeddingProviderType = 'gemma2-local'
 
 export interface BackupStatus {
   lastBackupAt: number | null    // epoch ms
@@ -223,4 +222,4 @@ export interface Person {
 }
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'
-export type TaskType = 'thumbnail' | 'embed' | 'caption' | 'face' | 'ocr' | 'extract_frames'
+export type TaskType = 'thumbnail' | 'embed' | 'face' | 'ocr' | 'extract_frames'

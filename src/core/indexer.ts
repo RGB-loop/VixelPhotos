@@ -11,7 +11,8 @@ import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 import { decodeImage } from './image/decode'
-import { extractKeyframes, isFfmpegAvailable } from './video/extract'
+import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
+import { extractAudioTrack } from './audio/extract'
 
 // xxHash 懒加载（与 watcher 共用语义；模块级单例避免重复 init）
 let _hasher: ((input: Uint8Array) => string) | null = null
@@ -23,10 +24,9 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
 }
 
 /**
- * Indexer 流水线（v0.2，纯本地，无 LLM）：
- *   thumbnail → embed (SigLIP 2) → face (按需)
- *
- * caption 由用户手动编辑或后续 OCR (PR3) 填充；此处不再生成。
+ * Indexer 流水线（纯本地，无 LLM）：
+ *   图片：thumbnail → embed (EmbeddingGemma 2) → face / ocr (按需)
+ *   视频：extract_frames → 32s 片段（帧序列 + 音轨）→ EmbeddingGemma 2 → video_segments
  */
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
@@ -87,7 +87,7 @@ export class Indexer extends EventEmitter {
       if (!isOcrReady()) {
         const ok = await initOcrService()
         if (!ok) {
-          // 没装 OCR 模型：不抛错，静默跳过（caption FTS5 + vec 仍可用）
+          // 没装 OCR 模型：不抛错，静默跳过（向量 + 文件名通道仍可用）
           return
         }
       }
@@ -107,12 +107,12 @@ export class Indexer extends EventEmitter {
   }
 
   /**
-   * 处理 'extract_frames' 任务：用 ffmpeg 抽 N 帧 → 写到
-   * <userData>/video_frames/<videoHash>/<frameTimeMs>.jpg
-   * → 每帧 addPhoto + 入 thumbnail/embed 队列。
+   * 处理 'extract_frames' 任务：
+   *   1. 视频切分 32s 片段 → 抽帧序列 + 音轨 → Gemma2 多模态编码 → video_segments 表
+   *   2. 全视频首帧抽取 → 缩略图（UI 展示用）
    *
-   * 帧本身有 file_path（存在磁盘上），所以下游 thumbnail/embed/ocr/face
-   * 流水线无任何修改照样跑。
+   * 帧本身仍写到 <userData>/video_frames/<videoHash>/ 供缩略图和调试，
+   * 但不再为每帧单独生成 photo 行 + image embedding；搜索直接走 video_segments。
    */
   private async processExtractFrames(videoId: number): Promise<void> {
     const video = this.db.getVideoById(videoId)
@@ -124,9 +124,8 @@ export class Indexer extends EventEmitter {
 
     this.emitProgress('indexing', basename(video.filePath))
 
-    // 清掉该视频上一轮抽的帧（DB 行 + 孤立 hash 的内容 GC + 共享缩略图）
-    // 然后再 rm 整个 framesDir，确保磁盘和 DB 状态一致。
-    // 首次抽帧时 removeFramesForVideo 返回空，相当于 no-op。
+    // 清理该视频上一轮的片段向量 + 抽帧（DB + 磁盘）
+    this.db.deleteVideoSegments(videoId)
     const orphanedOldHashes = this.db.removeFramesForVideo(videoId)
     for (const hash of orphanedOldHashes) {
       const thumb = this.getThumbnailPath(hash)
@@ -141,12 +140,28 @@ export class Indexer extends EventEmitter {
       } catch { /* best-effort */ }
     }
 
-    const frames = await extractKeyframes(video.filePath, {})
-    if (frames.length === 0) {
-      // 空视频 / 损坏；标记 frame_count=0 让搜索界面知道这个视频确实扫过了但没内容
-      this.db.updateVideoMeta(videoId, { frameCount: 0 })
-      return
+    let durationMs = video.durationMs ?? 0
+    if (durationMs <= 0) {
+      durationMs = (await probeDurationMs(video.filePath)) ?? 0
+      if (durationMs <= 0) {
+        // 读不到时长 → 视频损坏 / 无效；frame_count=0 表示"扫过了但没内容"
+        this.db.updateVideoMeta(videoId, { frameCount: 0 })
+        return
+      }
+      this.db.updateVideoMeta(videoId, { durationMs })
     }
+
+    // 模型没就绪时只落代表帧（让视频出现在网格里），然后抛错：
+    // 否则每个片段都静默失败、任务却标 done，视频永远没有片段向量。
+    // 任务记 error，下次启动 requeueMissingEmbeddings 按"有时长、无片段"重新排队。
+    const embeddingService = getEmbeddingService()
+    await embeddingService.init()
+    const modelReady = embeddingService.isReady()
+
+    // processor_config 的 video_processor.max_frames = 32，超出会被均匀降采样，
+    // 所以 1fps 下片段取 32s：32 帧 × 140 token + 32s 音频 ≈ 800 token ≈ 5.3K < 8K context
+    const SEGMENT_DURATION_SEC = 32
+    const numSegments = Math.max(1, Math.ceil(durationMs / 1000 / SEGMENT_DURATION_SEC))
 
     if (!existsSync(framesDir)) {
       await mkdir(framesDir, { recursive: true })
@@ -154,35 +169,93 @@ export class Indexer extends EventEmitter {
 
     const hasher = await getXxhasher()
 
-    for (const frame of frames) {
-      const frameFileName = `${frame.timestampMs}.jpg`
-      const framePath = join(framesDir, frameFileName)
-      // 帧 hash 用 JPEG 字节，做内容级 dedup（同一帧出现在两个视频里也共享 embedding）
-      const frameHash = hasher(new Uint8Array(frame.buffer.buffer, frame.buffer.byteOffset, frame.buffer.byteLength))
+    // 为每个片段：抽帧序列 + 音轨 → Gemma2 多模态编码
+    for (let i = 0; i < numSegments; i++) {
+      const startMs = i * SEGMENT_DURATION_SEC * 1000
+      const endMs = Math.min((i + 1) * SEGMENT_DURATION_SEC * 1000, durationMs)
+      const segmentDurationSec = (endMs - startMs) / 1000
 
-      // 已存在的帧（如：之前部分跑完崩了再重试）跳过写盘
-      if (!existsSync(framePath)) {
-        await writeFile(framePath, frame.buffer)
-      }
+      try {
+        // 抽该片段的帧（1fps）
+        const frames = await extractKeyframes(video.filePath, {
+          startSec: startMs / 1000,
+          durationSec: segmentDurationSec,
+          intervalSec: 1,
+          maxFrames: SEGMENT_DURATION_SEC,
+          maxSide: 512,
+        })
 
-      const photoId = this.db.addPhoto(
-        video.folderId, framePath, frameFileName,
-        frame.buffer.byteLength, Date.now(), frameHash,
-        { videoId, frameTimeMs: frame.timestampMs }
-      )
+        if (frames.length === 0) {
+          // 空片段 / 损坏部分 → 跳过，不保存 segment 行
+          continue
+        }
 
-      // dedup：同内容的帧已有 embedding 就直接复用
-      const { hasEmbedding } = this.db.hasContentForHash(frameHash)
-      if (hasEmbedding) {
-        this.db.updateEmbedStatusByHash(frameHash)
-        this.db.addToQueue(photoId, 'thumbnail', 20)
-      } else {
-        this.db.addToQueue(photoId, 'thumbnail', 20)
-        this.db.addToQueue(photoId, 'embed', 10)
+        // 首段的首帧先落成代表 photo —— 放在编码之前，
+        // 这样即便模型没就绪 / 编码失败，视频依然出现在网格里。
+        if (i === 0) {
+          const firstFrameFileName = `segment_${i}_0ms.jpg`
+          const firstFramePath = join(framesDir, firstFrameFileName)
+          if (!existsSync(firstFramePath)) {
+            await writeFile(firstFramePath, frames[0].buffer)
+          }
+          const frameHash = hasher(new Uint8Array(frames[0].buffer.buffer, frames[0].buffer.byteOffset, frames[0].buffer.byteLength))
+
+          // 首帧作为视频的代表 photo：网格缩略图、搜索结果落点、"相似照片"入口。
+          // 它也走一遍图片 embed，否则 requeueMissingEmbeddings 启动时还会补排。
+          const photoId = this.db.addPhoto(
+            video.folderId, firstFramePath, firstFrameFileName,
+            frames[0].buffer.byteLength, Date.now(), frameHash,
+            { videoId, frameTimeMs: 0 }
+          )
+          this.db.addToQueue(photoId, 'thumbnail', 20)
+          if (this.db.hasContentForHash(frameHash).hasEmbedding) {
+            this.db.updateEmbedStatusByHash(frameHash)
+          } else {
+            this.db.addToQueue(photoId, 'embed', 10)
+          }
+        }
+
+        if (!modelReady) break
+
+        const frameBuffers = frames.map((f) => f.buffer)
+
+        // 提取该片段的音轨（mono 16kHz f32le）
+        let audioSamples: Float32Array | null = null
+        try {
+          audioSamples = await extractAudioTrack(video.filePath, {
+            startSec: startMs / 1000,
+            durationSec: segmentDurationSec,
+          })
+        } catch (audioError) {
+          console.warn(`Audio extraction failed for segment ${i} of ${video.filePath}:`, audioError)
+          // 无音轨 / 损坏音频 → 仅视觉模态继续
+        }
+
+        // Gemma2 多模态编码：帧序列 + 音轨 → 单向量；无音轨时退化为纯视觉
+        const clip = { frames: frameBuffers, durationSec: segmentDurationSec }
+        const embedding = audioSamples && audioSamples.length > 0
+          ? await embeddingService.encode({ type: 'multimodal', video: clip, audio: audioSamples })
+          : await embeddingService.encodeVideo(clip.frames, clip.durationSec)
+
+        // segment hash = hash(视频 hash + 时间区间)：同一视频文件被多处引用时可复用
+        const segmentKey = `${video.fileHash}_${startMs}_${endMs}`
+        const segmentHash = hasher(Buffer.from(segmentKey, 'utf8'))
+
+        // 保存到 video_segments + video_segment_vecs
+        this.db.saveVideoSegment(videoId, startMs, endMs, segmentHash, embedding)
+
+      } catch (segmentError) {
+        console.error(`Error processing segment ${i} of ${video.filePath}:`, segmentError)
+        // 单片段失败 → 跳过，继续下一片段
       }
     }
 
-    this.db.updateVideoMeta(videoId, { frameCount: frames.length })
+    if (!modelReady) {
+      throw new Error(`Embedding model not ready: ${embeddingService.getInitError() ?? 'unknown'}`)
+    }
+
+    // 更新视频元数据：frameCount 现在表示片段数而非帧数
+    this.db.updateVideoMeta(videoId, { frameCount: numSegments })
   }
 
   private async processFace(fileHash: string, filePath: string): Promise<void> {
@@ -293,9 +366,6 @@ export class Indexer extends EventEmitter {
           this.emitProgress('ocr', photo.fileName)
           await this.processOcr(photo.fileHash, photo.filePath)
           this.db.completeTask(task.id)
-        } else if (task.taskType === 'caption') {
-          // legacy 队列条目：直接 drop（v0.2 不再生成 caption）
-          this.db.completeTask(task.id)
         }
       }
     } catch (error) {
@@ -396,7 +466,6 @@ export class Indexer extends EventEmitter {
       totalPhotos: photoStats.uniqueTotal,
       thumbnailedPhotos: photoStats.thumbnailed,
       indexedPhotos: photoStats.indexed,
-      captionedPhotos: photoStats.captioned,
       ocrPhotos: photoStats.ocred,
       stage,
       currentFile,

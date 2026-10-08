@@ -1,24 +1,27 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { ModelStatus as ModelStatusType, EmbeddingApiConfig, BackupStatus } from '../../../shared/types'
+import type { ModelStatus as ModelStatusType, EmbeddingQuantizationConfig, BackupStatus } from '../../../shared/types'
+
+type Quant = 'q4' | 'q8'
+const QUANT_FIELDS: Array<{ key: 'textQuantization' | 'visionQuantization' | 'audioQuantization'; label: string }> = [
+  { key: 'textQuantization', label: '文本' },
+  { key: 'visionQuantization', label: '图像/视频' },
+  { key: 'audioQuantization', label: '音频' },
+]
 
 /**
- * 模型状态面板（v0.2）
+ * 模型状态面板
  *
- * 主路径：本地 SigLIP 2 ONNX（默认）
- * 高级：可切到外部 OpenAI 兼容多模态 Embedding API
+ * 唯一 embedding 通道：本地 EmbeddingGemma 2（文本/图像/音频/视频，768D）
+ * 高级：调整各编码器的量化档位（q4 更小更快，q8 更准）
  */
 export function ModelStatus(): JSX.Element {
   const [status, setStatus] = useState<ModelStatusType | null>(null)
   const [loading, setLoading] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const [apiConfig, setApiConfig] = useState<EmbeddingApiConfig>({
-    endpoint: '',
-    apiKey: '',
-    model: '',
-  })
+  const [quantConfig, setQuantConfig] = useState<EmbeddingQuantizationConfig>({})
   const [saving, setSaving] = useState(false)
-  const [testResult, setTestResult] = useState<string | null>(null)
+  const [saveResult, setSaveResult] = useState<string | null>(null)
   const [ocrScanState, setOcrScanState] = useState<{ scanning: boolean; message: string | null }>({
     scanning: false,
     message: null,
@@ -32,11 +35,8 @@ export function ModelStatus(): JSX.Element {
       const result = await window.api.getModelStatus()
       setStatus(result)
 
-      const existing = await window.api.getEmbeddingConfig()
-      if (existing) {
-        setApiConfig(existing)
-        setShowAdvanced(true)
-      }
+      const qc = await window.api.getEmbeddingConfig()
+      setQuantConfig(qc)
 
       const bs = await window.api.getBackupStatus()
       setBackupStatus(bs)
@@ -71,28 +71,12 @@ export function ModelStatus(): JSX.Element {
     }
   }
 
-  const switchToLocal = async (): Promise<void> => {
+  const saveQuantization = async (patch: EmbeddingQuantizationConfig): Promise<void> => {
     setSaving(true)
-    setTestResult(null)
+    setSaveResult(null)
     try {
-      const r = await window.api.setEmbeddingConfig(null)
-      setTestResult(r.success ? '已切回本地模型' + (r.ready ? '（就绪）' : '') : `失败: ${r.error}`)
-      await loadStatus()
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const saveApiConfig = async (): Promise<void> => {
-    if (!apiConfig.endpoint) {
-      setTestResult('请输入 API Endpoint')
-      return
-    }
-    setSaving(true)
-    setTestResult(null)
-    try {
-      const r = await window.api.setEmbeddingConfig(apiConfig)
-      setTestResult(r.success ? '已切到 API' + (r.ready ? '（就绪）' : '') : `失败: ${r.error}`)
+      const r = await window.api.setEmbeddingConfig(patch)
+      setSaveResult(r.success ? '已切换量化档位' + (r.ready ? '（就绪）' : '') : `失败: ${r.error}`)
       await loadStatus()
     } finally {
       setSaving(false)
@@ -118,16 +102,6 @@ export function ModelStatus(): JSX.Element {
     }
   }
 
-  const testApi = async (): Promise<void> => {
-    setTestResult('测试中...')
-    try {
-      const r = await window.api.testEmbeddingApi()
-      setTestResult(r.success ? `API 正常，向量维度: ${r.dimension}` : `测试失败: ${r.error}`)
-    } catch (error) {
-      setTestResult(`测试失败: ${String(error)}`)
-    }
-  }
-
   if (loading) {
     return (
       <div className="p-5 text-center">
@@ -146,15 +120,14 @@ export function ModelStatus(): JSX.Element {
     )
   }
 
-  const isLocal = status.providerType === 'onnx-local'
-  const localReady = isLocal && status.localModelExists && status.embeddingReady
-  const localMissing = isLocal && !status.localModelExists
+  const localReady = status.localModelExists && status.embeddingReady
+  const localMissing = !status.localModelExists
 
   return (
     <div className="p-5 space-y-5">
       <div>
         <h3 className="text-xs font-semibold text-white/80 mb-0.5">语义搜索模型</h3>
-        <p className="text-[11px] text-white/30">本地 SigLIP 2 base/16-256 — 多语言、零网络</p>
+        <p className="text-[11px] text-white/30">本地 EmbeddingGemma 2 — 文本/图像/音频/视频统一检索、零网络</p>
       </div>
 
       {/* 主状态 */}
@@ -162,7 +135,7 @@ export function ModelStatus(): JSX.Element {
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${localReady ? 'bg-green-500' : localMissing ? 'bg-amber-500' : 'bg-white/15'}`} />
           <div className="flex-1">
-            {localReady && <p className="text-[11px] text-green-400/80">SigLIP 2 本地模型已就绪</p>}
+            {localReady && <p className="text-[11px] text-green-400/80">EmbeddingGemma 2 本地模型已就绪</p>}
             {localMissing && (
               <>
                 <p className="text-[11px] text-amber-400/80">模型文件缺失</p>
@@ -170,11 +143,6 @@ export function ModelStatus(): JSX.Element {
                   开发环境：执行 <code className="bg-white/5 px-1 rounded">node scripts/download-models.mjs</code>
                 </p>
               </>
-            )}
-            {!isLocal && (
-              <p className="text-[11px] text-white/60">
-                当前使用外部 API ({status.apiEndpoint || 'unset'})
-              </p>
             )}
             {status.initError && (
               <p className="text-[10px] text-red-400/80 mt-1">{status.initError}</p>
@@ -242,85 +210,48 @@ export function ModelStatus(): JSX.Element {
         )}
       </div>
 
-      {/* 高级：外部 API */}
+      {/* 高级：量化档位 */}
       <div className="pt-4 border-t border-white/5">
         <button
           onClick={() => setShowAdvanced((v) => !v)}
           className="text-[11px] text-white/40 hover:text-white/60 transition-colors"
         >
-          {showAdvanced ? '▾' : '▸'} 高级：外部 Embedding API
+          {showAdvanced ? '▾' : '▸'} 高级：量化档位
         </button>
 
         {showAdvanced && (
           <div className="mt-3 space-y-2.5">
             <p className="text-[10px] text-white/25">
-              切到外部多模态 Embedding API（OpenAI 兼容 messages 格式）。本地模型不可用时的兜底方案。
+              q4 更小更快，q8 精度更高。切换后模型会在下次搜索 / 索引时重新加载。
             </p>
 
-            <div>
-              <label className="block text-[10px] text-white/30 mb-1">API Endpoint</label>
-              <input
-                type="text"
-                value={apiConfig.endpoint}
-                onChange={(e) => setApiConfig({ ...apiConfig, endpoint: e.target.value })}
-                placeholder="http://localhost:8080/embeddings"
-                className="w-full px-2.5 py-1.5 text-xs bg-white/5 border border-white/8 rounded-md text-white/80 placeholder-white/20 focus:outline-none focus:border-white/20"
-              />
-            </div>
+            {QUANT_FIELDS.map(({ key, label }) => (
+              <div key={key} className="flex items-center justify-between">
+                <span className="text-[11px] text-white/50">{label}</span>
+                <div className="flex gap-1">
+                  {(['q4', 'q8'] as Quant[]).map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => saveQuantization({ [key]: q })}
+                      disabled={saving || quantConfig[key] === q}
+                      className={`py-1 px-2.5 text-[11px] rounded-md disabled:cursor-default ${
+                        quantConfig[key] === q
+                          ? 'bg-accent/20 text-accent'
+                          : 'bg-white/5 hover:bg-white/10 text-white/50 disabled:opacity-30'
+                      }`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
 
-            <div>
-              <label className="block text-[10px] text-white/30 mb-1">API Key（可选）</label>
-              <input
-                type="password"
-                value={apiConfig.apiKey || ''}
-                onChange={(e) => setApiConfig({ ...apiConfig, apiKey: e.target.value })}
-                placeholder="sk-..."
-                className="w-full px-2.5 py-1.5 text-xs bg-white/5 border border-white/8 rounded-md text-white/80 placeholder-white/20 focus:outline-none focus:border-white/20"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] text-white/30 mb-1">Model（可选）</label>
-              <input
-                type="text"
-                value={apiConfig.model || ''}
-                onChange={(e) => setApiConfig({ ...apiConfig, model: e.target.value })}
-                placeholder="qwen3-vl-embedding"
-                className="w-full px-2.5 py-1.5 text-xs bg-white/5 border border-white/8 rounded-md text-white/80 placeholder-white/20 focus:outline-none focus:border-white/20"
-              />
-            </div>
-
-            {testResult && (
-              <p className={`text-[11px] ${testResult.includes('失败') || testResult.includes('请输入') ? 'text-red-400' : 'text-green-400'}`}>
-                {testResult}
+            {saveResult && (
+              <p className={`text-[11px] ${saveResult.startsWith('失败') ? 'text-red-400' : 'text-green-400'}`}>
+                {saveResult}
               </p>
             )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={saveApiConfig}
-                disabled={saving || !apiConfig.endpoint}
-                className="flex-1 py-1.5 px-3 bg-accent/20 hover:bg-accent/30 disabled:opacity-30 text-accent text-xs rounded-md"
-              >
-                {saving ? '保存中...' : '使用 API'}
-              </button>
-              <button
-                onClick={testApi}
-                disabled={!status.apiConfigured}
-                className="py-1.5 px-3 bg-white/5 hover:bg-white/10 disabled:opacity-30 text-white/50 text-xs rounded-md"
-              >
-                测试
-              </button>
-              {!isLocal && (
-                <button
-                  onClick={switchToLocal}
-                  disabled={saving}
-                  className="py-1.5 px-3 bg-white/5 hover:bg-white/10 disabled:opacity-30 text-white/50 text-xs rounded-md"
-                >
-                  切回本地
-                </button>
-              )}
-            </div>
           </div>
         )}
       </div>

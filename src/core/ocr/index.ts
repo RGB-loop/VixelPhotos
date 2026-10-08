@@ -10,7 +10,7 @@
  *     ├── ppocr_v5_cls.onnx       (可选；缺则跳过 180° 检测)
  *     └── ppocr_keys_v1.txt
  *
- * 全部 ONNX，由 onnxruntime-node 加载；与 SigLIP 2 / 人脸模型共享同一推理栈。
+ * 全部 ONNX，由 onnxruntime-node 加载；与人脸模型共享同一推理栈。
  */
 
 import { existsSync } from 'fs'

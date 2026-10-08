@@ -5,7 +5,7 @@
  * 下载 Vixel 所需的全部本地模型到 resources/models/：
  *
  *   resources/models/
- *     ├── siglip2/                          (~190 MB)  图文 CLIP
+ *     ├── gemma2/                           (~620 MB)  多模态 embedding（文本/图像/音频/视频）
  *     └── paddleocr/                        (~12 MB)   OCR
  *         ├── ppocr_v5_det.onnx
  *         ├── ppocr_v5_rec.onnx
@@ -14,7 +14,7 @@
  *
  * 用法：
  *   node scripts/download-models.mjs              # 全部
- *   node scripts/download-models.mjs siglip       # 仅 SigLIP 2
+ *   node scripts/download-models.mjs gemma2       # 仅 EmbeddingGemma 2
  *   node scripts/download-models.mjs paddleocr    # 仅 PaddleOCR
  */
 
@@ -42,24 +42,36 @@ const colors = {
 const HF_TOKEN = process.env.HF_TOKEN || ''
 
 const MODEL_GROUPS = {
-  // ─── 图文 CLIP ───────────────────────────────────────────────────
-  // 仓库实测：onnx-community/siglip2-base-patch16-256-ONNX（注意大写 -ONNX 后缀）
-  siglip: {
-    label: 'SigLIP 2 base/16-256 (multilingual)',
-    targetDir: join(MODELS_ROOT, 'siglip2'),
+  // ─── 多模态 Embedding ─────────────────────────────────────────
+  // EmbeddingGemma 2: 文本/图像/音频/视频统一嵌入空间，768 维
+  // 仓库：onnx-community/embeddinggemma-2-ONNX
+  // 量化档位：文本/视觉 q4 (284MB)，音频 q8 (340MB，官方建议)
+  gemma2: {
+    label: 'EmbeddingGemma 2 (text/image/audio/video, 768D)',
+    targetDir: join(MODELS_ROOT, 'gemma2'),
     sources: [
       {
-        baseUrl: `https://huggingface.co/${process.env.SIGLIP_REPO || 'onnx-community/siglip2-base-patch16-256-ONNX'}/resolve/${process.env.SIGLIP_REVISION || 'main'}/`,
+        baseUrl: `https://huggingface.co/${process.env.GEMMA2_REPO || 'onnx-community/embeddinggemma-2-ONNX'}/resolve/${process.env.GEMMA2_REVISION || 'main'}/`,
         files: [
           { path: 'config.json', optional: false },
           { path: 'tokenizer.json', optional: false },
           { path: 'tokenizer_config.json', optional: false },
           { path: 'preprocessor_config.json', optional: false },
-          { path: 'special_tokens_map.json', optional: true },
-          { path: 'tokenizer.model', optional: true },
-          // Transformers.js 默认加载 model_quantized.onnx
-          { path: 'onnx/model_quantized.onnx', optional: false },
-          { path: 'onnx/model.onnx_data', optional: true },
+          { path: 'processor_config.json', optional: false },
+          { path: 'chat_template.jinja', optional: true },
+          // 文件名须与 transformers.js 的 session 名 + dtype 后缀一致：
+          //   session: model / vision_encoder / audio_encoder
+          //   后缀: q4 → _q4, q8 → _quantized
+          // 权重在 .onnx_data 外部数据文件里（config.json 的 use_external_data_format），必需。
+          // 文本编码器（q4）
+          { path: 'onnx/model_q4.onnx', optional: false },
+          { path: 'onnx/model_q4.onnx_data', optional: false },
+          // 视觉编码器（q4）
+          { path: 'onnx/vision_encoder_q4.onnx', optional: false },
+          { path: 'onnx/vision_encoder_q4.onnx_data', optional: false },
+          // 音频编码器（q8）
+          { path: 'onnx/audio_encoder_quantized.onnx', optional: false },
+          { path: 'onnx/audio_encoder_quantized.onnx_data', optional: false },
         ],
       },
     ],

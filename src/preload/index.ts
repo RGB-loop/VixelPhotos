@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingApiConfig, type Person, type FaceRecord, type BackupStatus } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus } from '../shared/types'
 
 const api = {
   // 搜索
@@ -69,19 +69,13 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_MODEL_STATUS)
   },
 
-  // Embedding provider 配置（onnx-local 默认 / api 高级）
-  getEmbeddingConfig: (): Promise<EmbeddingApiConfig | null> => {
+  // Embedding 配置（EmbeddingGemma 2 量化档位 / 推理设备）
+  getEmbeddingConfig: (): Promise<EmbeddingQuantizationConfig> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_EMBEDDING_CONFIG)
   },
-  /**
-   * config === null → 切回本地 ONNX
-   * config 为对象 → 切到外部 API
-   */
-  setEmbeddingConfig: (config: EmbeddingApiConfig | null): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
+  /** 改量化档位；provider 会在下次 encode 时按新档位重新加载 */
+  setEmbeddingConfig: (config: EmbeddingQuantizationConfig): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SET_EMBEDDING_CONFIG, config)
-  },
-  testEmbeddingApi: (): Promise<{ success: boolean; dimension?: number; error?: string }> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.TEST_EMBEDDING_API)
   },
 
   // Caption（手动编辑）

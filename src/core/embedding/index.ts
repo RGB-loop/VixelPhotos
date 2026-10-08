@@ -1,13 +1,12 @@
 /**
  * Embedding 服务
  *
- * 默认：本地 ONNX (SigLIP 2 base/16-256)，零网络。
- * 可选：外部 OpenAI 兼容 API（用户在 Settings 显式配置后启用）。
+ * EmbeddingGemma 2 多模态本地推理（文本/图像/音频/视频，768 维）
+ * 纯本地，零网络依赖。
  *
  * 配置文件：<userData>/embedding-config.json
  * 形如：
- *   { "type": "onnx-local" }                           // 默认
- *   { "type": "api", "endpoint": "...", "apiKey": ... } // 显式切到 API
+ *   { "type": "gemma2-local" }  // 默认
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
@@ -16,11 +15,9 @@ import type {
   EmbeddingProvider,
   EmbeddingProviderConfig,
   EmbeddingInput,
-  OnnxProviderConfig,
-  ApiProviderConfig,
+  Gemma2ProviderConfig,
 } from './types'
-import { ApiEmbeddingProvider } from './providers/apiProvider'
-import { OnnxEmbeddingProvider } from './providers/onnxProvider'
+import { Gemma2EmbeddingProvider } from './providers/gemma2Provider'
 
 export * from './types'
 
@@ -45,29 +42,42 @@ function loadConfig(): EmbeddingProviderConfig {
   if (existsSync(configPath)) {
     try {
       const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
-      if (raw && raw.type === 'api' && raw.endpoint) {
-        return { ...raw, type: 'api' as const } as ApiProviderConfig
+      if (raw && raw.type === 'gemma2-local') {
+        return {
+          type: 'gemma2-local',
+          modelsDir: _bundledModelsDir,
+          textQuantization: raw.textQuantization,
+          visionQuantization: raw.visionQuantization,
+          audioQuantization: raw.audioQuantization,
+          device: raw.device,
+        } as Gemma2ProviderConfig
       }
-      // 'onnx-local' 或缺省都视作本地
     } catch (err) {
-      console.warn('Failed to parse embedding-config.json, falling back to onnx-local:', err)
+      console.warn('Failed to parse embedding-config.json, using defaults:', err)
     }
   }
 
-  // 默认：本地 ONNX，模型目录用打包资源目录
+  // 默认：EmbeddingGemma 2，文本/视觉 q4，音频 q8
   return {
-    type: 'onnx-local',
+    type: 'gemma2-local',
     modelsDir: _bundledModelsDir,
+    textQuantization: 'q4',
+    visionQuantization: 'q4',
+    audioQuantization: 'q8',
+    device: 'cpu',
   }
 }
 
 function saveConfig(config: EmbeddingProviderConfig): void {
   const configPath = getConfigPath()
   // 只把用户能调整的字段写盘；modelsDir 等运行时字段不持久化
-  const persistable =
-    config.type === 'api'
-      ? { type: 'api', endpoint: config.endpoint, apiKey: config.apiKey, model: config.model }
-      : { type: 'onnx-local' }
+  const persistable = {
+    type: 'gemma2-local',
+    textQuantization: config.textQuantization,
+    visionQuantization: config.visionQuantization,
+    audioQuantization: config.audioQuantization,
+    device: config.device,
+  }
   writeFileSync(configPath, JSON.stringify(persistable, null, 2))
 }
 
@@ -80,43 +90,14 @@ class EmbeddingService {
     this.config = loadConfig()
   }
 
-  /**
-   * 切换 API 配置（设置后保存并重建 provider）
-   */
-  setApiConfig(config: Omit<ApiProviderConfig, 'type'>): void {
-    this.config = { type: 'api', ...config }
-    saveConfig(this.config)
-    this.initError = null
-    if (this.provider) {
-      this.provider.dispose()
-      this.provider = null
-    }
-  }
-
-  /**
-   * 切回默认（本地 ONNX）
-   */
-  useLocal(): void {
-    this.config = { type: 'onnx-local', modelsDir: _bundledModelsDir }
-    saveConfig(this.config)
-    this.initError = null
-    if (this.provider) {
-      this.provider.dispose()
-      this.provider = null
-    }
-  }
-
   getConfig(): EmbeddingProviderConfig {
     return this.config
   }
 
   isConfigured(): boolean {
-    if (this.config.type === 'onnx-local') {
-      // 本地模型只要目录存在就算"已配置"
-      const modelsDir = this.config.modelsDir || _bundledModelsDir
-      return !!modelsDir
-    }
-    return !!this.config.endpoint
+    // 纯本地，只要模型目录存在就算已配置
+    const modelsDir = this.config.modelsDir || _bundledModelsDir
+    return !!modelsDir
   }
 
   getInitError(): string | null {
@@ -143,16 +124,15 @@ class EmbeddingService {
   }
 
   private createProvider(): EmbeddingProvider {
-    if (this.config.type === 'api') {
-      return new ApiEmbeddingProvider(this.config)
-    }
     const modelsDir = this.config.modelsDir || _bundledModelsDir
-    return new OnnxEmbeddingProvider({
-      type: 'onnx-local',
+    return new Gemma2EmbeddingProvider({
+      type: 'gemma2-local',
       modelsDir,
-      modelDirName: (this.config as OnnxProviderConfig).modelDirName,
-      quantized: (this.config as OnnxProviderConfig).quantized,
-      device: (this.config as OnnxProviderConfig).device,
+      modelDirName: this.config.modelDirName,
+      textQuantization: this.config.textQuantization,
+      visionQuantization: this.config.visionQuantization,
+      audioQuantization: this.config.audioQuantization,
+      device: this.config.device,
     })
   }
 
@@ -170,6 +150,29 @@ class EmbeddingService {
 
   async encodeImage(imageBuffer: Buffer): Promise<Float32Array> {
     return this.encode({ type: 'image', content: imageBuffer })
+  }
+
+  /** mono 16kHz Float32Array（见 src/core/audio/extract.ts） */
+  async encodeAudio(samples: Float32Array): Promise<Float32Array> {
+    return this.encode({ type: 'audio', samples })
+  }
+
+  /** 帧序列 → 单个片段向量。processor 最多取 32 帧（超出均匀降采样）。 */
+  async encodeVideo(frames: Buffer[], durationSec: number): Promise<Float32Array> {
+    return this.encode({ type: 'video', frames, durationSec })
+  }
+
+  /**
+   * 调整量化档位 / 推理设备。写盘并重建 provider（下次 encode 时懒加载）。
+   */
+  setConfig(patch: Partial<Omit<Gemma2ProviderConfig, 'type' | 'modelsDir'>>): void {
+    this.config = { ...this.config, ...patch }
+    saveConfig(this.config)
+    this.initError = null
+    if (this.provider) {
+      this.provider.dispose()
+      this.provider = null
+    }
   }
 
   async encodeBatch(inputs: EmbeddingInput[]): Promise<Float32Array[]> {

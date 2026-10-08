@@ -6,8 +6,7 @@ import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord } fr
 import { tokenizeForFtsSync } from './text/tokenize'
 import { buildFtsQuery } from './text/fts-query'
 
-// 向量维度 - SigLIP 2 base/16-256
-// 旧版用 2048 (Qwen3-VL-Embedding API)；migrateVectorDimension 会自动迁移
+// 向量维度 - EmbeddingGemma 2 (768D，Matryoshka 可截断到 512/256/128)
 const EMBEDDING_DIM = 768
 
 // 人脸 embedding 维度 - MobileFaceNet 标准输出
@@ -40,14 +39,17 @@ CREATE TABLE IF NOT EXISTS photos (
   lat             REAL,
   lng             REAL,
   embed_status    TEXT DEFAULT 'pending',
-  caption_status  TEXT DEFAULT 'pending',
+  face_status     TEXT DEFAULT 'pending',
+  video_id        INTEGER REFERENCES videos(id),  -- 视频代表帧：来源视频
+  frame_time_ms   INTEGER,                        -- 视频代表帧：时间戳
   deleted_at      DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_photos_folder ON photos(folder_id);
-CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(embed_status, caption_status);
+CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(embed_status);
+CREATE INDEX IF NOT EXISTS idx_photos_video ON photos(video_id);
 CREATE INDEX IF NOT EXISTS idx_photos_deleted ON photos(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_photos_file_hash ON photos(file_hash);
 
@@ -85,29 +87,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS image_vecs USING vec0(
   embedding float[${EMBEDDING_DIM}]
 );
 
--- Caption 全文搜索表 (FTS5, standalone — 通过触发器同步)
-CREATE VIRTUAL TABLE IF NOT EXISTS captions_fts USING fts5(
-  text,
-  tokenize='unicode61'
-);
-
--- FTS5 同步触发器（standalone FTS5 用普通 INSERT/DELETE）
--- jiebatok(text) UDF 在 better-sqlite3 启动时注册，做 CJK 分词，
--- ASCII 文本透传，jieba 不可用时回退为原文。
-CREATE TRIGGER IF NOT EXISTS captions_ai AFTER INSERT ON captions BEGIN
-  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
-END;
-CREATE TRIGGER IF NOT EXISTS captions_ad AFTER DELETE ON captions BEGIN
-  DELETE FROM captions_fts WHERE rowid = old.id;
-END;
-CREATE TRIGGER IF NOT EXISTS captions_au AFTER UPDATE ON captions BEGIN
-  DELETE FROM captions_fts WHERE rowid = old.id;
-  INSERT INTO captions_fts(rowid, text) VALUES (new.id, jiebatok(new.text));
-END;
-
 -- OCR 文本表（按 file_hash 去重共享）
--- 与 captions 分离的原因：captions 是用户手写的描述，image_ocr 是机器识别的图内文字，
--- 语义独立，搜索通道也分别打分（4-way RRF: vec + caption FTS5 + ocr FTS5 + filename）。
+-- 与 captions（用户手写描述，不参与搜索）分离；OCR 是 4-way RRF 的 BM25 通道。
 CREATE TABLE IF NOT EXISTS image_ocr (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   file_hash   TEXT NOT NULL UNIQUE,
@@ -169,7 +150,8 @@ CREATE TABLE IF NOT EXISTS meta_state (
 );
 
 -- 视频文件主表
--- 视频本身不索引；indexer 抽出来的帧作为 photos 行存储，photos.video_id 反向引用这条
+-- 视频本身不索引；indexer 按 32s 切片，每片的帧序列 + 音轨合成一个向量，
+-- 存入 video_segments / video_segment_vecs。缩略图仍走 photos（首帧代表图）。
 CREATE TABLE IF NOT EXISTS videos (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   folder_id    INTEGER REFERENCES watched_folders(id),
@@ -187,6 +169,31 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 CREATE INDEX IF NOT EXISTS idx_videos_folder ON videos(folder_id);
 CREATE INDEX IF NOT EXISTS idx_videos_hash ON videos(file_hash);
+
+-- 视频片段表（EmbeddingGemma 2 重构新增）
+-- 长视频按 32s 分块，每个片段一个向量（帧序列 + 音轨 → 单向量）
+-- 替代旧方案：photos.video_id / frame_time_ms（逐帧独立 embed）
+CREATE TABLE IF NOT EXISTS video_segments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id     INTEGER NOT NULL REFERENCES videos(id),
+  start_ms     INTEGER NOT NULL,
+  end_ms       INTEGER NOT NULL,
+  file_hash    TEXT NOT NULL,  -- 片段内容 hash（dedup 用）
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_video_segments_video ON video_segments(video_id);
+CREATE INDEX IF NOT EXISTS idx_video_segments_hash ON video_segments(file_hash);
+
+-- 视频片段向量（vec0 ANN 索引）
+CREATE VIRTUAL TABLE IF NOT EXISTS video_segment_vecs USING vec0(
+  embedding float[${EMBEDDING_DIM}]
+);
+
+-- 片段向量映射表（segment_id → rowid）
+CREATE TABLE IF NOT EXISTS video_segment_vec_map (
+  rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+  segment_id  INTEGER NOT NULL UNIQUE REFERENCES video_segments(id)
+);
 `
 
 export interface DatabaseInstance {
@@ -237,29 +244,46 @@ export interface DatabaseInstance {
   getQueueStats: () => { pending: number; processing: number; done: number }
 
   // 照片统计
-  getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number; ocred: number }
+  getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; ocred: number }
 
   // 内容操作（按 file_hash 共享）
   hasContentForHash: (fileHash: string) => { hasEmbedding: boolean; hasCaption: boolean; hasOcr: boolean }
   saveImageVec: (fileHash: string, embedding: Float32Array) => void
   updateEmbedStatusByHash: (fileHash: string) => void
   saveCaption: (fileHash: string, text: string) => void
-  updateCaptionStatusByHash: (fileHash: string) => void
   getCaption: (fileHash: string) => string | undefined
   saveOcrText: (fileHash: string, text: string) => void
   getOcrText: (fileHash: string) => string | undefined
   getPendingOcrPhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
   deleteContentByHash: (fileHash: string) => void
 
+  // 视频片段（EmbeddingGemma 2：帧序列 + 音轨 → 单向量）
+  saveVideoSegment: (
+    videoId: number,
+    startMs: number,
+    endMs: number,
+    fileHash: string,
+    embedding: Float32Array
+  ) => number
+  hasVideoSegmentForHash: (fileHash: string) => boolean
+  getVideoSegments: (videoId: number) => Array<{
+    id: number
+    videoId: number
+    startMs: number
+    endMs: number
+    fileHash: string
+  }>
+  deleteVideoSegments: (videoId: number) => void
+  searchVideoSegmentsByVec: (
+    queryVec: Float32Array,
+    limit: number
+  ) => Array<{ segmentId: number; videoId: number; startMs: number; endMs: number; distance: number }>
+
   // 搜索
   searchByVec: (
     queryVec: Float32Array,
     limit: number
   ) => Array<{ fileHash: string; distance: number }>
-  searchByText: (
-    query: string,
-    limit: number
-  ) => Array<{ fileHash: string; score: number }>
   searchByFileName: (
     query: string,
     limit: number
@@ -378,29 +402,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     return tokenizeForFtsSync(text)
   })
 
-  // 检测旧 schema 并迁移
-  migrateIfNeeded(db)
-  migrateToVec0(db)
-  migrateVectorDimension(db, EMBEDDING_DIM)
-  migrateFtsTriggersToJieba(db)
-
   db.exec(SCHEMA)
 
   // WAL checkpoint — 确保其他进程写入的数据对当前连接可见
   db.pragma('wal_checkpoint(PASSIVE)')
 
-  // 确保新列存在
-  ensureFaceStatusColumn(db)
-  ensureVideoFrameColumns(db)
   if (options?.runCleanup !== false) {
     cleanupStaleVecMap(db)
   }
-
-  // 历史数据：把 unicode61-切的 FTS5 内容用 jieba 重切一遍
-  rebuildFtsIndicesIfNeeded(db)
-
-  // 历史数据：把 faces.embedding 的 BLOB 灌进 face_vecs ANN 索引
-  backfillFaceVecsIfNeeded(db)
 
   const stmts = {
     addFolder: db.prepare(`
@@ -498,8 +507,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
-             embed_status as embedStatus, caption_status as captionStatus,
-             video_id as videoId, frame_time_ms as frameTimeMs,
+             embed_status as embedStatus, video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos
       WHERE video_id = ? AND deleted_at IS NULL
@@ -511,8 +519,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
-             embed_status as embedStatus, caption_status as captionStatus,
-             video_id as videoId, frame_time_ms as frameTimeMs,
+             embed_status as embedStatus, video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos WHERE id = ?
     `),
@@ -520,8 +527,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
-             embed_status as embedStatus, caption_status as captionStatus,
-             video_id as videoId, frame_time_ms as frameTimeMs,
+             embed_status as embedStatus, video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos WHERE file_path = ?
     `),
@@ -529,8 +535,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              width, height, taken_at as takenAt, lat, lng,
-             embed_status as embedStatus, caption_status as captionStatus,
-             video_id as videoId, frame_time_ms as frameTimeMs,
+             embed_status as embedStatus, video_id as videoId, frame_time_ms as frameTimeMs,
              deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
       FROM photos
       WHERE deleted_at IS NULL
@@ -542,8 +547,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.caption_status as captionStatus,
-             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -560,8 +564,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.caption_status as captionStatus,
-             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -582,8 +585,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.caption_status as captionStatus,
-             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              c.text as caption,
              o.text as ocrText
@@ -603,7 +605,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       UPDATE photos SET file_path = ?, file_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
     `),
     markDuplicateProcessed: db.prepare(`
-      UPDATE photos SET embed_status = 'done', caption_status = 'done', updated_at = CURRENT_TIMESTAMP
+      UPDATE photos SET embed_status = 'done', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `),
 
@@ -631,6 +633,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     recoverStuckTasks: db.prepare(`
       UPDATE index_queue SET status = 'pending' WHERE status = 'processing'
     `),
+    // 时长已知（非损坏）却没有任何片段向量的视频 —— 典型是索引时模型未就绪
+    getVideosWithoutSegments: db.prepare(`
+      SELECT v.id FROM videos v
+      WHERE v.deleted_at IS NULL
+        AND v.duration_ms > 0
+        AND v.id NOT IN (SELECT video_id FROM video_segments)
+        AND v.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'extract_frames' AND status IN ('pending', 'processing'))
+    `),
     getPhotosWithoutEmbedding: db.prepare(`
       SELECT p.id, p.file_hash FROM photos p
       WHERE p.deleted_at IS NULL
@@ -651,7 +661,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         COUNT(DISTINCT p.file_hash) as uniqueTotal,
         SUM(CASE WHEN p.width IS NOT NULL THEN 1 ELSE 0 END) as thumbnailed,
         SUM(CASE WHEN p.embed_status = 'done' THEN 1 ELSE 0 END) as indexed,
-        SUM(CASE WHEN p.caption_status = 'done' THEN 1 ELSE 0 END) as captioned,
         (SELECT COUNT(DISTINCT file_hash) FROM image_ocr) as ocred
       FROM photos p
       WHERE p.deleted_at IS NULL
@@ -685,9 +694,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       INSERT INTO captions (file_hash, text) VALUES (?, ?)
       ON CONFLICT(file_hash) DO UPDATE SET text = excluded.text
     `),
-    updateCaptionStatusByHash: db.prepare(`
-      UPDATE photos SET caption_status = 'done' WHERE file_hash = ? AND deleted_at IS NULL
-    `),
     getCaption: db.prepare(`SELECT text FROM captions WHERE file_hash = ?`),
     saveOcrText: db.prepare(`
       INSERT INTO image_ocr (file_hash, text) VALUES (?, ?)
@@ -710,14 +716,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     deleteCaptionByHash: db.prepare(`DELETE FROM captions WHERE file_hash = ?`),
 
     // 搜索
-    searchByText: db.prepare(`
-      SELECT c.file_hash, bm25(captions_fts) as score
-      FROM captions_fts
-      JOIN captions c ON captions_fts.rowid = c.id
-      WHERE captions_fts MATCH ?
-      ORDER BY score
-      LIMIT ?
-    `),
     // KNN 向量搜索（sqlite-vec）
     // sqlite-vec KNN: 先查 rowid+distance，再通过 map 映射到 file_hash
     searchVecKnnRaw: db.prepare(`
@@ -728,6 +726,58 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       ORDER BY distance
     `),
     getHashByRowid: db.prepare(`SELECT file_hash FROM image_vec_map WHERE rowid = ?`),
+
+    // ─── 视频片段 ────────────────────────────────────────────────
+    insertVideoSegment: db.prepare(`
+      INSERT INTO video_segments (video_id, start_ms, end_ms, file_hash)
+      VALUES (?, ?, ?, ?)
+    `),
+    insertVideoSegmentVecMap: db.prepare(`
+      INSERT OR IGNORE INTO video_segment_vec_map (segment_id) VALUES (?)
+    `),
+    getVideoSegmentVecRowid: db.prepare(`
+      SELECT rowid FROM video_segment_vec_map WHERE segment_id = ?
+    `),
+    insertVideoSegmentVec: db.prepare(`
+      INSERT INTO video_segment_vecs (rowid, embedding) VALUES (?, ?)
+    `),
+    updateVideoSegmentVec: db.prepare(`
+      UPDATE video_segment_vecs SET embedding = ? WHERE rowid = ?
+    `),
+    hasVideoSegmentForHash: db.prepare(`
+      SELECT 1 FROM video_segments WHERE file_hash = ?
+    `),
+    getVideoSegmentsByVideo: db.prepare(`
+      SELECT id, video_id as videoId, start_ms as startMs, end_ms as endMs, file_hash as fileHash
+      FROM video_segments WHERE video_id = ? ORDER BY start_ms
+    `),
+    getVideoSegmentIdsByVideo: db.prepare(`
+      SELECT id FROM video_segments WHERE video_id = ?
+    `),
+    deleteVideoSegmentVec: db.prepare(`
+      DELETE FROM video_segment_vecs WHERE rowid = ?
+    `),
+    deleteVideoSegmentVecMap: db.prepare(`
+      DELETE FROM video_segment_vec_map WHERE segment_id = ?
+    `),
+    deleteVideoSegmentsByVideo: db.prepare(`
+      DELETE FROM video_segments WHERE video_id = ?
+    `),
+    // 片段 KNN：先拿 rowid + distance，再 join 回 segments
+    searchVideoSegmentKnnRaw: db.prepare(`
+      SELECT rowid, distance
+      FROM video_segment_vecs
+      WHERE embedding MATCH ?
+        AND k = ?
+      ORDER BY distance
+    `),
+    getVideoSegmentByVecRowid: db.prepare(`
+      SELECT s.id as segmentId, s.video_id as videoId,
+             s.start_ms as startMs, s.end_ms as endMs
+      FROM video_segment_vec_map m
+      JOIN video_segments s ON s.id = m.segment_id
+      WHERE m.rowid = ?
+    `),
     // 获取所有向量（用于 face clustering 等需要全量向量的场景）
     getAllImageVecs: db.prepare(`
       SELECT m.file_hash, v.embedding
@@ -754,8 +804,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.caption_status as captionStatus,
-             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
@@ -774,8 +823,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
              p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
              p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.caption_status as captionStatus,
-             p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
              p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt
       FROM photos p
       WHERE p.deleted_at IS NULL
@@ -853,8 +901,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT ph.id, ph.folder_id as folderId, ph.file_path as filePath, ph.file_name as fileName,
              ph.file_size as fileSize, ph.file_mtime as fileMtime, ph.file_hash as fileHash,
              ph.width, ph.height, ph.taken_at as takenAt, ph.lat, ph.lng,
-             ph.embed_status as embedStatus, ph.caption_status as captionStatus,
-             ph.deleted_at as deletedAt, ph.created_at as createdAt, ph.updated_at as updatedAt
+             ph.embed_status as embedStatus, ph.deleted_at as deletedAt, ph.created_at as createdAt, ph.updated_at as updatedAt
       FROM photos ph
       WHERE ph.deleted_at IS NULL
         AND ph.file_hash IN (SELECT DISTINCT f.file_hash FROM faces f WHERE f.person_id = ?)
@@ -919,7 +966,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       stmts.deleteQueueByPhotoIds.run(folderId)
       stmts.deletePhotosByFolderId.run(folderId)
 
-      // 孤立 hash 全套内容清理：vec0 / 人脸 ANN / 人脸 BLOB / captions / OCR / FTS5
+      // 孤立 hash 全套内容清理：vec0 / 人脸 ANN / 人脸 BLOB / captions / OCR
       // 透过 deleteContentByHash 走同一套逻辑，避免日后再分叉
       const finalize = db.transaction(() => {
         for (const hash of orphanedHashes) {
@@ -1026,7 +1073,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       for (const photo of photos) {
         stmts.addToQueue.run(photo.id, 'embed', 10)
       }
-      return photos.length
+      const videos = stmts.getVideosWithoutSegments.all() as Array<{ id: number }>
+      for (const video of videos) {
+        stmts.addToQueue.run(video.id, 'extract_frames', 15)
+      }
+      return photos.length + videos.length
     },
     getQueueStats: () => {
       const result = stmts.getQueueStats.get() as { pending: number; processing: number; done: number }
@@ -1034,14 +1085,13 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     getPhotoStats: () => {
       const result = stmts.getPhotoStats.get() as {
-        total: number; uniqueTotal: number; thumbnailed: number; indexed: number; captioned: number; ocred: number
+        total: number; uniqueTotal: number; thumbnailed: number; indexed: number; ocred: number
       }
       return {
         total: result.total || 0,
         uniqueTotal: result.uniqueTotal || 0,
         thumbnailed: result.thumbnailed || 0,
         indexed: result.indexed || 0,
-        captioned: result.captioned || 0,
         ocred: result.ocred || 0,
       }
     },
@@ -1094,10 +1144,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     saveCaption: (fileHash: string, text: string): void => {
       stmts.saveCaption.run(fileHash, text)
-      stmts.updateCaptionStatusByHash.run(fileHash)
-    },
-    updateCaptionStatusByHash: (fileHash: string): void => {
-      stmts.updateCaptionStatusByHash.run(fileHash)
     },
     getCaption: (fileHash: string): string | undefined => {
       const result = stmts.getCaption.get(fileHash) as { text: string } | undefined
@@ -1113,6 +1159,102 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     getPendingOcrPhotos: () => {
       return stmts.getPendingOcrPhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
     },
+
+    // ─── 视频片段 ────────────────────────────────────────────────
+    saveVideoSegment: (
+      videoId: number,
+      startMs: number,
+      endMs: number,
+      fileHash: string,
+      embedding: Float32Array
+    ): number => {
+      // 与 saveImageVec 同构：segments / vec_map / vecs 三表必须一致，
+      // 任何一步失败就整体回滚，不留孤立 rowid。
+      const tx = db.transaction(() => {
+        const info = stmts.insertVideoSegment.run(videoId, startMs, endMs, fileHash)
+        const segmentId = Number(info.lastInsertRowid)
+
+        let mapRowid: bigint
+        const mapInfo = stmts.insertVideoSegmentVecMap.run(segmentId)
+        if (mapInfo.changes > 0) {
+          mapRowid = BigInt(mapInfo.lastInsertRowid)
+        } else {
+          const existing = stmts.getVideoSegmentVecRowid.get(segmentId) as
+            | { rowid: bigint | number }
+            | undefined
+          if (!existing) throw new Error(`Vec map row missing for segment ${segmentId}`)
+          mapRowid = BigInt(existing.rowid)
+        }
+
+        try {
+          stmts.insertVideoSegmentVec.run(mapRowid, embedding)
+        } catch {
+          stmts.updateVideoSegmentVec.run(embedding, mapRowid)
+        }
+        return segmentId
+      })
+
+      return tx() as number
+    },
+    hasVideoSegmentForHash: (fileHash: string): boolean => {
+      return !!stmts.hasVideoSegmentForHash.get(fileHash)
+    },
+    getVideoSegments: (videoId: number) => {
+      return stmts.getVideoSegmentsByVideo.all(videoId) as Array<{
+        id: number
+        videoId: number
+        startMs: number
+        endMs: number
+        fileHash: string
+      }>
+    },
+    deleteVideoSegments: (videoId: number): void => {
+      // 先收集 segment id，逐个删 vec0 行和映射，最后删 segments
+      const ids = stmts.getVideoSegmentIdsByVideo.all(videoId) as Array<{ id: number }>
+      const tx = db.transaction(() => {
+        for (const { id } of ids) {
+          const row = stmts.getVideoSegmentVecRowid.get(id) as
+            | { rowid: bigint | number }
+            | undefined
+          if (row) {
+            try { stmts.deleteVideoSegmentVec.run(BigInt(row.rowid)) } catch { /* ignore */ }
+          }
+          try { stmts.deleteVideoSegmentVecMap.run(id) } catch { /* ignore */ }
+        }
+        stmts.deleteVideoSegmentsByVideo.run(videoId)
+      })
+      try {
+        tx()
+      } catch (err) {
+        console.warn(`deleteVideoSegments failed for video ${videoId}:`, err)
+      }
+    },
+    searchVideoSegmentsByVec: (queryVec: Float32Array, limit: number) => {
+      try {
+        const rows = stmts.searchVideoSegmentKnnRaw.all(queryVec, limit) as Array<{
+          rowid: bigint | number
+          distance: number
+        }>
+        const out: Array<{
+          segmentId: number
+          videoId: number
+          startMs: number
+          endMs: number
+          distance: number
+        }> = []
+        for (const r of rows) {
+          const seg = stmts.getVideoSegmentByVecRowid.get(Number(r.rowid)) as
+            | { segmentId: number; videoId: number; startMs: number; endMs: number }
+            | undefined
+          if (seg) out.push({ ...seg, distance: r.distance })
+        }
+        return out
+      } catch (err) {
+        // 与 searchFaceKnn 同样的回退语义：vec0 没就绪就返回空，调用方自行降级
+        console.warn('searchVideoSegmentsByVec failed (vec0 may not be ready yet):', err)
+        return []
+      }
+    },
     deleteContentByHash: (fileHash: string): void => {
       // 图像向量：先查 rowid，再删 vec0 行和映射
       const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: bigint | number } | undefined
@@ -1126,7 +1268,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         stmts.deleteFaceVec.run(f.id)
       }
       stmts.deleteFacesByHash.run(fileHash)
-      // FTS5 表通过触发器随 captions / image_ocr 的 DELETE 自动清
+      // image_ocr_fts 通过触发器随 image_ocr 的 DELETE 自动清
       stmts.deleteCaptionByHash.run(fileHash)
       stmts.deleteOcrByHash.run(fileHash)
     },
@@ -1143,17 +1285,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
           .filter((r): r is { fileHash: string; distance: number } => r !== null)
       } catch (error) {
         console.error('Vector search error:', error)
-        return []
-      }
-    },
-    searchByText: (query, limit) => {
-      try {
-        const ftsQuery = buildFtsQuery(query)
-        if (!ftsQuery) return []
-        const results = stmts.searchByText.all(ftsQuery, limit) as Array<{ file_hash: string; score: number }>
-        return results.map((row) => ({ fileHash: row.file_hash, score: Math.abs(row.score) }))
-      } catch (error) {
-        console.error('Text search error:', error)
         return []
       }
     },
@@ -1424,196 +1555,6 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   }
 }
 
-/**
- * 把 faces 表里历史的 embedding BLOB 灌进 face_vecs ANN 索引。
- * 只在首次发现未迁移时执行；标志写入 meta_state。
- *
- * 维度不匹配的行会跳过并打 warning（保留 BLOB 不删，assignFaceToPerson
- * 的 bruteForceNearest 兜底仍能 work）。
- */
-function backfillFaceVecsIfNeeded(db: Database.Database): void {
-  try {
-    const FLAG = `face_vecs_backfilled_dim${FACE_EMBEDDING_DIM}_v1`
-    const row = db
-      .prepare(`SELECT value FROM meta_state WHERE key = ?`)
-      .get(FLAG) as { value?: string } | undefined
-    if (row?.value === '1') return
-
-    const totalRow = db
-      .prepare(`SELECT COUNT(*) as n FROM faces`)
-      .get() as { n: number }
-    if (totalRow.n === 0) {
-      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
-      return
-    }
-
-    // 已经在 vec0 里的就不动；只补缺失的。
-    const missingRows = db
-      .prepare(`
-        SELECT f.id, f.embedding FROM faces f
-        WHERE NOT EXISTS (SELECT 1 FROM face_vecs v WHERE v.rowid = f.id)
-      `)
-      .all() as Array<{ id: number; embedding: Buffer }>
-
-    if (missingRows.length === 0) {
-      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
-      return
-    }
-
-    console.log(`[migrate] backfilling face_vecs (${missingRows.length}/${totalRow.n} rows)`)
-    const insert = db.prepare(`INSERT INTO face_vecs(rowid, embedding) VALUES (?, ?)`)
-    let inserted = 0
-    let mismatch = 0
-    const tx = db.transaction(() => {
-      for (const r of missingRows) {
-        const floats = new Float32Array(
-          r.embedding.buffer,
-          r.embedding.byteOffset,
-          r.embedding.byteLength / 4
-        )
-        if (floats.length !== FACE_EMBEDDING_DIM) {
-          mismatch++
-          continue
-        }
-        try {
-          insert.run(r.id, floats)
-          inserted++
-        } catch (err) {
-          console.warn(`[migrate] face_vecs insert failed for face id=${r.id}:`, err)
-        }
-      }
-      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
-    })
-    tx()
-    console.log(`[migrate] face_vecs backfill done: ${inserted} inserted, ${mismatch} dim-mismatch skipped`)
-  } catch (err) {
-    console.warn('[migrate] face_vecs backfill failed:', err)
-  }
-}
-
-/**
- * 把 captions_fts / image_ocr_fts 里的旧（unicode61 字符级）内容用
- * jiebatok() 重切一遍。仅在首次发现迁移未完成时执行；标志写入 meta_state。
- *
- * 操作以事务包裹，避免半完成状态。
- */
-function rebuildFtsIndicesIfNeeded(db: Database.Database): void {
-  try {
-    const FLAG = 'fts5_jieba_rebuilt_v1'
-    const row = db
-      .prepare(`SELECT value FROM meta_state WHERE key = ?`)
-      .get(FLAG) as { value?: string } | undefined
-    if (row?.value === '1') return // already done
-
-    const captionCount = (db
-      .prepare(`SELECT COUNT(*) as n FROM captions`)
-      .get() as { n: number }).n
-    const ocrCount = (db
-      .prepare(`SELECT COUNT(*) as n FROM image_ocr`)
-      .get() as { n: number }).n
-    if (captionCount === 0 && ocrCount === 0) {
-      // 没数据要重建；直接打标记
-      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
-      return
-    }
-
-    console.log(`[migrate] rebuilding FTS5 indices with jieba (captions=${captionCount}, ocr=${ocrCount})`)
-    const tx = db.transaction(() => {
-      // captions
-      db.exec(`DELETE FROM captions_fts`)
-      db.exec(`INSERT INTO captions_fts(rowid, text) SELECT id, jiebatok(text) FROM captions`)
-      // image_ocr
-      db.exec(`DELETE FROM image_ocr_fts`)
-      db.exec(`INSERT INTO image_ocr_fts(rowid, text) SELECT id, jiebatok(text) FROM image_ocr`)
-      db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, '1')`).run(FLAG)
-    })
-    tx()
-    console.log('[migrate] FTS5 rebuild done')
-  } catch (err) {
-    // 失败不致命：搜索仍按旧 token 工作；下次启动会再试
-    console.warn('[migrate] FTS5 jieba rebuild failed:', err)
-  }
-}
-
-/**
- * 升级旧库的 FTS5 触发器：把 `new.text` 替换成 `jiebatok(new.text)`。
- *
- * 通过 sqlite_master.sql 的内容判断触发器是否已经包含 jiebatok 字串；
- * 已包含则视为已迁移；否则 DROP+CREATE 写入新版本。
- *
- * 注意：这一步只换触发器，不重建已有 FTS5 行。PR4.4 会按需 rebuild。
- */
-function migrateFtsTriggersToJieba(db: Database.Database): void {
-  const triggers = ['captions_ai', 'captions_au', 'image_ocr_ai', 'image_ocr_au']
-  for (const name of triggers) {
-    try {
-      const row = db
-        .prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`)
-        .get(name) as { sql?: string } | undefined
-      if (row?.sql && !row.sql.includes('jiebatok')) {
-        db.exec(`DROP TRIGGER IF EXISTS ${name}`)
-        // 让 SCHEMA 的 CREATE TRIGGER IF NOT EXISTS 在下游 db.exec(SCHEMA) 时创建新版
-      }
-    } catch (err) {
-      console.warn(`[migrate] could not migrate trigger ${name}:`, err)
-    }
-  }
-}
-
-/**
- * 检测 image_vecs 的当前维度，与目标维度不一致时丢弃并重建。
- *
- * 触发场景：从外部 API (Qwen3-VL-Embedding, dim=2048) 切换到本地
- * SigLIP 2 (dim=768)。所有旧向量必须丢弃重做。
- */
-function migrateVectorDimension(db: Database.Database, targetDim: number): void {
-  try {
-    const row = db
-      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='image_vecs'`)
-      .get() as { sql?: string } | undefined
-    if (!row?.sql) return // 表还不存在，新建时会用正确维度
-
-    // CREATE VIRTUAL TABLE image_vecs USING vec0(embedding float[2048])
-    const m = row.sql.match(/float\[(\d+)\]/)
-    if (!m) return
-    const currentDim = parseInt(m[1], 10)
-    if (currentDim === targetDim) return
-
-    console.log(
-      `[migrate] image_vecs dim ${currentDim} != target ${targetDim}, rebuilding`
-    )
-    db.exec(`
-      DROP TABLE IF EXISTS image_vecs;
-      DROP TABLE IF EXISTS image_vec_map;
-      UPDATE photos SET embed_status = 'pending' WHERE embed_status = 'done';
-      DELETE FROM index_queue WHERE task_type = 'embed';
-    `)
-  } catch (err) {
-    console.warn('[migrate] vector dimension migration failed:', err)
-  }
-}
-
-/** 迁移 image_vecs 从普通表到 vec0 虚拟表 */
-function migrateToVec0(db: Database.Database): void {
-  try {
-    // 检查 image_vecs 是否是普通表（有 file_hash 列 = 旧格式）
-    const tableInfo = db.prepare(`PRAGMA table_info(image_vecs)`).all() as Array<{ name: string }>
-    if (tableInfo.some((col) => col.name === 'file_hash')) {
-      db.exec(`
-        DROP TABLE IF EXISTS image_vecs;
-        DROP TABLE IF EXISTS image_vec_map;
-      `)
-      // 重置 embed_status 让照片重新生成 embedding
-      db.exec(`
-        UPDATE photos SET embed_status = 'pending' WHERE embed_status = 'done';
-        DELETE FROM index_queue WHERE task_type = 'embed';
-      `)
-    }
-  } catch {
-    // 表不存在或已经是 vec0
-  }
-}
-
 /** 清理 image_vec_map 中没有对应 vec0 数据的孤立记录 */
 function cleanupStaleVecMap(db: Database.Database): void {
   try {
@@ -1632,60 +1573,5 @@ function cleanupStaleVecMap(db: Database.Database): void {
     }
   } catch {
     // 表可能还不存在
-  }
-}
-
-/** 确保 face_status 列存在 */
-function ensureFaceStatusColumn(db: Database.Database): void {
-  try {
-    db.prepare('SELECT face_status FROM photos LIMIT 0').get()
-  } catch {
-    db.exec('ALTER TABLE photos ADD COLUMN face_status TEXT DEFAULT \'pending\'')
-  }
-}
-
-/** 确保 photos 上的 video_id / frame_time_ms 列存在（v0.3+ 视频帧 provenance） */
-function ensureVideoFrameColumns(db: Database.Database): void {
-  try {
-    db.prepare('SELECT video_id FROM photos LIMIT 0').get()
-  } catch {
-    db.exec('ALTER TABLE photos ADD COLUMN video_id INTEGER REFERENCES videos(id)')
-  }
-  try {
-    db.prepare('SELECT frame_time_ms FROM photos LIMIT 0').get()
-  } catch {
-    db.exec('ALTER TABLE photos ADD COLUMN frame_time_ms INTEGER')
-  }
-  try {
-    db.exec('CREATE INDEX IF NOT EXISTS idx_photos_video ON photos(video_id)')
-  } catch { /* index may already exist */ }
-}
-
-/** 检测旧 schema 并迁移 */
-function migrateIfNeeded(db: Database.Database): void {
-  try {
-    const tableInfo = db.prepare(`PRAGMA table_info(image_vecs)`).all() as Array<{ name: string }>
-    const hasPhotoId = tableInfo.some((col) => col.name === 'photo_id')
-
-    if (hasPhotoId) {
-      // 先清空 FTS5 内容，再按正确顺序删除
-      try { db.exec(`DELETE FROM captions_fts`) } catch { /* ignore */ }
-      db.exec(`
-        DROP TRIGGER IF EXISTS captions_ai;
-        DROP TRIGGER IF EXISTS captions_ad;
-        DROP TRIGGER IF EXISTS captions_au;
-        DROP TABLE IF EXISTS captions_fts;
-        DROP TABLE IF EXISTS captions;
-        DROP TABLE IF EXISTS image_vecs;
-      `)
-
-      // 重置所有照片的处理状态
-      db.exec(`
-        UPDATE photos SET embed_status = 'pending', caption_status = 'pending', width = NULL, height = NULL;
-        DELETE FROM index_queue;
-      `)
-    }
-  } catch {
-    // 表不存在，正常初始化
   }
 }
