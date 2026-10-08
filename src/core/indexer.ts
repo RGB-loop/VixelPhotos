@@ -12,6 +12,7 @@ import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPer
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 import { decodeImage } from './image/decode'
 import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
+import { generateSprite } from './video/sprite'
 import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
 import { SEGMENT_MS } from './db'
 
@@ -296,6 +297,16 @@ export class Indexer extends EventEmitter {
       this.setCurrent('extract_frames', kind, video.fileName, i + 1, numSegments, Date.now() - segStartedAt)
     }
 
+    // 悬停拖动预览的 sprite：放在片段之后，不推迟视频出现在网格里；失败不影响索引
+    // （渲染端拿不到 sprite 会回退到播放预览，老视频由 vixel://sprite 按需补生成）
+    if (kind === 'video' && this.db.getVideoById(videoId)) {
+      try {
+        await generateSprite(video.filePath, durationMs, this.getSpritePath(video.fileHash))
+      } catch (spriteError) {
+        console.warn(`Sprite generation failed for ${video.filePath}:`, spriteError)
+      }
+    }
+
     if (!modelReady) {
       throw new Error(`Embedding model not ready: ${embeddingService.getInitError() ?? 'unknown'}`)
     }
@@ -411,6 +422,11 @@ export class Indexer extends EventEmitter {
   /** 获取某视频的帧 JPEG 输出目录（按视频 hash） */
   getVideoFramesDir(videoHash: string): string {
     return join(this.userDataPath, 'video_frames', videoHash)
+  }
+
+  /** 悬停拖动预览的 sprite（与抽帧同目录，重新索引时一起清掉） */
+  getSpritePath(videoHash: string): string {
+    return join(this.getVideoFramesDir(videoHash), 'sprite.jpg')
   }
 
   async processNext(): Promise<void> {

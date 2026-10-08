@@ -14,6 +14,8 @@ import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
+import { ensureSprite } from '../core/video/sprite'
+import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
@@ -562,6 +564,7 @@ function registerIpcHandlers(): void {
  *   vixel://thumb/<photoId>           → <userData>/thumbnails/<hash>.webp
  *   vixel://image/<photoId>           → 原图文件路径
  *   vixel://media/<videoId>           → 音视频源文件（手写 Range，供 <video>/<audio> seek）
+ *   vixel://sprite/<videoId>          → 悬停拖动预览 sprite；老视频没有时按需生成
  *
  * 比 base64-over-IPC 显著省事：
  *   - 主进程不必把文件读进字符串再 base64
@@ -601,6 +604,22 @@ function registerVixelProtocol(): void {
         const video = db.getVideoById(id)
         if (!video || !existsSync(video.filePath)) return new Response('not found', { status: 404 })
         return serveMediaFile(video.filePath, request.headers.get('range'))
+      }
+
+      if (host === 'sprite' && pathParts.length === 1) {
+        const id = parseInt(pathParts[0], 10)
+        if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
+        const video = db.getVideoById(id)
+        if (!video || video.mediaKind !== 'video') return new Response('not found', { status: 404 })
+        const spritePath = indexer.getSpritePath(video.fileHash)
+        if (!existsSync(spritePath)) {
+          // 还没抽过帧（时长未知）的视频交给索引任务，这里不抢
+          if (!video.durationMs || !existsSync(video.filePath) || !isFfmpegAvailable()) {
+            return new Response('not ready', { status: 404 })
+          }
+          await ensureSprite(video.filePath, video.durationMs, spritePath)
+        }
+        return net.fetch(pathToFileURL(spritePath).toString())
       }
 
       return new Response('unknown vixel path', { status: 404 })

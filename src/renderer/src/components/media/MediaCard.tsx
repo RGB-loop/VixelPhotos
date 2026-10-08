@@ -37,7 +37,9 @@ export const KindIcon = ({ kind, className = 'w-2.5 h-2.5' }: { kind: 'video' | 
  * 沉浸式（默认浏览）只保留右下时长，其余悬停才出现，让画面本身说话。
  * 底边细线：悬停预览时是播放进度，否则是命中片段在全长中的位置。
  * 索引状态、副本数、相关度分数不上卡片，放在检查器里。
- * 视频悬停 400ms 后从命中片段（无命中则从头）静音播放预览，移开即卸载 <video> 释放解码器。
+ * 视频悬停：优先用索引时生成的 sprite（vixel://sprite）按鼠标横坐标换帧，底边线跟着走、
+ * 右下改显示该位置的时间；没有 sprite 时回退为 400ms 后从命中片段（无命中则从头）静音播放，
+ * 移开即卸载 <video> 释放解码器。
  */
 export const MediaCard = memo(function MediaCard({
   result, index, selected, rank, density, onClick, onDoubleClick, onContextMenu,
@@ -50,18 +52,44 @@ export const MediaCard = memo(function MediaCard({
   const [previewing, setPreviewing] = useState(false)
   const [previewRatio, setPreviewRatio] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout>>()
+  // sprite：null = 还没试过；0 = 拿不到（回退播放预览）；>0 = 帧数（按宽高比推出，tile 是正方形）
+  const [spriteFrames, setSpriteFrames] = useState<number | null>(null)
+  const [scrub, setScrub] = useState<number | null>(null)
 
   useEffect(() => () => clearTimeout(timer.current), [])
 
-  const handleEnter = (): void => {
-    if (kind !== 'video' || photo.videoId == null) return
+  const canPreview = kind === 'video' && photo.videoId != null
+  const startPreviewTimer = (): void => {
+    clearTimeout(timer.current)
     timer.current = setTimeout(() => setPreviewing(true), HOVER_PREVIEW_DELAY_MS)
+  }
+
+  const handleEnter = (e: React.MouseEvent): void => {
+    if (!canPreview) return
+    setScrub(ratioAt(e))
+    if (spriteFrames === 0) { startPreviewTimer(); return }
+    if (spriteFrames !== null) return
+    // 第一次悬停才请求：老视频的 sprite 要主进程现生成，可能要几秒，先按回退方案计时
+    startPreviewTimer()
+    const img = new Image()
+    img.onload = () => {
+      const n = Math.round(img.naturalWidth / img.naturalHeight)
+      setSpriteFrames(n >= 2 ? n : 0)
+      if (n >= 2) { clearTimeout(timer.current); setPreviewing(false) }
+    }
+    img.onerror = () => setSpriteFrames(0)
+    img.src = `vixel://sprite/${photo.videoId}`
+  }
+  const handleMove = (e: React.MouseEvent): void => {
+    if (canPreview && spriteFrames) setScrub(ratioAt(e))
   }
   const handleLeave = (): void => {
     clearTimeout(timer.current)
     setPreviewing(false)
     setPreviewRatio(0)
+    setScrub(null)
   }
+  const scrubbing = !!spriteFrames && scrub !== null
 
   const startSec = (segment?.startMs ?? 0) / 1000
   const duration = photo.durationMs ?? 0
@@ -77,6 +105,7 @@ export const MediaCard = memo(function MediaCard({
       onDoubleClick={() => onDoubleClick(index)}
       onContextMenu={(e) => onContextMenu(index, e)}
       onMouseEnter={handleEnter}
+      onMouseMove={handleMove}
       onMouseLeave={handleLeave}
       data-selected={selected || undefined}
     >
@@ -102,7 +131,19 @@ export const MediaCard = memo(function MediaCard({
         />
       )}
 
-      {previewing && (
+      {scrubbing && spriteFrames && (
+        <div
+          className="absolute inset-0 bg-no-repeat"
+          data-scrub={Math.min(spriteFrames - 1, Math.floor(scrub * spriteFrames))}
+          style={{
+            backgroundImage: `url(vixel://sprite/${photo.videoId})`,
+            backgroundSize: `${spriteFrames * 100}% 100%`,
+            backgroundPositionX: `${(Math.min(spriteFrames - 1, Math.floor(scrub * spriteFrames)) / (spriteFrames - 1)) * 100}%`,
+          }}
+        />
+      )}
+
+      {previewing && !scrubbing && (
         <video
           src={`vixel://media/${photo.videoId}#t=${startSec}`}
           className="absolute inset-0 w-full h-full object-cover animate-fade-in"
@@ -167,12 +208,16 @@ export const MediaCard = memo(function MediaCard({
       {kind !== 'image' && (
         <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-white/90 text-micro font-medium tabular-nums pointer-events-none">
           <KindIcon kind={kind} />
-          {duration > 0 && formatDuration(duration)}
+          {duration > 0 && formatDuration(scrubbing ? scrub * duration : duration)}
         </span>
       )}
 
-      {/* 底边细线：预览进度 / 命中片段位置 */}
-      {previewing ? (
+      {/* 底边细线：拖动位置 / 预览进度 / 命中片段位置 */}
+      {scrubbing ? (
+        <div className="absolute bottom-0 inset-x-0 h-[2px] bg-white/15 pointer-events-none">
+          <div className="h-full bg-accent" style={{ width: `${scrub * 100}%` }} />
+        </div>
+      ) : previewing ? (
         <div className="absolute bottom-0 inset-x-0 h-[2px] bg-white/15 pointer-events-none">
           <div className="h-full bg-accent" style={{ width: `${previewRatio * 100}%` }} />
         </div>
@@ -187,3 +232,8 @@ export const MediaCard = memo(function MediaCard({
     </div>
   )
 })
+
+function ratioAt(e: React.MouseEvent): number {
+  const r = e.currentTarget.getBoundingClientRect()
+  return r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0
+}
