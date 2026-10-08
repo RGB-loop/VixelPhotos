@@ -8,7 +8,7 @@ export type MediaKind = 'image' | 'video' | 'audio'
 /** 原生菜单发给渲染进程的命令；每个快捷键都挂在菜单上，渲染进程不自己监听 ⌘ 组合键 */
 export type MenuCommand =
   | 'source:all' | 'source:image' | 'source:video' | 'source:audio' | 'source:map' | 'source:people'
-  | 'find' | 'toggle-sidebar' | 'zoom-in' | 'zoom-out' | 'settings' | 'activity' | 'add-folder'
+  | 'find' | 'toggle-sidebar' | 'zoom-in' | 'zoom-out' | 'activity' | 'add-folder' | 'toggle-density'
   | 'toggle-inspector' | 'reveal' | 'quick-look' | 'open-item' | 'select-all'
 
 /** 网格右键菜单（原生 Menu.popup）里用户选中的动作 */
@@ -196,6 +196,8 @@ export const IPC_CHANNELS = {
 
   // 原生菜单 → 渲染进程（main 发，renderer 听）
   MENU_COMMAND: 'menu-command',
+  OPEN_SETTINGS: 'open-settings',
+  LIBRARY_CHANGED: 'library-changed',
   SHOW_ITEM_MENU: 'show-item-menu',
 
   // 照片

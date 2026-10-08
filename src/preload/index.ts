@@ -30,6 +30,17 @@ const api = {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_LIBRARY_COUNTS)
   },
   /** 原生菜单命令（快捷键都挂在菜单上） */
+  openSettings: (): Promise<void> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.OPEN_SETTINGS)
+  },
+  /** 文件夹增删（任意窗口发起）后主进程广播 */
+  onLibraryChanged: (callback: () => void): (() => void) => {
+    const handler = (): void => callback()
+    ipcRenderer.on(IPC_CHANNELS.LIBRARY_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.LIBRARY_CHANGED, handler)
+    }
+  },
   onMenuCommand: (callback: (cmd: MenuCommand) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, cmd: MenuCommand): void => callback(cmd)
     ipcRenderer.on(IPC_CHANNELS.MENU_COMMAND, handler)

@@ -1,13 +1,20 @@
-import { app, Menu, shell, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
+import { app, Menu, shell, BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 import { IPC_CHANNELS, type ItemMenuAction, type MenuCommand } from '../shared/types'
 
 /**
  * 原生应用菜单。设计 spec 要求：每个快捷键都能在菜单里找到，
  * 所以 ⌘ 组合键统一在这里注册，点击后把命令发给渲染进程。
  */
-export function installAppMenu(getWindow: () => BrowserWindow | null): void {
+export function installAppMenu(
+  getWindow: () => BrowserWindow | null,
+  { openSettings }: { openSettings: () => void }
+): void {
+  // 命令只发给主窗口；设置窗口在前台时（⌘A、⌘1 之类）不去动主窗口
   const send = (cmd: MenuCommand) => (): void => {
-    getWindow()?.webContents.send(IPC_CHANNELS.MENU_COMMAND, cmd)
+    const win = getWindow()
+    const focused = BrowserWindow.getFocusedWindow()
+    if (!win || (focused && focused !== win && cmd !== 'add-folder')) return
+    win.webContents.send(IPC_CHANNELS.MENU_COMMAND, cmd)
   }
   const item = (label: string, accelerator: string, cmd: MenuCommand): MenuItemConstructorOptions => ({
     label, accelerator, click: send(cmd),
@@ -23,7 +30,7 @@ export function installAppMenu(getWindow: () => BrowserWindow | null): void {
       submenu: [
         { role: 'about', label: `关于 ${app.name}` },
         { type: 'separator' },
-        item('设置…', 'CmdOrCtrl+,', 'settings'),
+        { label: '设置…', accelerator: 'CmdOrCtrl+,', click: openSettings },
         { type: 'separator' },
         { role: 'services', label: '服务' },
         { type: 'separator' },
@@ -75,6 +82,7 @@ export function installAppMenu(getWindow: () => BrowserWindow | null): void {
         { type: 'separator' },
         item('放大缩略图', 'CmdOrCtrl+Plus', 'zoom-in'),
         item('缩小缩略图', 'CmdOrCtrl+-', 'zoom-out'),
+        hint('切换信息密度', 'G', 'toggle-density'),
         { type: 'separator' },
         item('显示/隐藏侧边栏', 'CmdOrCtrl+Alt+S', 'toggle-sidebar'),
         item('显示/隐藏检查器', 'CmdOrCtrl+I', 'toggle-inspector'),

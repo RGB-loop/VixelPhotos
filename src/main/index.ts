@@ -31,6 +31,7 @@ let watcher: FileWatcher
 let indexer: Indexer
 let searchEngine: SearchEngine
 let mainWindow: BrowserWindow | null = null
+let settingsWindow: BrowserWindow | null = null
 let bundledModelsDir: string = ''
 
 /** 窗口底色：首帧渲染前露出来的颜色，要和当前外观的内容区一致，否则切换 / 打开时闪一下 */
@@ -51,8 +52,28 @@ function loadTheme(): ThemeMode {
   return v === 'light' || v === 'dark' ? v : 'system'
 }
 
+const WEB_PREFERENCES: Electron.WebPreferences = {
+  preload: join(__dirname, '../preload/index.js'),
+  sandbox: false,
+  contextIsolation: true,
+  nodeIntegration: false,
+}
+
+/** 主窗口和设置窗口共用一个渲染入口，按 hash 区分（main.tsx 里路由） */
+function loadRenderer(win: BrowserWindow, hash?: string): void {
+  win.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + (hash ? `#${hash}` : ''))
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), hash ? { hash } : undefined)
+  }
+}
+
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     backgroundColor: windowBackground(),
     width: 1200,
     height: 800,
@@ -63,28 +84,44 @@ function createWindow(): void {
     titleBarStyle: 'hiddenInset',
     // 红绿灯垂直居中在 52px 工具栏 / 侧边栏顶部
     trafficLightPosition: { x: 18, y: 19 },
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: WEB_PREFERENCES,
   })
+  mainWindow = win
+  win.on('ready-to-show', () => win.show())
+  win.on('closed', () => { if (mainWindow === win) mainWindow = null })
+  loadRenderer(win)
+}
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
-  })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+/** 设置窗口（⌘,）：独立窗口、单例，再次打开只是拉到前面 */
+function openSettingsWindow(): void {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show()
+    settingsWindow.focus()
+    return
   }
+  const win = new BrowserWindow({
+    backgroundColor: windowBackground(),
+    width: 640,
+    height: 600,
+    minWidth: 560,
+    minHeight: 440,
+    show: false,
+    title: '设置',
+    fullscreenable: false,
+    minimizable: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: WEB_PREFERENCES,
+  })
+  settingsWindow = win
+  win.on('ready-to-show', () => win.show())
+  win.on('closed', () => { if (settingsWindow === win) settingsWindow = null })
+  loadRenderer(win, 'settings')
+}
+
+/** 文件夹增删后通知所有窗口：主窗口刷新侧边栏 / 网格，设置窗口刷新列表 */
+function broadcastLibraryChanged(): void {
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send(IPC_CHANNELS.LIBRARY_CHANGED)
 }
 
 async function initServices(): Promise<void> {
@@ -212,7 +249,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SELECT_FOLDER, async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+    const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow!, {
       properties: ['openDirectory'],
     })
     if (result.canceled) return null
@@ -222,6 +259,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ADD_FOLDER, async (_event, folderPath: string) => {
     const folder = db.addFolder(folderPath)
     watcher.watchFolder(folder.id, folder.path)
+    broadcastLibraryChanged()
     return folder
   })
 
@@ -247,9 +285,12 @@ function registerIpcHandlers(): void {
         await rm(indexer.getVideoFramesDir(hash), { recursive: true, force: true }).catch(() => {})
       }
       db.removeFolder(folderId)
+      broadcastLibraryChanged()
     }
     return true
   })
+
+  ipcMain.handle(IPC_CHANNELS.OPEN_SETTINGS, async () => openSettingsWindow())
 
   ipcMain.handle(IPC_CHANNELS.GET_THEME, async () => loadTheme())
 
@@ -584,11 +625,12 @@ app.whenReady().then(async () => {
   })
   registerVixelProtocol()
   registerIpcHandlers()
-  installAppMenu(() => mainWindow)
+  installAppMenu(() => mainWindow, { openSettings: openSettingsWindow })
   createWindow()
 
+  // 只剩设置窗口时点 Dock 图标也要把主窗口找回来
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (!mainWindow) createWindow()
   })
 })
 

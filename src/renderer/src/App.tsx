@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { PhotoGrid } from './components/PhotoGrid'
 import { PhotoDetail } from './components/PhotoDetail'
-import { FolderManager } from './components/FolderManager'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
 import { TaskDrawer } from './components/tasks/TaskDrawer'
@@ -54,7 +53,6 @@ function savePref(key: string, value: string): void {
 function App(): JSX.Element {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [selected, setSelected] = useState<SearchResult | null>(null)
-  const [showFolderManager, setShowFolderManager] = useState(false)
   const [indexProgress, setIndexProgress] = useState<IndexProgressType | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   const [query, setQuery] = useState('')
@@ -122,10 +120,8 @@ function App(): JSX.Element {
 
   // 初始加载
   useEffect(() => {
-    refreshLibrary().then((f) => {
-      if (f.length === 0) setShowFolderManager(true)
-      else runSearch()
-    })
+    // 没有文件夹时空状态自带"添加文件夹…"，不再自动弹设置
+    refreshLibrary().then((f) => { if (f.length > 0) runSearch() })
   }, [refreshLibrary, runSearch])
 
   // 索引进度：照片数变化时节流刷新计数和（无查询时的）网格
@@ -385,14 +381,15 @@ function App(): JSX.Element {
   }, [])
   const dismissInspector = useCallback(() => setInspectorDismissed(true), [])
 
-  const handleFolderManagerClose = useCallback(async () => {
-    setShowFolderManager(false)
+  // 文件夹在任意窗口（设置窗口 / 侧边栏 +）增删后主进程广播过来
+  const handleLibraryChanged = useCallback(async () => {
     const f = await refreshLibrary()
     // 当前选中的文件夹被移除了：回到全部
     const src = filters.current.source
     if (src.type === 'folder' && !f.some((x) => x.id === src.id)) handleSelectSource({ type: 'library', kind: 'all' })
     else runSearch()
   }, [refreshLibrary, runSearch, handleSelectSource])
+  useEffect(() => window.api.onLibraryChanged(handleLibraryChanged), [handleLibraryChanged])
 
   // 原生菜单命令（快捷键由菜单注册，渲染进程不再自己监听 ⌘F / ⌘,）
   const menuHandler = useRef<(cmd: MenuCommand) => void>(() => {})
@@ -410,7 +407,6 @@ function App(): JSX.Element {
       case 'toggle-sidebar': toggleSidebar(); break
       case 'zoom-in': handleThumbSize(thumbSize + 40); break
       case 'zoom-out': handleThumbSize(thumbSize - 40); break
-      case 'settings': setShowFolderManager(true); break
       case 'activity': setShowTasks((s) => !s); break
       case 'add-folder': handleAddFolder(); break
       case 'toggle-inspector': toggleInspector(); break
@@ -434,17 +430,16 @@ function App(): JSX.Element {
   }
   useEffect(() => window.api.onMenuCommand((cmd) => menuHandler.current(cmd)), [])
 
-  // 键盘：Esc 逐层退出（快速查看自己在捕获阶段处理）→ 详情 → 设置 → 清空选择；
+  // 键盘：Esc 逐层退出（快速查看自己在捕获阶段处理）→ 详情 → 清空选择；
   // 网格上的方向键 / Space / ↩ 只在没有浮层时生效。抽屉自己处理 Esc。
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         if (selected) setSelected(null)
-        else if (showFolderManager) setShowFolderManager(false)
         else if (!showTasks && selectedIds.size > 0 && !isTextInput(e.target)) clearSelection()
         return
       }
-      if (!isGrid || selected || showFolderManager || showTasks) return
+      if (!isGrid || selected || showTasks) return
       if (isTextInput(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault()
@@ -461,7 +456,7 @@ function App(): JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showFolderManager, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection])
+  }, [selected, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection])
 
   const hasDateFilter = !!(dateFrom || dateTo)
   const libraryEmpty = counts !== null && counts.all === 0
@@ -514,7 +509,7 @@ function App(): JSX.Element {
           resultCount={hasSearchQuery ? searchResults.length : undefined}
           dateActive={showDateFilter || hasDateFilter}
           onToggleDate={() => setShowDateFilter((s) => !s)}
-          onOpenSettings={() => setShowFolderManager(true)}
+          onOpenSettings={() => window.api.openSettings()}
         />
 
         {/* 日期过滤栏 */}
@@ -640,10 +635,6 @@ function App(): JSX.Element {
         />
       )}
 
-      {/* 设置面板 */}
-      {showFolderManager && (
-        <FolderManager onClose={handleFolderManagerClose} />
-      )}
     </div>
   )
 }
