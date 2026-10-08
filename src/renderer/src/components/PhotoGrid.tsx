@@ -1,14 +1,15 @@
 import { useCallback, useState, useEffect, useRef, useMemo } from 'react'
 import { FixedSizeGrid, type GridChildComponentProps } from 'react-window'
 import type { SearchResult } from '../../../shared/types'
-import { MediaCard } from './media/MediaCard'
+import { MediaCard, type GridDensity } from './media/MediaCard'
 
-/** 卡片间距（px）：每格四周各留一半 */
-const GAP = 4
+/** 卡片间距（px）：每格四周各留一半。沉浸式更紧，让画面连成一片 */
+const GAP = { immersive: 2, info: 6 } as const
 
 interface PhotoGridProps {
   results: SearchResult[]
   isSearching?: boolean
+  density: GridDensity
   /** 目标缩略图边长（px），由状态栏滑块控制；实际列宽按容器宽度取整均分 */
   thumbSize: number
   selectedIds: Set<number>
@@ -24,11 +25,12 @@ interface PhotoGridProps {
 }
 
 export function PhotoGrid({
-  results, isSearching, thumbSize, selectedIds, focusIndex,
+  results, isSearching, density, thumbSize, selectedIds, focusIndex,
   onItemClick, onItemOpen, onItemContextMenu, onColsChange, onBackgroundClick,
 }: PhotoGridProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<FixedSizeGrid>(null)
+  const gap = GAP[density]
   const [size, setSize] = useState({ w: 0, h: 0 })
 
   // 测量容器宽高；ResizeObserver 比 window.resize 更稳健（侧栏开合也能感知）
@@ -89,12 +91,13 @@ export function PhotoGrid({
       if (idx >= results.length) return null
       const result = results[idx]
       return (
-        <div style={{ ...style, padding: GAP / 2 }}>
+        <div style={{ ...style, padding: gap / 2 }}>
           <MediaCard
             result={result}
             index={idx}
             selected={selectedIds.has(result.photo.id)}
             rank={isSearching ? idx + 1 : undefined}
+            density={density}
             onClick={onItemClick}
             onDoubleClick={onItemOpen}
             onContextMenu={onItemContextMenu}
@@ -102,14 +105,14 @@ export function PhotoGrid({
         </div>
       )
     },
-    [results, cols, selectedIds, isSearching, onItemClick, onItemOpen, onItemContextMenu]
+    [results, cols, selectedIds, isSearching, density, gap, onItemClick, onItemOpen, onItemContextMenu]
   )
 
   return (
     <div
       ref={containerRef}
       className="h-full overflow-hidden"
-      style={{ padding: GAP / 2 }}
+      style={{ padding: gap / 2 }}
       onClick={(e) => { if (!(e.target as HTMLElement).closest('.photo-card')) onBackgroundClick() }}
     >
       {size.w > 0 && size.h > 0 && (

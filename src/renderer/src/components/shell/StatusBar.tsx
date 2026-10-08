@@ -14,6 +14,9 @@ interface StatusBarProps {
   /** 仅网格视图显示缩略图大小滑块 */
   thumbSize?: number
   onThumbSize?: (size: number) => void
+  /** 网格信息密度（G） */
+  density?: 'immersive' | 'info'
+  onToggleDensity?: () => void
 }
 
 /** 当前活动的一句话描述 + 进度（0–1，未知为 null） */
@@ -39,7 +42,7 @@ function describeActivity(p: IndexProgress | null): { text: string; detail?: str
   return null
 }
 
-export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, onOpenActivity, thumbSize, onThumbSize }: StatusBarProps): JSX.Element {
+export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, onOpenActivity, thumbSize, onThumbSize, density, onToggleDensity }: StatusBarProps): JSX.Element {
   // 首个 progress 事件到来前先问一次主进程（暂停状态会跨重启保留）
   const [paused, setPaused] = useState(false)
   useEffect(() => {
@@ -105,6 +108,34 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
           className="flex-shrink-0 px-1.5 rounded text-ink-2 hover:text-ink hover:bg-fill-hover transition-colors duration-fast"
         >
           {paused ? '继续' : '暂停'}
+        </button>
+      )}
+
+      {density && onToggleDensity && (
+        <button
+          onClick={onToggleDensity}
+          title={`信息密度：${density === 'info' ? '信息式' : '沉浸式'} (G)`}
+          aria-pressed={density === 'info'}
+          data-density={density}
+          className={`flex-shrink-0 w-5 h-[18px] rounded flex items-center justify-center transition-colors duration-fast ${
+            density === 'info' ? 'text-accent bg-accent/15' : 'text-ink-3 hover:text-ink hover:bg-fill-hover'
+          }`}
+        >
+          <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+            {density === 'info' ? (
+              <>
+                <rect x="0.5" y="0.5" width="4.5" height="4.5" rx="1" /><rect x="7" y="0.5" width="4.5" height="4.5" rx="1" />
+                <rect x="0.5" y="7" width="4.5" height="4.5" rx="1" /><rect x="7" y="7" width="4.5" height="4.5" rx="1" />
+                <rect x="1.5" y="3.5" width="2.5" height="0.8" fill="var(--canvas)" /><rect x="8" y="3.5" width="2.5" height="0.8" fill="var(--canvas)" />
+                <rect x="1.5" y="10" width="2.5" height="0.8" fill="var(--canvas)" /><rect x="8" y="10" width="2.5" height="0.8" fill="var(--canvas)" />
+              </>
+            ) : (
+              <>
+                <rect x="0" y="0" width="5.6" height="5.6" rx="0.8" /><rect x="6.4" y="0" width="5.6" height="5.6" rx="0.8" />
+                <rect x="0" y="6.4" width="5.6" height="5.6" rx="0.8" /><rect x="6.4" y="6.4" width="5.6" height="5.6" rx="0.8" />
+              </>
+            )}
+          </svg>
         </button>
       )}
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { PhotoGrid } from './components/PhotoGrid'
+import type { GridDensity } from './components/media/MediaCard'
 import { PhotoDetail } from './components/PhotoDetail'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
@@ -83,6 +84,13 @@ function App(): JSX.Element {
   const [narrow, setNarrow] = useState(() => window.innerWidth < INSPECTOR_DOCK_MIN_WINDOW)
 
   const hasSearchQuery = !!query.trim()
+  // 信息密度：浏览默认沉浸式，搜索结果默认信息式；按 G 临时翻转，换查询 / 来源后回到默认
+  const [densityOverride, setDensityOverride] = useState<GridDensity | null>(null)
+  const density: GridDensity = densityOverride ?? (hasSearchQuery ? 'info' : 'immersive')
+  const toggleDensity = useCallback(() => {
+    setDensityOverride(density === 'info' ? 'immersive' : 'info')
+  }, [density])
+  useEffect(() => { setDensityOverride(null) }, [query, source])
   const isGrid = source.type === 'library' || source.type === 'folder' || source.type === 'similar'
 
   // 查询条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前来源 + 日期，
@@ -405,6 +413,7 @@ function App(): JSX.Element {
         setTimeout(() => document.getElementById('search-input')?.focus(), 0)
         break
       case 'toggle-sidebar': toggleSidebar(); break
+      case 'toggle-density': if (isGrid) toggleDensity(); break
       case 'zoom-in': handleThumbSize(thumbSize + 40); break
       case 'zoom-out': handleThumbSize(thumbSize - 40); break
       case 'activity': setShowTasks((s) => !s); break
@@ -452,11 +461,14 @@ function App(): JSX.Element {
         if (!primary) return
         e.preventDefault()
         setSelected(primary)
+      } else if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault()
+        toggleDensity()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection])
+  }, [selected, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection, toggleDensity])
 
   const hasDateFilter = !!(dateFrom || dateTo)
   const libraryEmpty = counts !== null && counts.all === 0
@@ -551,6 +563,7 @@ function App(): JSX.Element {
             <PhotoGrid
               results={searchResults}
               isSearching={hasSearchQuery && source.type !== 'similar'}
+              density={density}
               thumbSize={thumbSize}
               selectedIds={selectedIds}
               focusIndex={focusIndex}
@@ -610,6 +623,8 @@ function App(): JSX.Element {
           onOpenActivity={() => setShowTasks(true)}
           thumbSize={isGrid ? thumbSize : undefined}
           onThumbSize={handleThumbSize}
+          density={isGrid ? density : undefined}
+          onToggleDensity={toggleDensity}
         />
       </div>
 

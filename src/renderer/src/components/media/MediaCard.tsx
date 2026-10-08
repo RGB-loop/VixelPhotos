@@ -2,13 +2,17 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { SearchResult } from '../../../../shared/types'
 import { formatDuration, mediaKindOf } from '../../lib/format'
 
+export type GridDensity = 'immersive' | 'info'
+
 interface MediaCardProps {
   result: SearchResult
   /** 在网格里的线性位置；回调都带 index，父组件可以传稳定的函数，memo 才有效 */
   index: number
   selected: boolean
-  /** 仅搜索时显示排名 */
+  /** 仅搜索时显示排名（信息式才画出来） */
   rank?: number
+  /** 沉浸式只留时长；信息式四角全开、文件名常驻 */
+  density: GridDensity
   onClick: (index: number, e: React.MouseEvent) => void
   onDoubleClick: (index: number) => void
   onContextMenu: (index: number, e: React.MouseEvent) => void
@@ -27,17 +31,19 @@ export const KindIcon = ({ kind, className = 'w-2.5 h-2.5' }: { kind: 'video' | 
   )
 
 /**
- * 网格卡片：图片 / 视频 / 音频统一入口。四角各有固定职责：
+ * 网格卡片：图片 / 视频 / 音频统一入口。信息式下四角各有固定职责：
  *   左上 排名（仅搜索）   右上 悬停"⋯"更多操作
  *   左下 命中时间点       右下 类型图标 + 时长
+ * 沉浸式（默认浏览）只保留右下时长，其余悬停才出现，让画面本身说话。
  * 底边细线：悬停预览时是播放进度，否则是命中片段在全长中的位置。
  * 索引状态、副本数、相关度分数不上卡片，放在检查器里。
  * 视频悬停 400ms 后从命中片段（无命中则从头）静音播放预览，移开即卸载 <video> 释放解码器。
  */
 export const MediaCard = memo(function MediaCard({
-  result, index, selected, rank, onClick, onDoubleClick, onContextMenu,
+  result, index, selected, rank, density, onClick, onDoubleClick, onContextMenu,
 }: MediaCardProps): JSX.Element {
   const { photo, segment } = result
+  const info = density === 'info'
   const kind = mediaKindOf(photo)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -121,8 +127,10 @@ export const MediaCard = memo(function MediaCard({
         </div>
       )}
 
-      {/* 悬停：文件名 + 描述 */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-fast pointer-events-none">
+      {/* 文件名 + 描述：信息式常驻，沉浸式悬停才出现 */}
+      <div className={`absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent transition-opacity duration-fast pointer-events-none ${
+        info ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+      }`}>
         <div className="absolute bottom-7 left-0 right-0 px-2.5">
           <p className="text-white/90 text-callout truncate font-medium">{photo.fileName}</p>
           {photo.caption && <p className="text-white/60 text-caption truncate mt-0.5">{photo.caption}</p>}
@@ -130,7 +138,7 @@ export const MediaCard = memo(function MediaCard({
       </div>
 
       {/* 左上：排名 */}
-      {rank != null && (
+      {info && rank != null && (
         <span className="absolute top-1.5 left-1.5 min-w-[18px] h-[18px] px-1 rounded bg-black/60 backdrop-blur-sm text-white/90 text-micro font-semibold tabular-nums flex items-center justify-center pointer-events-none">
           {rank}
         </span>
@@ -149,7 +157,7 @@ export const MediaCard = memo(function MediaCard({
       </button>
 
       {/* 左下：命中时间点 */}
-      {segment && (
+      {info && segment && (
         <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-accent text-black/85 text-micro font-semibold tabular-nums pointer-events-none">
           {formatDuration(segment.startMs)}
         </span>
