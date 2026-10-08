@@ -16,7 +16,14 @@ module.exports = {
           DEFAULT: '#d4a574',
           dim: '#a67c52',
           bright: '#e8c49a',
+          // 选中行 / 选中 chip 的底色
+          fill: 'rgb(212 165 116 / 0.18)',
         },
+        // 外壳表面：内容区 / 侧边栏·检查器 / 工具栏·状态栏 / 浮层·抽屉
+        canvas: '#0f0f0f',
+        sidebar: '#171615',
+        bar: '#1b1a19',
+        raised: '#232120',
         // —— 设计 spec 语义色（docs/design/vixel-design-spec.html）——
         // 文字层级：主文 / 次要 / 辅助 / 禁用；ghost 只给装饰性图标，不用于可读文字
         ink: {

@@ -1,37 +1,34 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { SearchBar } from './components/SearchBar'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { PhotoGrid } from './components/PhotoGrid'
 import { PhotoDetail } from './components/PhotoDetail'
 import { FolderManager } from './components/FolderManager'
-import { IndexProgress } from './components/IndexProgress'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
 import { TaskDrawer } from './components/tasks/TaskDrawer'
-import type { SearchResult, Photo, MediaKind, IndexProgress as IndexProgressType } from '../../shared/types'
+import { Sidebar, LIBRARY_ITEMS, SIDEBAR_MIN, SIDEBAR_MAX, folderName, type Source } from './components/shell/Sidebar'
+import { Toolbar } from './components/shell/Toolbar'
+import { StatusBar, THUMB_MIN, THUMB_MAX } from './components/shell/StatusBar'
+import { Icon } from './components/shell/icons'
+import { countLine } from './lib/format'
+import type {
+  SearchResult, Photo, LibraryCounts, WatchedFolder, MenuCommand,
+  IndexProgress as IndexProgressType,
+} from '../../shared/types'
 
-type ViewMode = 'grid' | 'map' | 'people'
-type KindFilter = 'all' | MediaKind
+/** 空查询浏览时一次取够整个资料库（网格是虚拟化的，渲染成本与总数无关） */
+const BROWSE_LIMIT = 20000
 
-const KIND_FILTERS: { value: KindFilter; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'image', label: '图片' },
-  { value: 'video', label: '视频' },
-  { value: 'audio', label: '音频' },
-]
-
-const VIEW_ICONS: Record<ViewMode, { title: string; path: string }> = {
-  grid: {
-    title: '图片',
-    path: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z',
-  },
-  map: {
-    title: '地图',
-    path: 'M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z',
-  },
-  people: {
-    title: '人物',
-    path: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z',
-  },
+// 外壳偏好只存本机，读写失败（隐私模式 / 被清空）时回落默认值
+function loadPref(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const v = Number(localStorage.getItem(key))
+    return v >= min && v <= max ? v : fallback
+  } catch {
+    return fallback
+  }
+}
+function savePref(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch { /* 忽略 */ }
 }
 
 function App(): JSX.Element {
@@ -40,321 +37,309 @@ function App(): JSX.Element {
   const [showFolderManager, setShowFolderManager] = useState(false)
   const [indexProgress, setIndexProgress] = useState<IndexProgressType | null>(null)
   const [isSearching, setIsSearching] = useState(false)
-  const [hasPhotos, setHasPhotos] = useState(false)
-  const [hasSearchQuery, setHasSearchQuery] = useState(false)
+  const [query, setQuery] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showDateFilter, setShowDateFilter] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [showTasks, setShowTasks] = useState(false)
-  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
-  const currentQuery = useRef('')
-  // 过滤条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前日期 + 类型，
-  // 不用每个调用点各自传参，也不会因闭包拿到旧值
-  const filters = useRef<{ from: string; to: string; kind: KindFilter }>({ from: '', to: '', kind: 'all' })
+  const [source, setSource] = useState<Source>({ type: 'library', kind: 'all' })
+  const [counts, setCounts] = useState<LibraryCounts | null>(null)
+  const [folders, setFolders] = useState<WatchedFolder[]>([])
+  const [sidebarHidden, setSidebarHidden] = useState(() => {
+    try { return localStorage.getItem('shell.sidebarHidden') === '1' } catch { return false }
+  })
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadPref('shell.sidebarWidth', 232, SIDEBAR_MIN, SIDEBAR_MAX))
+  const [thumbSize, setThumbSize] = useState(() => loadPref('shell.thumbSize', 200, THUMB_MIN, THUMB_MAX))
 
-  const doSearch = useCallback(async (query: string) => {
-    const { from, to, kind } = filters.current
-    const options = (from || to || kind !== 'all')
-      ? { dateFrom: from || undefined, dateTo: to || undefined, kind: kind === 'all' ? undefined : kind }
+  const hasSearchQuery = !!query.trim()
+  const isGrid = source.type === 'library' || source.type === 'folder'
+
+  // 查询条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前来源 + 日期，
+  // 不用每个调用点各自传参，也不会因闭包拿到旧值
+  const filters = useRef({ query: '', from: '', to: '', source })
+
+  const doSearch = useCallback(async (): Promise<SearchResult[]> => {
+    const { query: q, from, to, source: src } = filters.current
+    const kind = src.type === 'library' && src.kind !== 'all' ? src.kind : undefined
+    const folderId = src.type === 'folder' ? src.id : undefined
+    const options = (from || to || kind || folderId != null)
+      ? { dateFrom: from || undefined, dateTo: to || undefined, kind, folderId }
       : undefined
-    return window.api.search(query, undefined, options)
+    return window.api.search(q, q.trim() ? undefined : BROWSE_LIMIT, options)
   }, [])
 
-  // 监听索引进度
-  useEffect(() => {
-    let lastThumbnailedCount = 0
-    let lastIndexedCount = 0
-    let lastOcrCount = 0
-
-    const unsubscribe = window.api.onIndexProgress(async (progress) => {
-      setIndexProgress(progress)
-      const thumbnailChanged = progress.thumbnailedPhotos > lastThumbnailedCount
-      const indexedChanged = progress.indexedPhotos > lastIndexedCount
-      const ocrChanged = (progress.ocrPhotos || 0) > lastOcrCount
-      lastThumbnailedCount = progress.thumbnailedPhotos
-      lastIndexedCount = progress.indexedPhotos
-      lastOcrCount = progress.ocrPhotos || 0
-      if (thumbnailChanged || indexedChanged || ocrChanged) {
-        setHasPhotos(true)
-        if (!hasSearchQuery && viewMode === 'grid') {
-          const results = await doSearch('')
-          setSearchResults(results)
-        }
-      }
-    })
-    return unsubscribe
-  }, [hasSearchQuery, doSearch, viewMode])
-
-  // 初始加载
-  useEffect(() => {
-    const init = async () => {
-      const folders = await window.api.getFolders()
-      if (folders.length === 0) {
-        setShowFolderManager(true)
-      } else {
-        const results = await doSearch('')
-        setSearchResults(results)
-        if (results.length > 0) setHasPhotos(true)
-      }
-    }
-    init()
-  }, [doSearch])
-
-  const handleSearch = useCallback(async (query: string) => {
-    const trimmedQuery = query.trim()
-    currentQuery.current = query
-    setHasSearchQuery(!!trimmedQuery)
-    // 搜索时自动切回网格视图
-    if (trimmedQuery && viewMode !== 'grid') setViewMode('grid')
+  const runSearch = useCallback(async () => {
     setIsSearching(true)
     try {
-      const results = await doSearch(query)
-      setSearchResults(results)
+      setSearchResults(await doSearch())
     } catch (error) {
       console.error('Search error:', error)
     } finally {
       setIsSearching(false)
     }
-  }, [doSearch, viewMode])
-
-  const applyFilters = useCallback(async () => {
-    setIsSearching(true)
-    try {
-      const results = await doSearch(currentQuery.current)
-      setSearchResults(results)
-    } catch (error) {
-      console.error('Filter error:', error)
-    } finally {
-      setIsSearching(false)
-    }
   }, [doSearch])
+
+  const refreshLibrary = useCallback(async () => {
+    const [c, f] = await Promise.all([window.api.getLibraryCounts(), window.api.getFolders()])
+    setCounts(c)
+    setFolders(f)
+    return f
+  }, [])
+
+  // 初始加载
+  useEffect(() => {
+    refreshLibrary().then((f) => {
+      if (f.length === 0) setShowFolderManager(true)
+      else runSearch()
+    })
+  }, [refreshLibrary, runSearch])
+
+  // 索引进度：照片数变化时节流刷新计数和（无查询时的）网格
+  useEffect(() => {
+    let last = ''
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = window.api.onIndexProgress((progress) => {
+      setIndexProgress(progress)
+      const sig = `${progress.totalPhotos}/${progress.thumbnailedPhotos}/${progress.indexedPhotos}/${progress.ocrPhotos || 0}`
+      if (sig === last) return
+      last = sig
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = null
+        refreshLibrary()
+        if (!filters.current.query.trim() && filters.current.source.type !== 'map' && filters.current.source.type !== 'people') {
+          doSearch().then(setSearchResults).catch(() => {})
+        }
+      }, 1500)
+    })
+    return () => {
+      unsubscribe()
+      if (timer) clearTimeout(timer)
+    }
+  }, [doSearch, refreshLibrary])
+
+  const handleSelectSource = useCallback((next: Source) => {
+    setSource(next)
+    filters.current = { ...filters.current, source: next }
+    if (next.type === 'library' || next.type === 'folder') runSearch()
+  }, [runSearch])
+
+  const handleSearch = useCallback((q: string) => {
+    setQuery(q)
+    filters.current = { ...filters.current, query: q }
+    // 在地图 / 人物里输入查询：回到当前资料库
+    if (q.trim() && (filters.current.source.type === 'map' || filters.current.source.type === 'people')) {
+      const back: Source = { type: 'library', kind: 'all' }
+      setSource(back)
+      filters.current.source = back
+    }
+    runSearch()
+  }, [runSearch])
 
   const handleDateFilterChange = useCallback((from: string, to: string) => {
     setDateFrom(from)
     setDateTo(to)
     filters.current = { ...filters.current, from, to }
-    applyFilters()
-  }, [applyFilters])
+    runSearch()
+  }, [runSearch])
 
-  const handleKindFilterChange = useCallback((kind: KindFilter) => {
-    setKindFilter(kind)
-    filters.current = { ...filters.current, kind }
-    applyFilters()
-  }, [applyFilters])
+  const handleAddFolder = useCallback(async () => {
+    const path = await window.api.selectFolder()
+    if (!path) return
+    const folder = await window.api.addFolder(path)
+    await refreshLibrary()
+    handleSelectSource({ type: 'folder', id: folder.id })
+  }, [refreshLibrary, handleSelectSource])
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarHidden((h) => {
+      savePref('shell.sidebarHidden', h ? '0' : '1')
+      return !h
+    })
+  }, [])
+
+  const handleSidebarResize = useCallback((w: number) => {
+    setSidebarWidth(w)
+    savePref('shell.sidebarWidth', String(w))
+  }, [])
+
+  const handleThumbSize = useCallback((size: number) => {
+    const clamped = Math.min(THUMB_MAX, Math.max(THUMB_MIN, size))
+    setThumbSize(clamped)
+    savePref('shell.thumbSize', String(clamped))
+  }, [])
 
   const handleSelect = useCallback((result: SearchResult) => setSelected(result), [])
   // 地图 / 人物视图只给 Photo，没有搜索上下文
   const handleSelectPhoto = useCallback((photo: Photo) => setSelected({ photo, score: 0 }), [])
   const handleCloseDetail = useCallback(() => setSelected(null), [])
-  const handleOpenTasks = useCallback(() => setShowTasks(true), [])
   const handleCloseTasks = useCallback(() => setShowTasks(false), [])
 
   const handleFolderManagerClose = useCallback(async () => {
     setShowFolderManager(false)
-    if (!hasSearchQuery) {
-      const results = await doSearch('')
-      setSearchResults(results)
-      if (results.length > 0) setHasPhotos(true)
-    }
-  }, [hasSearchQuery, doSearch])
+    const f = await refreshLibrary()
+    // 当前选中的文件夹被移除了：回到全部
+    const src = filters.current.source
+    if (src.type === 'folder' && !f.some((x) => x.id === src.id)) handleSelectSource({ type: 'library', kind: 'all' })
+    else runSearch()
+  }, [refreshLibrary, runSearch, handleSelectSource])
 
-  // 键盘快捷键
+  // 原生菜单命令（快捷键由菜单注册，渲染进程不再自己监听 ⌘F / ⌘,）
+  const menuHandler = useRef<(cmd: MenuCommand) => void>(() => {})
+  menuHandler.current = (cmd) => {
+    switch (cmd) {
+      case 'source:all': case 'source:image': case 'source:video': case 'source:audio':
+        handleSelectSource({ type: 'library', kind: cmd.slice(7) as 'all' })
+        break
+      case 'source:map': handleSelectSource({ type: 'map' }); break
+      case 'source:people': handleSelectSource({ type: 'people' }); break
+      case 'find':
+        if (!isGrid) handleSelectSource({ type: 'library', kind: 'all' })
+        setTimeout(() => document.getElementById('search-input')?.focus(), 0)
+        break
+      case 'toggle-sidebar': toggleSidebar(); break
+      case 'zoom-in': handleThumbSize(thumbSize + 40); break
+      case 'zoom-out': handleThumbSize(thumbSize - 40); break
+      case 'settings': setShowFolderManager(true); break
+      case 'activity': setShowTasks((s) => !s); break
+      case 'add-folder': handleAddFolder(); break
+    }
+  }
+  useEffect(() => window.api.onMenuCommand((cmd) => menuHandler.current(cmd)), [])
+
+  // Esc：关详情 / 设置（抽屉自己处理 Esc）
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (selected) setSelected(null)
-        else if (showFolderManager) setShowFolderManager(false)
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-        e.preventDefault()
-        if (viewMode !== 'grid') setViewMode('grid')
-        document.getElementById('search-input')?.focus()
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-        e.preventDefault()
-        setShowFolderManager(true)
-      }
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      if (selected) setSelected(null)
+      else if (showFolderManager) setShowFolderManager(false)
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showFolderManager, viewMode])
+  }, [selected, showFolderManager])
 
   const hasDateFilter = !!(dateFrom || dateTo)
+  const libraryEmpty = counts !== null && counts.all === 0
+
+  const title = useMemo(() => {
+    switch (source.type) {
+      case 'library': return LIBRARY_ITEMS.find((i) => i.kind === source.kind)?.label ?? '全部'
+      case 'folder': {
+        const f = folders.find((x) => x.id === source.id)
+        return f ? folderName(f.path) : '文件夹'
+      }
+      case 'map': return '地图'
+      case 'people': return '人物'
+    }
+  }, [source, folders])
+
+  const breakdown = useMemo(() => countLine(searchResults.map((r) => r.photo)), [searchResults])
+  const subtitle = isGrid
+    ? hasSearchQuery
+      ? `“${query.trim()}” · ${searchResults.length.toLocaleString()} 项`
+      : searchResults.length > 0 ? `${searchResults.length.toLocaleString()} 项${hasDateFilter ? ' · 已按时间过滤' : ''}` : undefined
+    : undefined
 
   return (
-    <div className="h-screen flex flex-col bg-surface-0">
-      {/* 标题栏 */}
-      <div className="titlebar h-11 flex items-center px-4 bg-surface-1/60 glass relative z-10 gap-3">
-        {/* macOS 红绿灯占位 */}
-        <div className="w-[68px] flex-shrink-0" />
-
-        {/* 视图切换 */}
-        <div className="flex items-center bg-fill rounded-lg p-0.5 flex-shrink-0">
-          {(Object.entries(VIEW_ICONS) as [ViewMode, typeof VIEW_ICONS['grid']][]).map(([mode, { title, path }]) => (
-            <button
-              key={mode}
-              onClick={() => setViewMode(mode)}
-              className={`px-2 py-1 rounded-md text-caption flex items-center gap-1 transition-all ${
-                viewMode === mode
-                  ? 'bg-fill-hover text-ink'
-                  : 'text-ink-3 hover:text-ink-2'
-              }`}
-              title={title}
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={path} />
-              </svg>
-              <span className="hidden sm:inline">{title}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* 搜索框 — 仅在网格视图显示 */}
-        {viewMode === 'grid' && (
-          <div className="flex-1 max-w-lg">
-            <SearchBar
-              onSearch={handleSearch}
-              isSearching={isSearching}
-              resultCount={hasSearchQuery ? searchResults.length : undefined}
-            />
-          </div>
-        )}
-        {viewMode !== 'grid' && <div className="flex-1" />}
-
-        {/* 右侧工具 */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {/* 类型过滤 — 仅网格视图 */}
-          {viewMode === 'grid' && (
-            <div className="flex items-center bg-fill rounded-lg p-0.5 mr-1">
-              {KIND_FILTERS.map(({ value, label }) => (
-                <button
-                  key={value}
-                  onClick={() => handleKindFilterChange(value)}
-                  className={`px-2 py-0.5 rounded-md text-caption transition-all ${
-                    kindFilter === value ? 'bg-fill-hover text-ink' : 'text-ink-3 hover:text-ink-2'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* 日期过滤 — 仅网格视图 */}
-          {viewMode === 'grid' && (
-            <button
-              onClick={() => setShowDateFilter(!showDateFilter)}
-              className={`p-1.5 rounded-md transition-colors ${
-                showDateFilter || hasDateFilter
-                  ? 'bg-accent/20 text-accent'
-                  : 'hover:bg-fill-hover text-ink-4'
-              }`}
-              title="时间过滤"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </button>
-          )}
-          {/* 设置 */}
-          <button
-            onClick={() => setShowFolderManager(true)}
-            className="p-1.5 rounded-md hover:bg-fill-hover transition-colors"
-            title="设置 (Cmd+,)"
-          >
-            <svg className="w-4 h-4 text-ink-4 hover:text-ink-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* 日期过滤栏 */}
-      {showDateFilter && viewMode === 'grid' && (
-        <div className="px-4 py-2 bg-surface-1 border-b border-line flex items-center gap-3 animate-fade-in">
-          <span className="text-caption text-ink-3">时间</span>
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => handleDateFilterChange(e.target.value, dateTo)}
-            className="px-2 py-1 text-caption bg-surface-2 border border-line-strong rounded text-ink focus:outline-none focus:border-line-heavy"
-          />
-          <span className="text-ink-4 text-caption">—</span>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => handleDateFilterChange(dateFrom, e.target.value)}
-            className="px-2 py-1 text-caption bg-surface-2 border border-line-strong rounded text-ink focus:outline-none focus:border-line-heavy"
-          />
-          {hasDateFilter && (
-            <button
-              onClick={() => { handleDateFilterChange('', ''); setShowDateFilter(false) }}
-              className="text-micro text-ink-3 hover:text-ink-2 px-1.5 py-0.5 rounded hover:bg-fill"
-            >
-              清除
-            </button>
-          )}
-        </div>
+    <div className="h-screen flex bg-canvas text-ink">
+      {!sidebarHidden && (
+        <Sidebar
+          width={sidebarWidth}
+          onResize={handleSidebarResize}
+          source={source}
+          onSelect={handleSelectSource}
+          counts={counts}
+          folders={folders}
+          onAddFolder={handleAddFolder}
+        />
       )}
 
-      {/* 主内容区 */}
-      <div className="flex-1 overflow-hidden">
-        {viewMode === 'people' ? (
-          <PeopleView onSelectPhoto={handleSelectPhoto} />
-        ) : viewMode === 'map' ? (
-          <MapView onSelect={handleSelectPhoto} />
-        ) : searchResults.length > 0 ? (
-          <PhotoGrid results={searchResults} onSelect={handleSelect} isSearching={hasSearchQuery} />
-        ) : hasSearchQuery || (hasPhotos && (kindFilter !== 'all' || hasDateFilter)) ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center animate-fade-in">
-              <svg className="w-10 h-10 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <p className="text-ink-3 text-body">
-                {hasSearchQuery ? '没有找到匹配的内容' : '没有符合筛选条件的内容'}
-              </p>
-              <p className="text-ink-4 text-callout mt-2">
-                {kindFilter !== 'all' || hasDateFilter
-                  ? '试试放宽类型或时间过滤'
-                  : '试试其他关键词、图内的文字片段，或换种说法'}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center animate-fade-in">
-              {!hasPhotos ? (
-                <>
-                  <svg className="w-10 h-10 mx-auto mb-3 text-ink-ghost" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  <p className="text-ink-3 text-body">资料库还是空的</p>
-                  <button
-                    onClick={() => setShowFolderManager(true)}
-                    className="mt-3 px-4 py-1.5 bg-fill hover:bg-fill-hover text-ink-2 text-callout rounded-md transition-colors"
-                  >
-                    添加文件夹
-                  </button>
-                </>
-              ) : (
-                <p className="text-ink-3 text-callout">加载中...</p>
-              )}
-            </div>
+      <div className="flex-1 min-w-0 flex flex-col">
+        <Toolbar
+          title={title}
+          subtitle={subtitle}
+          sidebarHidden={sidebarHidden}
+          onToggleSidebar={toggleSidebar}
+          showSearch={isGrid}
+          onSearch={handleSearch}
+          isSearching={isSearching}
+          resultCount={hasSearchQuery ? searchResults.length : undefined}
+          dateActive={showDateFilter || hasDateFilter}
+          onToggleDate={() => setShowDateFilter((s) => !s)}
+          onOpenSettings={() => setShowFolderManager(true)}
+        />
+
+        {/* 日期过滤栏 */}
+        {showDateFilter && isGrid && (
+          <div className="h-9 flex-shrink-0 px-4 bg-bar border-b border-line flex items-center gap-3 animate-fade-in">
+            <span className="text-caption text-ink-3">时间</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => handleDateFilterChange(e.target.value, dateTo)}
+              className="h-6 px-2 text-caption bg-fill border border-line rounded text-ink focus:outline-none focus:border-accent/50"
+            />
+            <span className="text-ink-4 text-caption">—</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => handleDateFilterChange(dateFrom, e.target.value)}
+              className="h-6 px-2 text-caption bg-fill border border-line rounded text-ink focus:outline-none focus:border-accent/50"
+            />
+            {hasDateFilter && (
+              <button
+                onClick={() => { handleDateFilterChange('', ''); setShowDateFilter(false) }}
+                className="text-caption text-ink-3 hover:text-ink px-1.5 py-0.5 rounded hover:bg-fill"
+              >
+                清除
+              </button>
+            )}
           </div>
         )}
+
+        {/* 主内容区 */}
+        <main className="flex-1 min-h-0 overflow-hidden">
+          {source.type === 'people' ? (
+            <PeopleView onSelectPhoto={handleSelectPhoto} />
+          ) : source.type === 'map' ? (
+            <MapView onSelect={handleSelectPhoto} />
+          ) : searchResults.length > 0 ? (
+            <PhotoGrid results={searchResults} onSelect={handleSelect} isSearching={hasSearchQuery} thumbSize={thumbSize} />
+          ) : libraryEmpty ? (
+            <EmptyState
+              icon="image"
+              title="资料库还是空的"
+              hint="添加一个文件夹，Vixel 会在本机为其中的图片、视频和音频建立索引"
+              action={{ label: '添加文件夹…', onClick: handleAddFolder }}
+            />
+          ) : counts === null || isSearching ? null : (
+            <EmptyState
+              icon="search"
+              title={hasSearchQuery ? '没有找到匹配的内容' : '这里没有内容'}
+              hint={hasSearchQuery
+                ? '试试其他关键词、图内的文字片段，或换种说法'
+                : hasDateFilter ? '试试放宽时间过滤' : '换个类别或文件夹看看'}
+            />
+          )}
+        </main>
+
+        <StatusBar
+          progress={indexProgress}
+          itemCount={isGrid ? searchResults.length : counts?.all ?? 0}
+          breakdown={breakdown}
+          onOpenActivity={() => setShowTasks(true)}
+          thumbSize={isGrid ? thumbSize : undefined}
+          onThumbSize={handleThumbSize}
+        />
       </div>
 
-      {/* 索引进度 */}
-      <IndexProgress progress={indexProgress} onOpenTasks={handleOpenTasks} />
       <TaskDrawer open={showTasks} onClose={handleCloseTasks} progress={indexProgress} />
 
-      {/* 照片详情 */}
+      {/* 详情 */}
       {selected && (
         <PhotoDetail
           result={selected}
-          siblings={viewMode === 'grid' ? searchResults : undefined}
+          siblings={isGrid ? searchResults : undefined}
           onSelect={handleSelect}
           onClose={handleCloseDetail}
         />
@@ -364,6 +349,31 @@ function App(): JSX.Element {
       {showFolderManager && (
         <FolderManager onClose={handleFolderManagerClose} />
       )}
+    </div>
+  )
+}
+
+function EmptyState({ icon, title, hint, action }: {
+  icon: 'image' | 'search'
+  title: string
+  hint: string
+  action?: { label: string; onClick: () => void }
+}): JSX.Element {
+  return (
+    <div className="h-full flex items-center justify-center">
+      <div className="max-w-xs text-center animate-fade-in">
+        <Icon name={icon} className="w-10 h-10 mx-auto mb-3 text-ink-ghost" />
+        <p className="text-ink-2 text-body">{title}</p>
+        <p className="text-ink-4 text-callout mt-1.5">{hint}</p>
+        {action && (
+          <button
+            onClick={action.onClick}
+            className="mt-4 h-7 px-3 bg-accent text-black/85 text-callout font-medium rounded-md hover:brightness-110 transition duration-fast"
+          >
+            {action.label}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

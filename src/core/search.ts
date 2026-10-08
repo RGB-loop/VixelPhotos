@@ -29,6 +29,8 @@ export interface SearchOptions {
   dateTo?: string
   /** 只返回某种媒体；省略 = 全部 */
   kind?: MediaKind
+  /** 只返回出现在该监视文件夹里的内容 */
+  folderId?: number
 }
 
 export class SearchEngine {
@@ -43,11 +45,12 @@ export class SearchEngine {
     const dateFrom = options?.dateFrom
     const dateTo = options?.dateTo
     const kind = options?.kind
+    const folderId = options?.folderId
 
     // 无搜索词：按时间 / 类型过滤或返回最近照片
     if (!trimmedQuery) {
-      if (dateFrom || dateTo || kind) {
-        const photos = this.db.getRepresentativePhotosFiltered(limit, 0, dateFrom, dateTo, kind)
+      if (dateFrom || dateTo || kind || folderId != null) {
+        const photos = this.db.getRepresentativePhotosFiltered(limit, 0, dateFrom, dateTo, kind, folderId)
         return photos.map((photo) => ({ photo, score: 1.0 }))
       }
       return this.getRecentPhotos(limit)
@@ -101,12 +104,14 @@ export class SearchEngine {
         r.score = r.score / maxScore
       }
 
+      const folderHashes = folderId != null ? this.db.getHashesInFolder(folderId) : null
       const results: SearchResult[] = []
       const seenHashes = new Set<string>()
       const seenVideos = new Set<number>()
       for (const { fileHash, score } of mergedResults) {
         if (seenHashes.has(fileHash)) continue
         seenHashes.add(fileHash)
+        if (folderHashes && !folderHashes.has(fileHash)) continue
 
         const photo = this.db.getRepresentativeByHash(fileHash)
         if (photo && !photo.deletedAt) {

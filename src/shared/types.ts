@@ -5,6 +5,14 @@
 /** 'image' 是普通照片；'video' / 'audio' 的 Photo 是该媒体的代表图（首帧 / 封面 / 波形） */
 export type MediaKind = 'image' | 'video' | 'audio'
 
+/** 原生菜单发给渲染进程的命令；每个快捷键都挂在菜单上，渲染进程不自己监听 ⌘ 组合键 */
+export type MenuCommand =
+  | 'source:all' | 'source:image' | 'source:video' | 'source:audio' | 'source:map' | 'source:people'
+  | 'find' | 'toggle-sidebar' | 'zoom-in' | 'zoom-out' | 'settings' | 'activity' | 'add-folder'
+
+/** 资料库计数（侧边栏）；all = 三类之和 */
+export type LibraryCounts = Record<MediaKind | 'all', number>
+
 export interface Photo {
   id: number
   folderId: number
@@ -180,6 +188,10 @@ export const IPC_CHANNELS = {
   GET_FOLDERS: 'get-folders',
   SELECT_FOLDER: 'select-folder',
   GET_FOLDER_STATS: 'get-folder-stats',
+  GET_LIBRARY_COUNTS: 'get-library-counts',
+
+  // 原生菜单 → 渲染进程（main 发，renderer 听）
+  MENU_COMMAND: 'menu-command',
 
   // 照片
   GET_PHOTO_DETAIL: 'get-photo-detail',

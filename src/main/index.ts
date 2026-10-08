@@ -14,6 +14,7 @@ import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
+import { installAppMenu } from './menu'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
@@ -35,12 +36,13 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    minWidth: 800,
+    minWidth: 960,
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
+    // 红绿灯垂直居中在 52px 工具栏 / 侧边栏顶部
+    trafficLightPosition: { x: 18, y: 19 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -261,6 +263,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {
     return db.getFoldersWithStats()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_LIBRARY_COUNTS, async () => {
+    return db.getLibraryCounts()
   })
 
   ipcMain.handle(IPC_CHANNELS.GET_FOLDER_STATS, async (_event, folderId: number) => {
@@ -540,6 +546,7 @@ app.whenReady().then(async () => {
   await initServices()
   registerVixelProtocol()
   registerIpcHandlers()
+  installAppMenu(() => mainWindow)
   createWindow()
 
   app.on('activate', () => {

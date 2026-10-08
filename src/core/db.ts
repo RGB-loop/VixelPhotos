@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
-import type {
+import type { LibraryCounts,
   Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord, MediaKind, MediaDetail, TaskOverview, TaskRow,
 } from '../shared/types'
 import { tokenizeForFtsSync } from './text/tokenize'
@@ -298,6 +298,8 @@ export interface DatabaseInstance {
   getMediaDetail: (videoId: number) => MediaDetail | undefined
 
   // 照片统计
+  /** 资料库各类型条数（按代表 photo 计，与网格一致）；侧边栏计数用 */
+  getLibraryCounts: () => LibraryCounts
   getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; ocred: number }
 
   // 内容操作（按 file_hash 共享）
@@ -352,8 +354,11 @@ export interface DatabaseInstance {
     offset: number,
     dateFrom?: string,
     dateTo?: string,
-    kind?: Photo['mediaKind']
+    kind?: Photo['mediaKind'],
+    folderId?: number
   ) => Photo[]
+  /** 某文件夹内出现过的 file_hash（同内容可能多处引用，带搜索词时按 hash 过滤） */
+  getHashesInFolder: (folderId: number) => Set<string>
   findSimilar: (
     fileHash: string,
     limit: number
@@ -750,6 +755,20 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     `),
     clearFailedTasks: db.prepare(`DELETE FROM index_queue WHERE status = 'error'`),
     pruneDoneTasks: db.prepare(`DELETE FROM index_queue WHERE status = 'done'`),
+    getLibraryCounts: db.prepare(`
+      SELECT ${MEDIA_KIND_EXPR} as kind, COUNT(*) as n
+      FROM photos p
+      ${MEDIA_JOIN}
+      WHERE p.deleted_at IS NULL
+        AND p.id = (
+          SELECT MIN(p3.id) FROM photos p3
+          WHERE p3.file_hash = p.file_hash AND p3.deleted_at IS NULL
+        )
+      GROUP BY kind
+    `),
+    getHashesInFolder: db.prepare(`
+      SELECT DISTINCT file_hash FROM photos WHERE folder_id = ? AND deleted_at IS NULL
+    `),
     getPhotoStats: db.prepare(`
       SELECT
         COUNT(*) as total,
@@ -915,6 +934,10 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         AND (? IS NULL OR p.taken_at >= ?)
         AND (? IS NULL OR p.taken_at <= ?)
         AND (? IS NULL OR ${MEDIA_KIND_EXPR} = ?)
+        AND (? IS NULL OR EXISTS (
+          SELECT 1 FROM photos p4
+          WHERE p4.file_hash = p.file_hash AND p4.folder_id = ? AND p4.deleted_at IS NULL
+        ))
       ORDER BY p.taken_at DESC, p.created_at DESC
       LIMIT ? OFFSET ?
     `),
@@ -1476,13 +1499,26 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         return []
       }
     },
-    getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo, kind) => {
+    getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo, kind, folderId) => {
       return stmts.getRepresentativePhotosFiltered.all(
         dateFrom || null, dateFrom || null,
         dateTo || null, dateTo || null,
         kind || null, kind || null,
+        folderId ?? null, folderId ?? null,
         limit, offset
       ) as Photo[]
+    },
+    getHashesInFolder: (folderId) => {
+      const rows = stmts.getHashesInFolder.all(folderId) as Array<{ file_hash: string }>
+      return new Set(rows.map((r) => r.file_hash))
+    },
+    getLibraryCounts: () => {
+      const counts: LibraryCounts = { all: 0, image: 0, video: 0, audio: 0 }
+      for (const { kind, n } of stmts.getLibraryCounts.all() as Array<{ kind: MediaKind; n: number }>) {
+        counts[kind] = n
+        counts.all += n
+      }
+      return counts
     },
     findSimilar: (fileHash, limit) => {
       try {

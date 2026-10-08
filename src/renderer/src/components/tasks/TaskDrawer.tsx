@@ -113,7 +113,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
       <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-surface-1 border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
         {/* 头部 */}
         <div className="flex items-center gap-3 px-5 h-11 border-b border-line flex-shrink-0">
-          <h2 className="text-body font-medium text-ink">索引任务</h2>
+          <h2 className="text-body font-medium text-ink">活动</h2>
           {paused ? (
             <span className="text-caption text-warn/70">已暂停</span>
           ) : progress?.stage !== 'idle' && progress?.stage ? (
@@ -165,7 +165,7 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
 
           {/* 当前任务 */}
           <section>
-            <SectionTitle>当前任务</SectionTitle>
+            <SectionTitle>正在处理</SectionTitle>
             {current ? (
               <div className="bg-surface-2 rounded-lg px-3 py-2.5">
                 <div className="flex items-center gap-2 text-callout">

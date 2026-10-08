@@ -29,3 +29,14 @@ export function formatFileSize(bytes: number): string {
   const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
+
+/** 结果构成：12 张图片 · 3 个视频 · 1 个音频 */
+export function countLine(photos: { mediaKind?: MediaKind; videoId?: number | null }[]): string {
+  const n = { image: 0, video: 0, audio: 0 }
+  for (const p of photos) n[mediaKindOf(p)]++
+  const parts: string[] = []
+  if (n.image) parts.push(`${n.image} 张图片`)
+  if (n.video) parts.push(`${n.video} 个视频`)
+  if (n.audio) parts.push(`${n.audio} 个音频`)
+  return parts.join(' · ')
+}

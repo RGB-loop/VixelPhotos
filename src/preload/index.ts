@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand } from '../shared/types'
 
 const api = {
   // 搜索
-  search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string; kind?: MediaKind }): Promise<SearchResult[]> => {
+  search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string; kind?: MediaKind; folderId?: number }): Promise<SearchResult[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SEARCH, query, limit, options)
   },
   findSimilar: (photoId: number, limit?: number): Promise<SearchResult[]> => {
@@ -25,6 +25,17 @@ const api = {
   },
   getFolders: (): Promise<WatchedFolder[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_FOLDERS)
+  },
+  getLibraryCounts: (): Promise<LibraryCounts> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_LIBRARY_COUNTS)
+  },
+  /** 原生菜单命令（快捷键都挂在菜单上） */
+  onMenuCommand: (callback: (cmd: MenuCommand) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, cmd: MenuCommand): void => callback(cmd)
+    ipcRenderer.on(IPC_CHANNELS.MENU_COMMAND, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.MENU_COMMAND, handler)
+    }
   },
   getFolderStats: (id: number): Promise<{ photoCount: number; photoIds: number[] }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_FOLDER_STATS, id)
