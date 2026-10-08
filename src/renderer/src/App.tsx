@@ -12,6 +12,7 @@ import { Toolbar } from './components/shell/Toolbar'
 import { StatusBar, THUMB_MIN, THUMB_MAX } from './components/shell/StatusBar'
 import { Icon } from './components/shell/icons'
 import { countLine, mediaKindOf } from './lib/format'
+import { useSearchHistory, normalizeQuery } from './lib/searchHistory'
 import type {
   SearchResult, Photo, LibraryCounts, WatchedFolder, MenuCommand, ItemMenuAction,
   IndexProgress as IndexProgressType,
@@ -177,6 +178,21 @@ function App(): JSX.Element {
     }
     runSearch()
   }, [runSearch])
+
+  // 搜索历史：查询停稳 1.5 秒且有结果才记为"最近"，边打字边出的中间结果不算
+  const history = useSearchHistory()
+  const { addRecent, toggleSaved, removeRecent } = history
+  useEffect(() => {
+    if (!query.trim() || isSearching || searchResults.length === 0) return
+    const t = setTimeout(() => addRecent(query), 1500)
+    return () => clearTimeout(t)
+  }, [query, isSearching, searchResults, addRecent])
+  const activeQuery = isGrid && hasSearchQuery ? normalizeQuery(query) : null
+
+  const handleRemoveSearch = useCallback((q: string, kind: 'saved' | 'recent') => {
+    if (kind === 'saved') toggleSaved(q)
+    else removeRecent(q)
+  }, [toggleSaved, removeRecent])
 
   const handleDateFilterChange = useCallback((from: string, to: string) => {
     setDateFrom(from)
@@ -506,6 +522,11 @@ function App(): JSX.Element {
           counts={counts}
           folders={folders}
           onAddFolder={handleAddFolder}
+          savedSearches={history.saved}
+          recentSearches={history.recent}
+          activeQuery={activeQuery}
+          onRunSearch={handleSearch}
+          onRemoveSearch={handleRemoveSearch}
         />
       )}
 
@@ -516,7 +537,10 @@ function App(): JSX.Element {
           sidebarHidden={sidebarHidden}
           onToggleSidebar={toggleSidebar}
           showSearch={isGrid}
+          query={query}
           onSearch={handleSearch}
+          querySaved={history.isSaved(query)}
+          onToggleSaveQuery={() => toggleSaved(query)}
           isSearching={isSearching}
           resultCount={hasSearchQuery ? searchResults.length : undefined}
           dateActive={showDateFilter || hasDateFilter}

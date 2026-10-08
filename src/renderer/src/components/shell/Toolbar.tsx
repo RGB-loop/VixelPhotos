@@ -9,7 +9,10 @@ interface ToolbarProps {
   onToggleSidebar: () => void
   /** 地图 / 人物视图不显示搜索与过滤 */
   showSearch: boolean
+  query: string
   onSearch: (query: string) => void
+  querySaved: boolean
+  onToggleSaveQuery: () => void
   isSearching: boolean
   resultCount?: number
   dateActive: boolean
@@ -18,7 +21,7 @@ interface ToolbarProps {
 }
 
 export function Toolbar({
-  title, subtitle, sidebarHidden, onToggleSidebar, showSearch, onSearch, isSearching, resultCount,
+  title, subtitle, sidebarHidden, onToggleSidebar, showSearch, query, onSearch, querySaved, onToggleSaveQuery, isSearching, resultCount,
   dateActive, onToggleDate, onOpenSettings,
 }: ToolbarProps): JSX.Element {
   return (
@@ -36,7 +39,14 @@ export function Toolbar({
 
       {showSearch && (
         <div className="w-[clamp(240px,32vw,480px)]">
-          <SearchBar onSearch={onSearch} isSearching={isSearching} resultCount={resultCount} />
+          <SearchBar
+            value={query}
+            onSearch={onSearch}
+            isSearching={isSearching}
+            resultCount={resultCount}
+            saved={querySaved}
+            onToggleSave={onToggleSaveQuery}
+          />
         </div>
       )}
 
