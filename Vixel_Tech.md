@@ -297,6 +297,13 @@ ONNX session 关闭了 CPU BFCArena（`enableCpuMemArena: false`）：arena 扩�
 `<video>` seek 依赖它。Chromium 解不了的编码（如 mpeg4 avi）触发 `onError`，
 UI 回退到"在系统播放器中打开"。
 
+**悬停拖动预览**：抽完片段后 `generateSprite()`（`core/video/sprite.ts`）在全片
+均匀取 12 个时间点（每格中点），每帧单独 `-ss` 快速 seek 解一帧，sharp 居中裁成
+240px 正方形后横拼成 `sprite.jpg`。不用 `fps=N/duration` 一次过 —— 那要解完整部片。
+渲染端用 `background-size: N×100%` + `background-position-x` 按鼠标横坐标换帧，
+帧数由图片宽高比推出。早于此功能索引的视频在首次悬停时由 `vixel://sprite/<id>`
+按需生成（同一视频去重、全局串行）；失败则卡片回退为静音播放预览。
+
 ---
 
 ### 2.5 删除的两个候选（v0.1 计划过但未保留）
@@ -544,7 +551,9 @@ const fused = rrfFuse([vec, segmentHits, ocrBm25, fileName], 60)
 ├── thumbnails/
 │   └── {file_hash}.webp           ← 共享去重缩略图
 ├── video_frames/
-│   └── {videoHash}/segment_0_0ms.jpg  ← 每个视频的代表帧
+│   └── {videoHash}/
+│       ├── segment_0_0ms.jpg      ← 视频代表帧（音频为 cover.jpg / waveform.jpg）
+│       └── sprite.jpg             ← 悬停拖动预览：12 帧 × 240px 正方形横拼
 └── embedding-config.json          ← 各编码器量化档位（q4/q8）
 ```
 

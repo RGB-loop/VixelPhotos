@@ -166,7 +166,7 @@ kbd{font:500 11.5px var(--mono);border:1px solid var(--line-strong);border-botto
   <span class="eyebrow">Vixel · UI 设计规范 v1 · 2026-10</span>
   <h1>从"能用的搜索框"到一个本地媒体资料库应用</h1>
   <p class="lede">Vixel 现在能检索图片、视频和音频，界面却还是一个标题栏加一个网格。这份规范定义新的窗口结构（侧边栏 + 工具栏 + 检查器 + 状态栏）、一套语义化 token，以及按阶段迁移的顺序。参考的是 Apple Photos、Lightroom、Eagle、Finder、DaVinci Resolve 和 Immich 的成熟做法。</p>
-  <div class="meta"><span>适用：src/renderer</span><span>基准平台：macOS 15 / 26</span><span>状态：草案，待评审</span></div>
+  <div class="meta"><span>适用：src/renderer</span><span>基准平台：macOS 15 / 26</span><span>状态：P0–P3 已实现</span></div>
 </header>
 
 <section>
@@ -429,7 +429,7 @@ kbd{font:500 11.5px var(--mono);border:1px solid var(--line-strong);border-botto
     <div class="ph"><b>P0</b><div><h3>Token 化</h3><p>在 <code>tailwind.config</code> 里定义语义色（<code>text-primary</code>、<code>bg-raised</code>、<code>line-border</code>…）、字号阶梯和圆角，再用 codemod 把 15 级 <code>white/xx</code> 收敛到语义类上，同时去掉 9 px 字号。界面结构不动。</p></div></div>
     <div class="ph"><b>P1</b><div><h3>窗口结构</h3><p>侧边栏（资料库 / 浏览 / 文件夹）、52 px 工具栏、状态栏（计数 + 活动 + 尺寸滑块）。标题栏里两组分段控件删除。加上原生应用菜单和快捷键。</p></div></div>
     <div class="ph"><b>P2</b><div><h3>选中、检查器、右键菜单</h3><p>网格支持单选和多选，<kbd>⌘I</kbd> 打开检查器，<kbd>空格</kbd>快速查看，右键菜单（在 Finder 中显示、查找相似、复制路径）。全屏详情页的侧栏改为复用检查器组件。</p></div></div>
-    <div class="ph"><b>P3</b><div><h3>搜索作为一等公民</h3><p>侧边栏"搜索"分组（最近 / 已保存），设置改为独立窗口，网格密度切换，视频悬停时按鼠标位置拖动预览（索引阶段生成 sprite）。浅色模式另外评估。</p></div></div>
+    <div class="ph"><b>P3</b><div><h3>搜索作为一等公民</h3><p>侧边栏"搜索"分组（最近 / 已保存），设置改为独立窗口，网格密度切换，视频悬停时按鼠标位置拖动预览（索引阶段生成 sprite）。同时加入浅色 / 深色 / 跟随系统外观。<em>已完成</em></p></div></div>
   </div>
   <p class="note"><strong>需要拍板的两点：</strong>① 侧边栏的"资料库"分组是否直接取代顶部的 照片/地图/人物 切换（本规范的建议是取代）；② 设置是否在 P1 就拆成独立窗口，还是等到 P3。</p>
 </section>

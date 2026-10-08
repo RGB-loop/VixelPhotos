@@ -38,6 +38,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pause / resume background indexing from the status bar. The paused state
   survives restarts; a long video stops between segments and resumes from
   the next one.
+- **Appearance**: 跟随系统 / 浅色 / 深色 (Settings → 通用). Colours are CSS
+  variables behind the Tailwind tokens; the choice drives `nativeTheme.themeSource`
+  so native menus, scrollbars and the window background follow. Full-screen
+  detail and Quick Look stay dark.
+- **Settings window** (⌘,): a standalone window with 通用 / 文件夹 / AI 模型
+  tabs, replacing the modal folder manager. Folder changes are broadcast to
+  every window.
+- **Grid density** (G, or the status-bar toggle): 沉浸式 (tight gaps, only
+  the duration badge) is the browsing default; 信息式 (rank, hit pill,
+  file name always shown) is the default for search results.
+- **Sidebar 搜索 group**: recent searches (kept once a query settles and has
+  results; typing continuations replace the previous entry; last 8 kept, 5
+  shown) and saved searches (☆ in the search field). Clicking a row re-runs
+  it; hover × removes it.
+- **Hover scrubbing**: indexing a video also renders a 12-frame sprite
+  (`video_frames/<hash>/sprite.jpg`, square 240 px tiles). Moving the mouse
+  across a card scrubs through it, with the position line and timestamp
+  following. Videos indexed earlier get their sprite generated on first
+  hover (`vixel://sprite/<id>`, serialised); without a sprite the card
+  falls back to the muted playback preview.
 - **Video segment semantics with audio**: each video is cut into 32s
   segments (1 frame every 4s + audio track) and embedded as one vector per segment
   (`video_segments` / `video_segment_vecs`). Audio-less videos fall back
