@@ -28,6 +28,8 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
  *   图片：thumbnail → embed (EmbeddingGemma 2) → face / ocr (按需)
  *   视频：extract_frames → 32s 片段（帧序列 + 音轨）→ EmbeddingGemma 2 → video_segments
  */
+const PAUSED_KEY = 'indexing_paused'
+
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
   private userDataPath: string
@@ -35,6 +37,9 @@ export class Indexer extends EventEmitter {
   private isProcessing = false
   private modelsLoaded = false
   private modelsLoading = false
+  // 暂停：不再取新任务；正在跑的视频在片段之间停住，继续后从断点接着跑
+  private paused: boolean
+  private resumeWaiters: Array<() => void> = []
 
   constructor(db: DatabaseInstance, userDataPath: string) {
     super()
@@ -42,6 +47,31 @@ export class Indexer extends EventEmitter {
     this.userDataPath = userDataPath
     this.thumbnailDir = join(userDataPath, 'thumbnails')
     this.ensureThumbnailDir()
+    // 持久化：暂停后退出应用，下次启动仍保持暂停
+    this.paused = db.getMetaState(PAUSED_KEY) === '1'
+  }
+
+  isPaused(): boolean {
+    return this.paused
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return
+    this.paused = paused
+    this.db.setMetaState(PAUSED_KEY, paused ? '1' : '0')
+    if (!paused) {
+      const waiters = this.resumeWaiters
+      this.resumeWaiters = []
+      for (const resume of waiters) resume()
+      this.processNext()
+    }
+    this.emitProgress(this.isProcessing ? 'indexing' : 'idle')
+  }
+
+  private waitIfPaused(): Promise<void> {
+    if (!this.paused) return Promise.resolve()
+    this.emitProgress('idle')
+    return new Promise((resolve) => this.resumeWaiters.push(resolve))
   }
 
   /** 手动触发 OCR 扫描（已 embed 但未 OCR 的照片） */
@@ -173,6 +203,9 @@ export class Indexer extends EventEmitter {
 
     // 为每个片段：抽帧序列 + 音轨 → Gemma2 多模态编码
     for (let i = 0; i < numSegments; i++) {
+      await this.waitIfPaused()
+      // 长视频要跑很久，期间文件夹可能被移除
+      if (!this.db.getVideoById(videoId)) return
       const startMs = i * SEGMENT_DURATION_SEC * 1000
       const endMs = Math.min((i + 1) * SEGMENT_DURATION_SEC * 1000, durationMs)
       const segmentDurationSec = (endMs - startMs) / 1000
@@ -327,7 +360,7 @@ export class Indexer extends EventEmitter {
   }
 
   async processNext(): Promise<void> {
-    if (this.isProcessing) return
+    if (this.isProcessing || this.paused) return
 
     const task = this.db.getNextTask()
     if (!task) {
@@ -470,6 +503,7 @@ export class Indexer extends EventEmitter {
       ocrPhotos: photoStats.ocred,
       stage,
       currentFile,
+      paused: this.paused,
       aiModelReady: getEmbeddingService().isReady(),
     }
     this.emit('progress', progress)

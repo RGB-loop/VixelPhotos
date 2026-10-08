@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filename. The query is encoded once and shared by both vector channels.
 
 ### Added
+- Pause / resume background indexing from the status bar. The paused state
+  survives restarts; a long video stops between segments and resumes from
+  the next one.
 - **Video segment semantics with audio**: each video is cut into 32s
   segments (1 frame every 4s + audio track) and embedded as one vector per segment
   (`video_segments` / `video_segment_vecs`). Audio-less videos fall back
@@ -23,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
 
 ### Fixed
+- Video frame extraction uses VideoToolbox hardware decode on macOS (4K HEVC
+  32s segment: 22.8s → 2.8s), falling back to software decode on failure.
+- Removing a folder left its videos, segment vectors and `extract_frames`
+  tasks behind, so indexing kept running after the folder was gone.
 - Background indexing of a large video folder pegged every core. ONNX now
   uses half the cores (`intraOpNumThreads`), ffmpeg runs with `-threads 2`
   at nice 10, and `extract_frames` is queued at priority 6 (after image

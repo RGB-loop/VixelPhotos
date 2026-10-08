@@ -69,26 +69,45 @@ export async function extractKeyframes(
     //   scale=W:H:force_original_aspect_ratio=decrease -- 长边 W，等比缩小，不放大
     const vf = `fps=1/${intervalSec},scale='min(${maxSide},iw)':'min(${maxSide},ih)':force_original_aspect_ratio=decrease`
 
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-threads', String(FFMPEG_THREADS),
-    ]
-    if (startSec > 0) {
-      args.push('-ss', String(startSec))
+    const buildArgs = (hwaccel: boolean): string[] => {
+      const args = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-threads', String(FFMPEG_THREADS),
+      ]
+      if (hwaccel) {
+        // 不设 -hwaccel_output_format：解出的帧自动拷回内存，后面的 fps/scale 滤镜照常用
+        args.push('-hwaccel', 'videotoolbox')
+      }
+      if (startSec > 0) {
+        args.push('-ss', String(startSec))
+      }
+      args.push('-i', videoPath)
+      if (durationSec !== undefined) {
+        args.push('-t', String(durationSec))
+      }
+      args.push(
+        '-vf', vf,
+        '-frames:v', String(maxFrames),
+        '-f', 'image2',
+        join(dir, 'f_%04d.jpg')
+      )
+      return args
     }
-    args.push('-i', videoPath)
-    if (durationSec !== undefined) {
-      args.push('-t', String(durationSec))
-    }
-    args.push(
-      '-vf', vf,
-      '-frames:v', String(maxFrames),
-      '-f', 'image2',
-      join(dir, 'f_%04d.jpg')
-    )
 
-    await runFfmpeg(ffmpeg, args)
+    // macOS 优先 VideoToolbox 硬解：4K HEVC 32s 片段实测 22.8s → 2.8s，CPU 时间 37s → 1.3s。
+    // 硬解失���（编码格式不支持 / 会话数用尽）回退软解
+    if (USE_VIDEOTOOLBOX) {
+      try {
+        await runFfmpeg(ffmpeg, buildArgs(true))
+      } catch (hwError) {
+        console.warn(`VideoToolbox decode failed for ${videoPath}, falling back to software:`, hwError)
+        await clearDir(dir)
+        await runFfmpeg(ffmpeg, buildArgs(false))
+      }
+    } else {
+      await runFfmpeg(ffmpeg, buildArgs(false))
+    }
 
     const files = (await readdir(dir))
       .filter((f) => f.startsWith('f_') && f.endsWith('.jpg'))
@@ -135,6 +154,14 @@ export async function probeDurationMs(videoPath: string): Promise<number | null>
   if (!m) return null
   const ms = Math.round((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000)
   return ms > 0 ? ms : null
+}
+
+const USE_VIDEOTOOLBOX = process.platform === 'darwin'
+
+async function clearDir(dir: string): Promise<void> {
+  for (const f of await readdir(dir)) {
+    await rm(join(dir, f), { force: true })
+  }
 }
 
 // 4K HEVC 软解默认吃满所有核；后台索引限 2 线程 + nice 10，让出 CPU 给前台

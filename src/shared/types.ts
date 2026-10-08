@@ -78,6 +78,8 @@ export interface IndexProgress {
   currentFile?: string
   // OCR 进度
   ocrPhotos?: number
+  // 用户手动暂停了后台索引
+  paused?: boolean
 
   // AI 模型状态
   aiModelReady: boolean
@@ -126,6 +128,8 @@ export const IPC_CHANNELS = {
 
   // 进度
   INDEX_PROGRESS: 'index-progress',
+  GET_INDEX_PAUSED: 'get-index-paused',
+  SET_INDEX_PAUSED: 'set-index-paused',
 
   // 系统
   GET_APP_PATH: 'get-app-path',

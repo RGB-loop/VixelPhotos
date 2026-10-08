@@ -61,6 +61,13 @@ const api = {
     }
   },
 
+  getIndexPaused: (): Promise<boolean> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_INDEX_PAUSED)
+  },
+  setIndexPaused: (paused: boolean): Promise<boolean> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_INDEX_PAUSED, paused)
+  },
+
   // 系统 / 模型状态
   getAppPath: (): Promise<string> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_APP_PATH)

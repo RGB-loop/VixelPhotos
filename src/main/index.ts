@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron'
 import { pathToFileURL } from 'url'
 import { join } from 'path'
-import { readFile, unlink, mkdir, readdir } from 'fs/promises'
+import { readFile, unlink, mkdir, readdir, rm } from 'fs/promises'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase } from '../core/db'
@@ -217,9 +217,23 @@ function registerIpcHandlers(): void {
           console.warn(`Failed to delete thumbnail: ${thumbnailPath}`, e)
         }
       }
+      // 视频的代表帧 photo 也挂在该文件夹下，上面已一并删掉；这里清视频本体 + 片段 + 抽帧目录
+      const videoHashes = db.deleteVideosByFolder(folderId)
+      for (const hash of videoHashes) {
+        await rm(indexer.getVideoFramesDir(hash), { recursive: true, force: true }).catch(() => {})
+      }
       db.removeFolder(folderId)
     }
     return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_INDEX_PAUSED, async () => {
+    return indexer.isPaused()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SET_INDEX_PAUSED, async (_event, paused: boolean) => {
+    indexer.setPaused(paused)
+    return indexer.isPaused()
   })
 
   ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {

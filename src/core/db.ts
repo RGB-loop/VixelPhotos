@@ -206,6 +206,8 @@ export interface DatabaseInstance {
   updateFolderScanTime: (id: number) => void
   getFolderStats: (id: number) => { photoCount: number; photoIds: number[] }
   deletePhotosByFolder: (folderId: number) => string[] // 返回孤立的 file_hash 列表
+  /** 删除文件夹下的视频 + 片段向量 + extract_frames 任务；返回视频 hash（调用方清抽帧目录） */
+  deleteVideosByFolder: (folderId: number) => string[]
 
   // 照片操作
   addPhoto: (
@@ -449,6 +451,13 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     `),
     deletePhotosByFolderId: db.prepare(`DELETE FROM photos WHERE folder_id = ?`),
     deleteQueueByPhotoIds: db.prepare(`DELETE FROM index_queue WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
+    getVideosByFolder: db.prepare(`SELECT id, file_hash as fileHash FROM videos WHERE folder_id = ?`),
+    // extract_frames 的 photo_id 存的是 videos.id
+    deleteExtractTasksByFolder: db.prepare(`
+      DELETE FROM index_queue
+      WHERE task_type = 'extract_frames' AND photo_id IN (SELECT id FROM videos WHERE folder_id = ?)
+    `),
+    deleteVideosByFolderId: db.prepare(`DELETE FROM videos WHERE folder_id = ?`),
 
     addPhoto: db.prepare(`
       INSERT INTO photos (folder_id, file_path, file_name, file_size, file_mtime, file_hash, video_id, frame_time_ms)
@@ -986,6 +995,25 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       finalize()
 
       return orphanedHashes // 调用方用于清理缩略图文件
+    },
+
+    deleteVideosByFolder: (folderId: number): string[] => {
+      const videos = stmts.getVideosByFolder.all(folderId) as Array<{ id: number; fileHash: string | null }>
+      const tx = db.transaction(() => {
+        for (const v of videos) {
+          const segIds = stmts.getVideoSegmentIdsByVideo.all(v.id) as Array<{ id: number }>
+          for (const { id } of segIds) {
+            const row = stmts.getVideoSegmentVecRowid.get(id) as { rowid: bigint | number } | undefined
+            if (row) stmts.deleteVideoSegmentVec.run(BigInt(row.rowid))
+            stmts.deleteVideoSegmentVecMap.run(id)
+          }
+          stmts.deleteVideoSegmentsByVideo.run(v.id)
+        }
+        stmts.deleteExtractTasksByFolder.run(folderId)
+        stmts.deleteVideosByFolderId.run(folderId)
+      })
+      tx()
+      return videos.map((v) => v.fileHash).filter((h): h is string => !!h)
     },
 
     addPhoto: (folderId, filePath, fileName, fileSize, fileMtime, fileHash, videoCtx): number => {
