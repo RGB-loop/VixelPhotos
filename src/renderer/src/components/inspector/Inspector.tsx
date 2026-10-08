@@ -79,17 +79,7 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
 
       <div className="flex items-start gap-2 px-4 pt-3">
         <h2 className="text-headline text-ink flex-1 break-all">{photo.fileName}</h2>
-        {onClose && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onClose() }}
-            className="w-6 h-6 rounded-md text-ink-3 hover:text-ink hover:bg-fill-hover transition-colors duration-fast flex-shrink-0 flex items-center justify-center"
-            title="关闭 (Esc)"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
+        {onClose && <CloseButton onClick={onClose} />}
       </div>
 
       <div className="flex-1 overflow-auto px-4 pt-3 pb-4 flex flex-col gap-4">
@@ -228,11 +218,12 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
 }
 
 /** 多选时检查器显示的汇总 */
-export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths }: {
+export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths, onClose }: {
   results: SearchResult[]
   breakdown: string
   onReveal: () => void
   onCopyPaths: () => void
+  onClose?: () => void
 }): JSX.Element {
   const preview = results.slice(0, 9)
   return (
@@ -244,9 +235,12 @@ export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths }: 
           </div>
         ))}
       </div>
-      <div>
-        <h2 className="text-headline text-ink">已选择 {results.length} 项</h2>
-        <p className="text-callout text-ink-3 mt-0.5">{breakdown}</p>
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <h2 className="text-headline text-ink">已选择 {results.length} 项</h2>
+          <p className="text-callout text-ink-3 mt-0.5">{breakdown}</p>
+        </div>
+        {onClose && <CloseButton onClick={onClose} />}
       </div>
       <div className="flex gap-1.5">
         <ActionButton icon="folder" onClick={onReveal}>在访达中显示</ActionButton>
@@ -256,11 +250,17 @@ export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths }: 
   )
 }
 
-export function InspectorEmpty(): JSX.Element {
+function CloseButton({ onClick }: { onClick: () => void }): JSX.Element {
   return (
-    <div className="h-full flex items-center justify-center px-6 text-center">
-      <p className="text-callout text-ink-4">选择一项以查看信息</p>
-    </div>
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick() }}
+      className="w-6 h-6 rounded-md text-ink-3 hover:text-ink hover:bg-fill-hover transition-colors duration-fast flex-shrink-0 flex items-center justify-center"
+      title="关闭 (Esc)"
+    >
+      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
   )
 }
 

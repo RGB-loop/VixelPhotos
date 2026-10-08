@@ -6,7 +6,7 @@ import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
 import { TaskDrawer } from './components/tasks/TaskDrawer'
 import { QuickLook } from './components/QuickLook'
-import { Inspector, SelectionSummary, InspectorEmpty } from './components/inspector/Inspector'
+import { Inspector, SelectionSummary } from './components/inspector/Inspector'
 import { Sidebar, LIBRARY_ITEMS, SIDEBAR_MIN, SIDEBAR_MAX, folderName, type Source } from './components/shell/Sidebar'
 import { Toolbar } from './components/shell/Toolbar'
 import { StatusBar, THUMB_MIN, THUMB_MAX } from './components/shell/StatusBar'
@@ -21,8 +21,8 @@ import type {
 const BROWSE_LIMIT = 20000
 /** "查找相似内容"一次取多少 */
 const SIMILAR_LIMIT = 60
-/** 窗口窄于此宽度时检查器自动收起（⌘I 仍可强制打开） */
-const INSPECTOR_MIN_WINDOW = 1100
+/** 窗口窄于此宽度时检查器改为浮在网格上，不再挤占网格宽度 */
+const INSPECTOR_DOCK_MIN_WINDOW = 1100
 const INSPECTOR_WIDTH = 272
 
 function isTextInput(el: EventTarget | null): boolean {
@@ -76,12 +76,13 @@ function App(): JSX.Element {
   const anchorId = useRef<number | null>(null)
   const cols = useRef(4)
   const [quickLookId, setQuickLookId] = useState<number | null>(null)
-  const [inspectorOpen, setInspectorOpen] = useState(() => {
+  // 检查器跟随选择出现：inspectorAuto 是 ⌘I 切换的长期偏好（选中时是否自动弹出），
+  // inspectorDismissed 是点 × 的一次性收起，下次点选项目时复位
+  const [inspectorAuto, setInspectorAuto] = useState(() => {
     try { return localStorage.getItem('shell.inspector') !== '0' } catch { return true }
   })
-  const [narrow, setNarrow] = useState(() => window.innerWidth < INSPECTOR_MIN_WINDOW)
-  // 窄窗口下用户仍可 ⌘I 强制打开；窗口变宽后恢复自动
-  const [inspectorForced, setInspectorForced] = useState(false)
+  const [inspectorDismissed, setInspectorDismissed] = useState(false)
+  const [narrow, setNarrow] = useState(() => window.innerWidth < INSPECTOR_DOCK_MIN_WINDOW)
 
   const hasSearchQuery = !!query.trim()
   const isGrid = source.type === 'library' || source.type === 'folder' || source.type === 'similar'
@@ -238,6 +239,8 @@ function App(): JSX.Element {
     const { searchResults: rs, selectedIds: cur, idIndex: map } = live.current
     const id = rs[index]?.photo.id
     if (id == null) return
+    // 点选项目即表示想看信息：撤销上次 × 收起
+    setInspectorDismissed(false)
     if (e.shiftKey && anchorId.current != null) {
       // ⇧：锚点到当前的连续范围；⌘⇧ 在已有选择上追加
       const a = map.get(anchorId.current) ?? index
@@ -282,6 +285,11 @@ function App(): JSX.Element {
       selectOnly(id)
     }
   }, [selectOnly])
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+    setFocusId(null)
+  }, [])
 
   const selectAll = useCallback(() => {
     const { searchResults: rs } = live.current
@@ -363,22 +371,19 @@ function App(): JSX.Element {
 
   // ---------- 检查器 ----------
   useEffect(() => {
-    const onResize = (): void => setNarrow(window.innerWidth < INSPECTOR_MIN_WINDOW)
+    const onResize = (): void => setNarrow(window.innerWidth < INSPECTOR_DOCK_MIN_WINDOW)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  useEffect(() => { if (!narrow) setInspectorForced(false) }, [narrow])
-  const inspectorShown = isGrid && (narrow ? inspectorForced : inspectorOpen)
+  const inspectorShown = isGrid && inspectorAuto && !inspectorDismissed && selectedResults.length > 0
   const toggleInspector = useCallback(() => {
-    if (narrow) {
-      setInspectorForced((f) => !f)
-      return
-    }
-    setInspectorOpen((o) => {
+    setInspectorDismissed(false)
+    setInspectorAuto((o) => {
       savePref('shell.inspector', o ? '0' : '1')
       return !o
     })
-  }, [narrow])
+  }, [])
+  const dismissInspector = useCallback(() => setInspectorDismissed(true), [])
 
   const handleFolderManagerClose = useCallback(async () => {
     setShowFolderManager(false)
@@ -436,10 +441,7 @@ function App(): JSX.Element {
       if (e.key === 'Escape') {
         if (selected) setSelected(null)
         else if (showFolderManager) setShowFolderManager(false)
-        else if (!showTasks && selectedIds.size > 0 && !isTextInput(e.target)) {
-          setSelectedIds(new Set())
-          setFocusId(null)
-        }
+        else if (!showTasks && selectedIds.size > 0 && !isTextInput(e.target)) clearSelection()
         return
       }
       if (!isGrid || selected || showFolderManager || showTasks) return
@@ -459,7 +461,7 @@ function App(): JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showFolderManager, showTasks, selectedIds, isGrid, primary, moveFocus])
+  }, [selected, showFolderManager, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection])
 
   const hasDateFilter = !!(dateFrom || dateTo)
   const libraryEmpty = counts !== null && counts.all === 0
@@ -544,7 +546,7 @@ function App(): JSX.Element {
         )}
 
         {/* 主内容区 */}
-        <div className="flex-1 min-h-0 flex">
+        <div className="relative flex-1 min-h-0 flex">
         <main className="flex-1 min-w-0 overflow-hidden">
           {source.type === 'people' ? (
             <PeopleView onSelectPhoto={handleSelectPhoto} />
@@ -561,6 +563,7 @@ function App(): JSX.Element {
               onItemOpen={handleItemOpen}
               onItemContextMenu={handleItemContextMenu}
               onColsChange={handleColsChange}
+              onBackgroundClick={clearSelection}
             />
           ) : libraryEmpty ? (
             <EmptyState
@@ -580,20 +583,25 @@ function App(): JSX.Element {
           )}
         </main>
 
-        {/* 检查器 */}
+        {/* 检查器：有选择才出现；宽窗口停靠在右侧，窄窗口浮在网格上 */}
         {inspectorShown && (
-          <aside style={{ width: INSPECTOR_WIDTH }} className="flex-shrink-0 bg-sidebar border-l border-line animate-slide-in" data-inspector>
+          <aside
+            style={{ width: INSPECTOR_WIDTH }}
+            className={`flex-shrink-0 bg-sidebar border-l border-line animate-slide-in ${
+              narrow ? 'absolute right-0 inset-y-0 z-20 shadow-2xl shadow-black/60' : ''
+            }`}
+            data-inspector
+          >
             {selectedResults.length > 1 ? (
               <SelectionSummary
                 results={selectedResults}
                 breakdown={countLine(selectedResults.map((r) => r.photo))}
                 onReveal={() => revealItems(selectedResults)}
                 onCopyPaths={() => copyPaths(selectedResults)}
+                onClose={dismissInspector}
               />
-            ) : primary ? (
-              <Inspector key={primary.photo.id} result={primary} onSelect={handleSelect} showPreview />
-            ) : (
-              <InspectorEmpty />
+            ) : primary && (
+              <Inspector key={primary.photo.id} result={primary} onSelect={handleSelect} onClose={dismissInspector} showPreview />
             )}
           </aside>
         )}
