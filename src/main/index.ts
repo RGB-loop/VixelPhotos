@@ -7,7 +7,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase } from '../core/db'
 import { FileWatcher } from '../core/watcher'
 import { Indexer } from '../core/indexer'
-import { SearchEngine } from '../core/search'
+import { SearchEngine, type SearchOptions } from '../core/search'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
 import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
@@ -81,6 +81,7 @@ async function initServices(): Promise<void> {
 
   db = initDatabase(dbPath)
   db.recoverStuckTasks()
+  db.pruneDoneTasks()
   db.requeueMissingEmbeddings()
 
   indexer = new Indexer(db, userDataPath)
@@ -173,7 +174,7 @@ async function runBackup(): Promise<{ path: string; sizeBytes: number }> {
 
 function registerIpcHandlers(): void {
   // 搜索
-  ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }) => {
+  ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: SearchOptions) => {
     return searchEngine.search(query, limit, options)
   })
 
@@ -234,6 +235,27 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SET_INDEX_PAUSED, async (_event, paused: boolean) => {
     indexer.setPaused(paused)
     return indexer.isPaused()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_TASK_OVERVIEW, async () => {
+    return db.getTaskOverview()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RETRY_FAILED_TASKS, async (_event, ids?: number[]) => {
+    const n = db.retryFailedTasks(ids)
+    if (n > 0) indexer.processNext()
+    indexer.emitProgressPublic()
+    return n
+  })
+
+  ipcMain.handle(IPC_CHANNELS.CLEAR_FAILED_TASKS, async () => {
+    const n = db.clearFailedTasks()
+    indexer.emitProgressPublic()
+    return n
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_MEDIA_DETAIL, async (_event, videoId: number) => {
+    return db.getMediaDetail(videoId) ?? null
   })
 
   ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {

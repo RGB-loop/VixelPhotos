@@ -2,6 +2,9 @@
 // Shared Types - 主进程和渲染进程共用的类型定义
 // ============================================
 
+/** 'image' 是普通照片；'video' / 'audio' 的 Photo 是该媒体的代表图（首帧 / 封面 / 波形） */
+export type MediaKind = 'image' | 'video' | 'audio'
+
 export interface Photo {
   id: number
   folderId: number
@@ -24,6 +27,10 @@ export interface Photo {
   videoId?: number | null
   /** 若是视频抽出的帧：该帧对应的视频时间戳（毫秒） */
   frameTimeMs?: number | null
+  /** 媒体类型（LEFT JOIN videos 得出；部分旧查询不带此字段时按 image 处理） */
+  mediaKind?: MediaKind
+  /** 视频/音频时长（毫秒） */
+  durationMs?: number | null
   deletedAt?: string
   createdAt: string
   updatedAt: string
@@ -41,6 +48,7 @@ export interface VideoRecord {
   width?: number
   height?: number
   frameCount?: number
+  mediaKind: 'video' | 'audio'
   deletedAt?: string
   createdAt: string
 }
@@ -64,7 +72,57 @@ export interface WatchedFolder {
 export interface SearchResult {
   photo: Photo
   score: number
+  /** 经片段通道命中的视频/音频：最佳片段的时间区间 */
+  segment?: { startMs: number; endMs: number }
   thumbnailPath?: string
+}
+
+export interface CurrentTask {
+  taskType: TaskType
+  kind: MediaKind
+  name: string
+  /** 音视频：已完成片段数 / 总片段数；图片任务为 0/1 */
+  segDone: number
+  segTotal: number
+  startedAt: number
+  /** 最近一个片段耗时（ms），供前端估算剩余时间 */
+  lastSegMs?: number
+}
+
+export interface MediaDetail {
+  id: number
+  kind: 'video' | 'audio'
+  filePath: string
+  fileName: string
+  durationMs: number | null
+  width: number | null
+  height: number | null
+  segments: Array<{ startMs: number; endMs: number }>
+}
+
+export interface TaskRow {
+  id: number
+  taskType: TaskType
+  status: 'pending' | 'processing' | 'done' | 'error'
+  name: string | null
+  kind: MediaKind
+  errorMsg: string | null
+  retryCount: number
+  createdAt: string
+}
+
+export interface TaskOverview {
+  /** task_type → status → count */
+  counts: Record<string, Partial<Record<TaskRow['status'], number>>>
+  pending: TaskRow[]
+  errors: TaskRow[]
+  media: {
+    video: { total: number; done: number }
+    audio: { total: number; done: number }
+    segmentsDone: number
+    segmentsExpected: number
+  }
+  photos: { total: number; thumbnailed: number; indexed: number }
 }
 
 export interface IndexProgress {
@@ -80,6 +138,10 @@ export interface IndexProgress {
   ocrPhotos?: number
   // 用户手动暂停了后台索引
   paused?: boolean
+  // 正在处理的任务（音视频按片段推进）
+  current?: CurrentTask
+  // 队列概况
+  queue?: { pending: number; error: number }
 
   // AI 模型状态
   aiModelReady: boolean
@@ -130,6 +192,10 @@ export const IPC_CHANNELS = {
   INDEX_PROGRESS: 'index-progress',
   GET_INDEX_PAUSED: 'get-index-paused',
   SET_INDEX_PAUSED: 'set-index-paused',
+  GET_TASK_OVERVIEW: 'get-task-overview',
+  RETRY_FAILED_TASKS: 'retry-failed-tasks',
+  CLEAR_FAILED_TASKS: 'clear-failed-tasks',
+  GET_MEDIA_DETAIL: 'get-media-detail',
 
   // 系统
   GET_APP_PATH: 'get-app-path',

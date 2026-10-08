@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail } from '../shared/types'
 
 const api = {
   // 搜索
-  search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string }): Promise<SearchResult[]> => {
+  search: (query: string, limit?: number, options?: { dateFrom?: string; dateTo?: string; kind?: MediaKind }): Promise<SearchResult[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SEARCH, query, limit, options)
   },
   findSimilar: (photoId: number, limit?: number): Promise<SearchResult[]> => {
@@ -66,6 +66,18 @@ const api = {
   },
   setIndexPaused: (paused: boolean): Promise<boolean> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SET_INDEX_PAUSED, paused)
+  },
+  getTaskOverview: (): Promise<TaskOverview> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_TASK_OVERVIEW)
+  },
+  retryFailedTasks: (ids?: number[]): Promise<number> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.RETRY_FAILED_TASKS, ids)
+  },
+  clearFailedTasks: (): Promise<number> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.CLEAR_FAILED_TASKS)
+  },
+  getMediaDetail: (videoId: number): Promise<MediaDetail | null> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_MEDIA_DETAIL, videoId)
   },
 
   // 系统 / 模型状态

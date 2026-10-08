@@ -96,7 +96,7 @@ export async function extractKeyframes(
     }
 
     // macOS 优先 VideoToolbox 硬解：4K HEVC 32s 片段实测 22.8s → 2.8s，CPU 时间 37s → 1.3s。
-    // 硬解失���（编码格式不支持 / 会话数用尽）回退软解
+    // 硬解失败（编码格式不支持 / 会话数用尽）回退软解
     if (USE_VIDEOTOOLBOX) {
       try {
         await runFfmpeg(ffmpeg, buildArgs(true))

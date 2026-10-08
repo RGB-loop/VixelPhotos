@@ -6,13 +6,14 @@ import sharp from 'sharp'
 import exifr from 'exifr'
 import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from './db'
-import type { IndexProgress } from '../shared/types'
+import type { CurrentTask, IndexProgress, TaskType } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 import { decodeImage } from './image/decode'
 import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
-import { extractAudioTrack } from './audio/extract'
+import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
+import { SEGMENT_MS } from './db'
 
 // xxHash 懒加载（与 watcher 共用语义；模块级单例避免重复 init）
 let _hasher: ((input: Uint8Array) => string) | null = null
@@ -27,6 +28,8 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
  * Indexer 流水线（纯本地，无 LLM）：
  *   图片：thumbnail → embed (EmbeddingGemma 2) → face / ocr (按需)
  *   视频：extract_frames → 32s 片段（帧序列 + 音轨）→ EmbeddingGemma 2 → video_segments
+ *   音频：extract_frames → 32s 片段（音轨）→ EmbeddingGemma 2 → video_segments；
+ *         封面 / 波形图落成代表 photo（只做缩略图，不做图片向量）
  */
 const PAUSED_KEY = 'indexing_paused'
 
@@ -40,6 +43,8 @@ export class Indexer extends EventEmitter {
   // 暂停：不再取新任务；正在跑的视频在片段之间停住，继续后从断点接着跑
   private paused: boolean
   private resumeWaiters: Array<() => void> = []
+  // 正在处理的任务，随 progress 事件推给任务面板
+  private current: CurrentTask | null = null
 
   constructor(db: DatabaseInstance, userDataPath: string) {
     super()
@@ -137,22 +142,25 @@ export class Indexer extends EventEmitter {
   }
 
   /**
-   * 处理 'extract_frames' 任务：
-   *   1. 视频切分 32s 片段 → 抽帧序列 + 音轨 → Gemma2 多模态编码 → video_segments 表
-   *   2. 全视频首帧抽取 → 缩略图（UI 展示用）
+   * 处理 'extract_frames' 任务（视频和纯音频共用，按 media_kind 分支）：
+   *   1. 按 32s 切片；视频片段 = 帧序列 + 音轨，音频片段 = 音轨 → Gemma2 → video_segments 表
+   *   2. 代表图：视频取首帧，音频取内嵌封面或波形 → 代表 photo（网格 / 搜索落点）
    *
-   * 帧本身仍写到 <userData>/video_frames/<videoHash>/ 供缩略图和调试，
+   * 视频帧写到 <userData>/video_frames/<videoHash>/ 供缩略图和调试，
    * 但不为每帧单独生成 photo 行 + image embedding；搜索直接走 video_segments。
+   *
+   * 返回值：部分片段失败时的说明（任务仍算完成），写进 index_queue.error_msg 供任务面板展示。
    */
-  private async processExtractFrames(videoId: number): Promise<void> {
+  private async processExtractFrames(videoId: number): Promise<string | undefined> {
     const video = this.db.getVideoById(videoId)
     if (!video) return // 视频已被删除
+    const kind = video.mediaKind
 
     if (!isFfmpegAvailable()) {
       throw new Error('ffmpeg binary not available — install ffmpeg-static or rebuild app')
     }
 
-    this.emitProgress('indexing', basename(video.filePath))
+    this.setCurrent('extract_frames', kind, video.fileName, 0, 0)
 
     // 清理该视频上一轮的片段向量 + 抽帧（DB + 磁盘）
     this.db.deleteVideoSegments(videoId)
@@ -174,15 +182,15 @@ export class Indexer extends EventEmitter {
     if (durationMs <= 0) {
       durationMs = (await probeDurationMs(video.filePath)) ?? 0
       if (durationMs <= 0) {
-        // 读不到时长 → 视频损坏 / 无效；frame_count=0 表示"扫过了但没内容"
+        // 读不到时长 → 文件损坏 / 无效。frame_count=0 标记"扫过了"，并报错让任务面板可见
         this.db.updateVideoMeta(videoId, { frameCount: 0 })
-        return
+        throw new Error('无法读取时长（文件损坏或格式不支持）')
       }
       this.db.updateVideoMeta(videoId, { durationMs })
     }
 
-    // 模型没就绪时只落代表帧（让视频出现在网格里），然后抛错：
-    // 否则每个片段都静默失败、任务却标 done，视频永远没有片段向量。
+    // 模型没就绪时只落代表图（让媒体出现在网格里），然后抛错：
+    // 否则每个片段都静默失败、任务却标 done，媒体永远没有片段向量。
     // 任务记 error，下次启动 requeueMissingEmbeddings 按"有时长、无片段"重新排队。
     const embeddingService = getEmbeddingService()
     await embeddingService.init()
@@ -191,9 +199,10 @@ export class Indexer extends EventEmitter {
     // 32s 片段，每 4s 一帧 → 8 帧。vision encoder 开销随帧数超线性增长：
     // 实测 M 系列 CPU 上 8 帧 ≈ 14s / 16 帧 ≈ 43s / 32 帧 ≈ 141s（峰值 3.9GB），
     // 1fps 对长视频不可用。8 帧 × 140 token + 32s 音频 ≈ 2K token，远低于 8K context
-    const SEGMENT_DURATION_SEC = 32
+    const SEGMENT_DURATION_SEC = SEGMENT_MS / 1000
     const FRAME_INTERVAL_SEC = 4
-    const numSegments = Math.max(1, Math.ceil(durationMs / 1000 / SEGMENT_DURATION_SEC))
+    const numSegments = Math.max(1, Math.ceil(durationMs / SEGMENT_MS))
+    this.setCurrent('extract_frames', kind, video.fileName, 0, numSegments)
 
     if (!existsSync(framesDir)) {
       await mkdir(framesDir, { recursive: true })
@@ -201,95 +210,140 @@ export class Indexer extends EventEmitter {
 
     const hasher = await getXxhasher()
 
-    // 为每个片段：抽帧序列 + 音轨 → Gemma2 多模态编码
+    // 代表图落成 photo 行：网格缩略图、搜索结果落点、"相似"入口。
+    // 视频首帧也走图片 embed（requeueMissingEmbeddings 否则启动时还会补排）；
+    // 音频封面/波形只做缩略图 —— 波形向量会污染图片搜索
+    const addRepresentative = (buffer: Buffer, fileName: string): void => {
+      const frameHash = hasher(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength))
+      const photoId = this.db.addPhoto(
+        video.folderId, join(framesDir, fileName), fileName,
+        buffer.byteLength, Date.now(), frameHash,
+        { videoId, frameTimeMs: 0 }
+      )
+      this.db.addToQueue(photoId, 'thumbnail', 20)
+      if (kind === 'audio') return
+      if (this.db.hasContentForHash(frameHash).hasEmbedding) {
+        this.db.updateEmbedStatusByHash(frameHash)
+      } else {
+        this.db.addToQueue(photoId, 'embed', 10)
+      }
+    }
+
+    if (kind === 'audio') {
+      // 封面和波形都失败 → 基本是坏文件，抛错让任务进失败列表
+      const art = await extractCoverOrWaveform(video.filePath)
+      const fileName = `${art.source}.jpg`
+      await writeFile(join(framesDir, fileName), art.buffer)
+      addRepresentative(art.buffer, fileName)
+    }
+
+    let failed = 0
+    let lastError = ''
     for (let i = 0; i < numSegments; i++) {
       await this.waitIfPaused()
       // 长视频要跑很久，期间文件夹可能被移除
       if (!this.db.getVideoById(videoId)) return
-      const startMs = i * SEGMENT_DURATION_SEC * 1000
-      const endMs = Math.min((i + 1) * SEGMENT_DURATION_SEC * 1000, durationMs)
+      const segStartedAt = Date.now()
+      const startMs = i * SEGMENT_MS
+      const endMs = Math.min((i + 1) * SEGMENT_MS, durationMs)
       const segmentDurationSec = (endMs - startMs) / 1000
 
       try {
-        const frames = await extractKeyframes(video.filePath, {
-          startSec: startMs / 1000,
-          durationSec: segmentDurationSec,
-          intervalSec: FRAME_INTERVAL_SEC,
-          maxFrames: SEGMENT_DURATION_SEC / FRAME_INTERVAL_SEC,
-          maxSide: 512,
-        })
-
-        if (frames.length === 0) {
-          // 空片段 / 损坏部分 → 跳过，不保存 segment 行
-          continue
-        }
-
-        // 首段的首帧先落成代表 photo —— 放在编码之前，
-        // 这样即便模型没就绪 / 编码失败，视频依然出现在网格里。
-        if (i === 0) {
-          const firstFrameFileName = `segment_${i}_0ms.jpg`
-          const firstFramePath = join(framesDir, firstFrameFileName)
-          if (!existsSync(firstFramePath)) {
-            await writeFile(firstFramePath, frames[0].buffer)
-          }
-          const frameHash = hasher(new Uint8Array(frames[0].buffer.buffer, frames[0].buffer.byteOffset, frames[0].buffer.byteLength))
-
-          // 首帧作为视频的代表 photo：网格缩略图、搜索结果落点、"相似照片"入口。
-          // 它也走一遍图片 embed，否则 requeueMissingEmbeddings 启动时还会补排。
-          const photoId = this.db.addPhoto(
-            video.folderId, firstFramePath, firstFrameFileName,
-            frames[0].buffer.byteLength, Date.now(), frameHash,
-            { videoId, frameTimeMs: 0 }
-          )
-          this.db.addToQueue(photoId, 'thumbnail', 20)
-          if (this.db.hasContentForHash(frameHash).hasEmbedding) {
-            this.db.updateEmbedStatusByHash(frameHash)
-          } else {
-            this.db.addToQueue(photoId, 'embed', 10)
-          }
-        }
-
-        if (!modelReady) break
-
-        const frameBuffers = frames.map((f) => f.buffer)
-
-        // 提取该片段的音轨（mono 16kHz f32le）
-        let audioSamples: Float32Array | null = null
-        try {
-          audioSamples = await extractAudioTrack(video.filePath, {
+        let embedding: Float32Array | null = null
+        if (kind === 'audio') {
+          if (!modelReady) break
+          const samples = await extractAudioTrack(video.filePath, {
             startSec: startMs / 1000,
             durationSec: segmentDurationSec,
           })
-        } catch (audioError) {
-          console.warn(`Audio extraction failed for segment ${i} of ${video.filePath}:`, audioError)
-          // 无音轨 / 损坏音频 → 仅视觉模态继续
+          if (samples.length > 0) {
+            embedding = await embeddingService.encode({ type: 'audio', samples })
+          }
+        } else {
+          const frames = await extractKeyframes(video.filePath, {
+            startSec: startMs / 1000,
+            durationSec: segmentDurationSec,
+            intervalSec: FRAME_INTERVAL_SEC,
+            maxFrames: SEGMENT_DURATION_SEC / FRAME_INTERVAL_SEC,
+            maxSide: 512,
+          })
+          // 空片段 / 损坏部分 → 跳过，不保存 segment 行
+          if (frames.length > 0) {
+            // 首段首帧先落成代表 photo —— 放在编码之前，
+            // 这样即便模型没就绪 / 编码失败，视频依然出现在网格里。
+            if (i === 0) {
+              const firstFrameFileName = `segment_${i}_0ms.jpg`
+              await writeFile(join(framesDir, firstFrameFileName), frames[0].buffer)
+              addRepresentative(frames[0].buffer, firstFrameFileName)
+            }
+            if (!modelReady) break
+            embedding = await this.encodeVideoSegment(video.filePath, frames.map((f) => f.buffer), startMs, segmentDurationSec, i)
+          }
         }
 
-        // Gemma2 多模态编码：帧序列 + 音轨 → 单向量；无音轨时退化为纯视觉
-        const clip = { frames: frameBuffers, durationSec: segmentDurationSec }
-        const embedding = audioSamples && audioSamples.length > 0
-          ? await embeddingService.encode({ type: 'multimodal', video: clip, audio: audioSamples })
-          : await embeddingService.encodeVideo(clip.frames, clip.durationSec)
-
-        // segment hash = hash(视频 hash + 时间区间)：同一视频文件被多处引用时可复用
-        const segmentKey = `${video.fileHash}_${startMs}_${endMs}`
-        const segmentHash = hasher(Buffer.from(segmentKey, 'utf8'))
-
-        // 保存到 video_segments + video_segment_vecs
-        this.db.saveVideoSegment(videoId, startMs, endMs, segmentHash, embedding)
-
+        if (embedding) {
+          // segment hash = hash(媒体 hash + 时间区间)：同一文件被多处引用时可复用
+          const segmentKey = `${video.fileHash}_${startMs}_${endMs}`
+          const segmentHash = hasher(Buffer.from(segmentKey, 'utf8'))
+          this.db.saveVideoSegment(videoId, startMs, endMs, segmentHash, embedding)
+        }
       } catch (segmentError) {
         console.error(`Error processing segment ${i} of ${video.filePath}:`, segmentError)
         // 单片段失败 → 跳过，继续下一片段
+        failed++
+        lastError = String(segmentError)
       }
+      this.setCurrent('extract_frames', kind, video.fileName, i + 1, numSegments, Date.now() - segStartedAt)
     }
 
     if (!modelReady) {
       throw new Error(`Embedding model not ready: ${embeddingService.getInitError() ?? 'unknown'}`)
     }
+    if (failed === numSegments) {
+      throw new Error(`全部 ${numSegments} 个片段失败：${lastError.slice(0, 300)}`)
+    }
 
-    // 更新视频元数据：frameCount 现在表示片段数而非帧数
+    // 更新元数据：frameCount 现在表示片段数而非帧数
     this.db.updateVideoMeta(videoId, { frameCount: numSegments })
+    return failed > 0 ? `${failed}/${numSegments} 个片段失败：${lastError.slice(0, 200)}` : undefined
+  }
+
+  /** 视频片段：帧序列 + 音轨 → 单向量；无音轨时退化为纯视觉 */
+  private async encodeVideoSegment(
+    filePath: string,
+    frames: Buffer[],
+    startMs: number,
+    durationSec: number,
+    index: number
+  ): Promise<Float32Array> {
+    const embeddingService = getEmbeddingService()
+    let audioSamples: Float32Array | null = null
+    try {
+      audioSamples = await extractAudioTrack(filePath, { startSec: startMs / 1000, durationSec })
+    } catch (audioError) {
+      // 无音轨 / 损坏音频 → 仅视觉模态继续
+      console.warn(`Audio extraction failed for segment ${index} of ${filePath}:`, audioError)
+    }
+    const clip = { frames, durationSec }
+    return audioSamples && audioSamples.length > 0
+      ? embeddingService.encode({ type: 'multimodal', video: clip, audio: audioSamples })
+      : embeddingService.encodeVideo(clip.frames, clip.durationSec)
+  }
+
+  private setCurrent(
+    taskType: TaskType,
+    kind: CurrentTask['kind'],
+    name: string,
+    segDone: number,
+    segTotal: number,
+    lastSegMs?: number
+  ): void {
+    const startedAt = this.current?.name === name && this.current.taskType === taskType
+      ? this.current.startedAt
+      : Date.now()
+    this.current = { taskType, kind, name, segDone, segTotal, startedAt, lastSegMs }
+    const stage = taskType === 'ocr' ? 'ocr' : taskType === 'face' ? 'detecting_faces' : 'indexing'
+    this.emitProgress(stage, name)
   }
 
   private async processFace(fileHash: string, filePath: string): Promise<void> {
@@ -346,7 +400,7 @@ export class Indexer extends EventEmitter {
 
   /** 公开的进度发射（供 watcher 调用） */
   emitProgressPublic(): void {
-    this.emitProgress('idle')
+    this.emitProgress(this.isProcessing ? 'indexing' : 'idle', this.current?.name)
   }
 
   /** 获取缩略图路径（按 hash） */
@@ -364,6 +418,7 @@ export class Indexer extends EventEmitter {
 
     const task = this.db.getNextTask()
     if (!task) {
+      this.current = null
       this.emitProgress('idle')
       return
     }
@@ -373,8 +428,8 @@ export class Indexer extends EventEmitter {
     try {
       // extract_frames 的 task.photoId 是 videos.id 而非 photos.id —— 单独处理
       if (task.taskType === 'extract_frames') {
-        await this.processExtractFrames(task.photoId)
-        this.db.completeTask(task.id)
+        const note = await this.processExtractFrames(task.photoId)
+        this.db.completeTask(task.id, note)
       } else {
         const photo = this.db.getPhoto(task.photoId)
         if (!photo) {
@@ -384,30 +439,25 @@ export class Indexer extends EventEmitter {
           return
         }
 
+        this.setCurrent(task.taskType as TaskType, photo.mediaKind ?? 'image', photo.fileName, 0, 1)
         if (task.taskType === 'thumbnail') {
-          this.emitProgress('indexing', photo.fileName)
           await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
-          this.db.completeTask(task.id)
         } else if (task.taskType === 'embed') {
-          this.emitProgress('indexing', photo.fileName)
           await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
-          this.db.completeTask(task.id)
         } else if (task.taskType === 'face') {
-          this.emitProgress('detecting_faces', photo.fileName)
           await this.processFace(photo.fileHash, photo.filePath)
-          this.db.completeTask(task.id)
         } else if (task.taskType === 'ocr') {
-          this.emitProgress('ocr', photo.fileName)
           await this.processOcr(photo.fileHash, photo.filePath)
-          this.db.completeTask(task.id)
         }
+        this.db.completeTask(task.id)
       }
     } catch (error) {
       console.error(`Error processing task ${task.id}:`, error)
-      this.db.failTask(task.id, String(error))
+      this.db.failTask(task.id, error instanceof Error ? error.message : String(error))
     }
 
     this.isProcessing = false
+    this.current = null
     this.emitProgress('idle')
     setImmediate(() => this.processNext())
   }
@@ -496,6 +546,7 @@ export class Indexer extends EventEmitter {
 
   private emitProgress(stage: IndexProgress['stage'], currentFile?: string): void {
     const photoStats = this.db.getPhotoStats()
+    const queue = this.db.getQueueStats()
     const progress: IndexProgress = {
       totalPhotos: photoStats.uniqueTotal,
       thumbnailedPhotos: photoStats.thumbnailed,
@@ -504,6 +555,8 @@ export class Indexer extends EventEmitter {
       stage,
       currentFile,
       paused: this.paused,
+      current: this.current ?? undefined,
+      queue: { pending: queue.pending + queue.processing, error: queue.error },
       aiModelReady: getEmbeddingService().isReady(),
     }
     this.emit('progress', progress)

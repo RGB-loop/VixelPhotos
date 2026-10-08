@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import xxhash from 'xxhash-wasm'
 import type { DatabaseInstance } from './db'
 import type { Indexer } from './indexer'
+import type { MediaKind } from '../shared/types'
 
 // xxHash 实例（懒初始化）
 let hashFn: ((input: Uint8Array) => string) | null = null
@@ -29,6 +30,11 @@ const SUPPORTED_IMAGE_EXTENSIONS = new Set([
 // 支持的视频格式（实际能不能解码取决于 ffmpeg-static；这些是最常见的）
 const SUPPORTED_VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi',
+])
+
+// 纯音频：和视频共用 videos 表 + extract_frames 任务，indexer 按 media_kind 分支
+const SUPPORTED_AUDIO_EXTENSIONS = new Set([
+  '.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus',
 ])
 
 const VIDEO_HASH_SAMPLE_BYTES = 64 * 1024
@@ -67,12 +73,11 @@ async function computeVideoLightHash(
   }
 }
 
-type MediaKind = 'image' | 'video' | null
-
-function classifyMedia(filePath: string): MediaKind {
+export function classifyMedia(filePath: string): MediaKind | null {
   const ext = extname(filePath).toLowerCase()
   if (SUPPORTED_IMAGE_EXTENSIONS.has(ext)) return 'image'
   if (SUPPORTED_VIDEO_EXTENSIONS.has(ext)) return 'video'
+  if (SUPPORTED_AUDIO_EXTENSIONS.has(ext)) return 'audio'
   return null
 }
 
@@ -157,8 +162,8 @@ export class FileWatcher {
     const kind = classifyMedia(filePath)
     if (kind === null) return
 
-    if (kind === 'video') {
-      await this.handleAddVideo(folderId, filePath)
+    if (kind !== 'image') {
+      await this.handleAddVideo(folderId, filePath, kind)
       return
     }
 
@@ -196,7 +201,7 @@ export class FileWatcher {
    * 而是先登记到 videos 表 + queue 一个 'extract_frames' 任务；
    * indexer 切 32s 片段编码进 video_segments，并把首帧落成代表 photo。
    */
-  private async handleAddVideo(folderId: number, filePath: string): Promise<void> {
+  private async handleAddVideo(folderId: number, filePath: string, kind: 'video' | 'audio'): Promise<void> {
     try {
       const stats = await stat(filePath)
       const fileName = basename(filePath)
@@ -209,7 +214,7 @@ export class FileWatcher {
       const hasher = await getHasher()
       const lightHash = await computeVideoLightHash(filePath, stats.size, stats.mtimeMs, hasher)
 
-      const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash)
+      const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash, kind)
 
       // 同步抽帧太慢；用 indexer 队列异步处理。约定：task_type='extract_frames'
       // 时，photo_id 字段携带的是 videos.id 而非 photos.id（schema 不变）。
@@ -254,7 +259,7 @@ export class FileWatcher {
     if (kind === null) return
 
     try {
-      if (kind === 'video') {
+      if (kind !== 'image') {
         await this.removeVideo(filePath)
       } else {
         this.db.softDeletePhoto(filePath)

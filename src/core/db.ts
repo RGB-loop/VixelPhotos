@@ -2,7 +2,9 @@ import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import * as sqliteVec from 'sqlite-vec'
-import type { Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord } from '../shared/types'
+import type {
+  Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord, MediaKind, MediaDetail, TaskOverview, TaskRow,
+} from '../shared/types'
 import { tokenizeForFtsSync } from './text/tokenize'
 import { buildFtsQuery } from './text/fts-query'
 
@@ -149,7 +151,7 @@ CREATE TABLE IF NOT EXISTS meta_state (
   value TEXT
 );
 
--- 视频文件主表
+-- 音视频文件主表（media_kind 区分 'video' / 'audio'，纯音频复用同一套表）
 -- 视频本身不索引；indexer 按 32s 切片，每片的帧序列 + 音轨合成一个向量，
 -- 存入 video_segments / video_segment_vecs。缩略图仍走 photos（首帧代表图）。
 CREATE TABLE IF NOT EXISTS videos (
@@ -164,6 +166,7 @@ CREATE TABLE IF NOT EXISTS videos (
   width        INTEGER,
   height       INTEGER,
   frame_count  INTEGER DEFAULT 0,
+  media_kind   TEXT NOT NULL DEFAULT 'video',
   deleted_at   DATETIME,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -195,6 +198,45 @@ CREATE TABLE IF NOT EXISTS video_segment_vec_map (
   segment_id  INTEGER NOT NULL UNIQUE REFERENCES video_segments(id)
 );
 `
+
+// 照片查询共用列（表别名 p）。LEFT JOIN videos v 补出媒体类型和时长：
+// 视频/音频的代表图（首帧 / 封面 / 波形）也是 photos 行，靠 video_id 关联
+const MEDIA_KIND_EXPR = `CASE WHEN p.video_id IS NULL THEN 'image' ELSE COALESCE(v.media_kind, 'video') END`
+// fileName 对音视频代表 photo 取源文件名（展示用）；filePath 仍是代表图路径（解码 / 缩略图用）
+const PHOTO_COLUMNS = `
+  p.id, p.folder_id as folderId, p.file_path as filePath, COALESCE(v.file_name, p.file_name) as fileName,
+  p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
+  p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
+  p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+  p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+  ${MEDIA_KIND_EXPR} as mediaKind, v.duration_ms as durationMs`
+const MEDIA_JOIN = `LEFT JOIN videos v ON v.id = p.video_id`
+
+/** 音视频切片长度；indexer 与任务面板的"预期片段数"共用 */
+export const SEGMENT_MS = 32_000
+
+const TASK_ROW_SELECT = `
+  SELECT q.id, q.task_type as taskType, q.status, q.error_msg as errorMsg,
+         q.retry_count as retryCount, q.created_at as createdAt,
+         CASE WHEN q.task_type = 'extract_frames' THEN qv.file_name ELSE p.file_name END as name,
+         CASE WHEN q.task_type = 'extract_frames' THEN COALESCE(qv.media_kind, 'video')
+              ELSE ${MEDIA_KIND_EXPR} END as kind
+  FROM index_queue q
+  LEFT JOIN videos qv ON q.task_type = 'extract_frames' AND qv.id = q.photo_id
+  LEFT JOIN photos p ON q.task_type <> 'extract_frames' AND p.id = q.photo_id
+  ${MEDIA_JOIN}`
+
+/**
+ * 增量 schema 迁移。SCHEMA 只有 CREATE IF NOT EXISTS，老库里已存在的表不会加新列，
+ * 这里按 table_info 检查后补齐，可重复执行。
+ */
+export function migrateSchema(db: Database.Database): void {
+  const hasColumn = (table: string, column: string): boolean =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column)
+  if (!hasColumn('videos', 'media_kind')) {
+    db.exec(`ALTER TABLE videos ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'`)
+  }
+}
 
 export interface DatabaseInstance {
   // 文件夹操作
@@ -238,12 +280,20 @@ export interface DatabaseInstance {
   addToQueue: (photoId: number, taskType: string, priority?: number) => void
   getNextTask: () => { id: number; photoId: number; taskType: string } | undefined
   peekNextTask: () => { id: number; photoId: number; taskType: string } | undefined
-  completeTask: (taskId: number) => void
+  /** note：任务成功但有可报告的问题（如部分片段失败），写进 error_msg 供任务面板展示 */
+  completeTask: (taskId: number, note?: string) => void
   resetTask: (taskId: number) => void
   failTask: (taskId: number, error: string) => void
   recoverStuckTasks: () => number
   requeueMissingEmbeddings: () => number
-  getQueueStats: () => { pending: number; processing: number; done: number }
+  getQueueStats: () => { pending: number; processing: number; done: number; error: number }
+  getTaskOverview: () => TaskOverview
+  /** error → pending；不传 ids 则重试全部失败任务。返回重试条数 */
+  retryFailedTasks: (ids?: number[]) => number
+  clearFailedTasks: () => number
+  /** done 行只是历史，启动时清掉，避免队列表无限增长 */
+  pruneDoneTasks: () => number
+  getMediaDetail: (videoId: number) => MediaDetail | undefined
 
   // 照片统计
   getPhotoStats: () => { total: number; uniqueTotal: number; thumbnailed: number; indexed: number; ocred: number }
@@ -299,7 +349,8 @@ export interface DatabaseInstance {
     limit: number,
     offset: number,
     dateFrom?: string,
-    dateTo?: string
+    dateTo?: string,
+    kind?: Photo['mediaKind']
   ) => Photo[]
   findSimilar: (
     fileHash: string,
@@ -341,7 +392,8 @@ export interface DatabaseInstance {
     fileName: string,
     fileSize: number,
     fileMtime: number,
-    fileHash: string
+    fileHash: string,
+    kind?: MediaKind
   ) => number
   getVideoById: (id: number) => VideoRecord | undefined
   getVideoByPath: (path: string) => VideoRecord | undefined
@@ -405,6 +457,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   })
 
   db.exec(SCHEMA)
+  migrateSchema(db)
 
   // WAL checkpoint — 确保其他进程写入的数据对当前连接可见
   db.pragma('wal_checkpoint(PASSIVE)')
@@ -478,9 +531,10 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     // 视频表 CRUD
     addVideo: db.prepare(`
-      INSERT INTO videos (folder_id, file_path, file_name, file_size, file_mtime, file_hash)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO videos (folder_id, file_path, file_name, file_size, file_mtime, file_hash, media_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_path) DO UPDATE SET
+        media_kind = excluded.media_kind,
         file_size = excluded.file_size,
         file_mtime = excluded.file_mtime,
         file_hash = excluded.file_hash,
@@ -491,14 +545,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              duration_ms as durationMs, width, height, frame_count as frameCount,
-             deleted_at as deletedAt, created_at as createdAt
+             media_kind as mediaKind, deleted_at as deletedAt, created_at as createdAt
       FROM videos WHERE id = ?
     `),
     getVideoByPath: db.prepare(`
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
              file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
              duration_ms as durationMs, width, height, frame_count as frameCount,
-             deleted_at as deletedAt, created_at as createdAt
+             media_kind as mediaKind, deleted_at as deletedAt, created_at as createdAt
       FROM videos WHERE file_path = ?
     `),
     updateVideoMeta: db.prepare(`
@@ -525,12 +579,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     // 照片字段映射（复用）
     getPhoto: db.prepare(`
-      SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
-             file_size as fileSize, file_mtime as fileMtime, file_hash as fileHash,
-             width, height, taken_at as takenAt, lat, lng,
-             embed_status as embedStatus, video_id as videoId, frame_time_ms as frameTimeMs,
-             deleted_at as deletedAt, created_at as createdAt, updated_at as updatedAt
-      FROM photos WHERE id = ?
+      SELECT ${PHOTO_COLUMNS}
+      FROM photos p ${MEDIA_JOIN}
+      WHERE p.id = ?
     `),
     getPhotoByPath: db.prepare(`
       SELECT id, folder_id as folderId, file_path as filePath, file_name as fileName,
@@ -553,14 +604,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     `),
     // 代表照片：每组 hash 取最早入库的（MIN(id)），带副本计数
     getRepresentativePhotos: db.prepare(`
-      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
-             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
-             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
-             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+      SELECT ${PHOTO_COLUMNS},
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
       FROM photos p
+      ${MEDIA_JOIN}
       WHERE p.deleted_at IS NULL
         AND p.id = (
           SELECT MIN(p3.id) FROM photos p3
@@ -570,14 +618,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       LIMIT ? OFFSET ?
     `),
     getRepresentativeByHash: db.prepare(`
-      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
-             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
-             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
-             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+      SELECT ${PHOTO_COLUMNS},
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
       FROM photos p
+      ${MEDIA_JOIN}
       WHERE p.file_hash = ? AND p.deleted_at IS NULL
       ORDER BY p.id ASC
       LIMIT 1
@@ -591,14 +636,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       ORDER BY p.id ASC
     `),
     getPhotoWithCaption: db.prepare(`
-      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
-             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
-             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
-             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+      SELECT ${PHOTO_COLUMNS},
              c.text as caption,
              o.text as ocrText
       FROM photos p
+      ${MEDIA_JOIN}
       LEFT JOIN captions c ON p.file_hash = c.file_hash
       LEFT JOIN image_ocr o ON p.file_hash = o.file_hash
       WHERE p.id = ?
@@ -634,7 +676,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       LIMIT 1
     `),
     markTaskProcessing: db.prepare(`UPDATE index_queue SET status = 'processing' WHERE id = ?`),
-    completeTask: db.prepare(`UPDATE index_queue SET status = 'done' WHERE id = ?`),
+    completeTask: db.prepare(`UPDATE index_queue SET status = 'done', error_msg = ? WHERE id = ?`),
     resetTask: db.prepare(`UPDATE index_queue SET status = 'pending' WHERE id = ?`),
     failTask: db.prepare(`
       UPDATE index_queue SET status = 'error', error_msg = ?, retry_count = retry_count + 1 WHERE id = ?
@@ -655,21 +697,61 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       WHERE p.deleted_at IS NULL
         AND p.file_hash IS NOT NULL
         AND p.file_hash NOT IN (SELECT file_hash FROM image_vec_map)
+        AND (p.video_id IS NULL OR p.video_id NOT IN (SELECT id FROM videos WHERE media_kind = 'audio'))
         AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type IN ('embed', 'thumbnail') AND status IN ('pending', 'processing'))
     `),
     getQueueStats: db.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pending,
         COALESCE(SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), 0) as processing,
-        COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done
+        COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done,
+        COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) as error
       FROM index_queue
     `),
+    // 任务面板
+    getTaskCounts: db.prepare(`
+      SELECT task_type as taskType, status, COUNT(*) as n FROM index_queue GROUP BY task_type, status
+    `),
+    // extract_frames 的 photo_id 指向 videos.id，其余指向 photos.id
+    getActiveTaskRows: db.prepare(`
+      ${TASK_ROW_SELECT}
+      WHERE q.status IN ('processing', 'pending')
+      ORDER BY q.status = 'processing' DESC, q.priority DESC, q.id ASC
+      LIMIT ?
+    `),
+    getErrorTaskRows: db.prepare(`
+      ${TASK_ROW_SELECT}
+      WHERE q.status = 'error'
+      ORDER BY q.id DESC
+      LIMIT ?
+    `),
+    getMediaTotals: db.prepare(`
+      SELECT media_kind as kind, COUNT(*) as total,
+             SUM(CASE WHEN frame_count > 0 THEN 1 ELSE 0 END) as done,
+             SUM(CASE WHEN duration_ms > 0 THEN (duration_ms + ${SEGMENT_MS - 1}) / ${SEGMENT_MS} ELSE 0 END) as expected
+      FROM videos WHERE deleted_at IS NULL
+      GROUP BY media_kind
+    `),
+    getSegmentsDone: db.prepare(`
+      SELECT COUNT(*) as n FROM video_segments s
+      JOIN videos v ON v.id = s.video_id
+      WHERE v.deleted_at IS NULL
+    `),
+    retryFailedTasks: db.prepare(`
+      UPDATE index_queue SET status = 'pending', error_msg = NULL
+      WHERE status = 'error' AND (? IS NULL OR id IN (SELECT value FROM json_each(?)))
+    `),
+    clearFailedTasks: db.prepare(`DELETE FROM index_queue WHERE status = 'error'`),
+    pruneDoneTasks: db.prepare(`DELETE FROM index_queue WHERE status = 'done'`),
     getPhotoStats: db.prepare(`
       SELECT
         COUNT(*) as total,
         COUNT(DISTINCT p.file_hash) as uniqueTotal,
         SUM(CASE WHEN p.width IS NOT NULL THEN 1 ELSE 0 END) as thumbnailed,
-        SUM(CASE WHEN p.embed_status = 'done' THEN 1 ELSE 0 END) as indexed,
+        -- 音频封面/波形图按设计不做图片向量，视同已索引
+        SUM(CASE WHEN p.embed_status = 'done'
+                   OR p.video_id IN (SELECT id FROM videos WHERE media_kind = 'audio')
+                 THEN 1 ELSE 0 END) as indexed,
         (SELECT COUNT(DISTINCT file_hash) FROM image_ocr) as ocred
       FROM photos p
       WHERE p.deleted_at IS NULL
@@ -794,9 +876,12 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       JOIN image_vec_map m ON m.rowid = v.rowid
     `),
     // 文件名搜索（LIKE 模糊匹配，按 hash 去重）
+    // 音视频的代表图路径在 <userData>/video_frames/ 下，要匹配源文件的路径而不是代表图的
     searchByFileName: db.prepare(`
-      SELECT DISTINCT file_hash FROM photos
-      WHERE deleted_at IS NULL AND (file_name LIKE ? OR file_path LIKE ?)
+      SELECT DISTINCT p.file_hash FROM photos p
+      ${MEDIA_JOIN}
+      WHERE p.deleted_at IS NULL
+        AND (COALESCE(v.file_name, p.file_name) LIKE ? OR COALESCE(v.file_path, p.file_path) LIKE ?)
       LIMIT ?
     `),
     // OCR 全文搜索（FTS5 BM25）
@@ -810,14 +895,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     `),
     // 带时间过滤的代表照片查询
     getRepresentativePhotosFiltered: db.prepare(`
-      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
-             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
-             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
-             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
+      SELECT ${PHOTO_COLUMNS},
              (SELECT COUNT(*) FROM photos p2
               WHERE p2.file_hash = p.file_hash AND p2.deleted_at IS NULL) as duplicateCount
       FROM photos p
+      ${MEDIA_JOIN}
       WHERE p.deleted_at IS NULL
         AND p.id = (
           SELECT MIN(p3.id) FROM photos p3
@@ -825,16 +907,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         )
         AND (? IS NULL OR p.taken_at >= ?)
         AND (? IS NULL OR p.taken_at <= ?)
+        AND (? IS NULL OR ${MEDIA_KIND_EXPR} = ?)
       ORDER BY p.taken_at DESC, p.created_at DESC
       LIMIT ? OFFSET ?
     `),
     getPhotosWithGPS: db.prepare(`
-      SELECT p.id, p.folder_id as folderId, p.file_path as filePath, p.file_name as fileName,
-             p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
-             p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-             p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
-             p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt
+      SELECT ${PHOTO_COLUMNS}
       FROM photos p
+      ${MEDIA_JOIN}
       WHERE p.deleted_at IS NULL
         AND p.lat IS NOT NULL AND p.lng IS NOT NULL
         AND p.id = (
@@ -1084,8 +1164,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         | { id: number; photoId: number; taskType: string }
         | undefined
     },
-    completeTask: (taskId: number): void => {
-      stmts.completeTask.run(taskId)
+    completeTask: (taskId: number, note?: string): void => {
+      stmts.completeTask.run(note ?? null, taskId)
     },
     resetTask: (taskId: number): void => {
       stmts.resetTask.run(taskId)
@@ -1108,8 +1188,61 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return photos.length + videos.length
     },
     getQueueStats: () => {
-      const result = stmts.getQueueStats.get() as { pending: number; processing: number; done: number }
-      return { pending: result.pending || 0, processing: result.processing || 0, done: result.done || 0 }
+      const result = stmts.getQueueStats.get() as { pending: number; processing: number; done: number; error: number }
+      return {
+        pending: result.pending || 0,
+        processing: result.processing || 0,
+        done: result.done || 0,
+        error: result.error || 0,
+      }
+    },
+    getTaskOverview: (): TaskOverview => {
+      const counts: TaskOverview['counts'] = {}
+      for (const r of stmts.getTaskCounts.all() as Array<{ taskType: string; status: TaskRow['status']; n: number }>) {
+        ;(counts[r.taskType] ??= {})[r.status] = r.n
+      }
+      const media: TaskOverview['media'] = {
+        video: { total: 0, done: 0 },
+        audio: { total: 0, done: 0 },
+        segmentsDone: (stmts.getSegmentsDone.get() as { n: number }).n,
+        segmentsExpected: 0,
+      }
+      for (const r of stmts.getMediaTotals.all() as Array<{ kind: 'video' | 'audio'; total: number; done: number; expected: number }>) {
+        const bucket = r.kind === 'audio' ? media.audio : media.video
+        bucket.total += r.total
+        bucket.done += r.done || 0
+        media.segmentsExpected += r.expected || 0
+      }
+      const ps = stmts.getPhotoStats.get() as { uniqueTotal: number; thumbnailed: number; indexed: number }
+      return {
+        counts,
+        pending: stmts.getActiveTaskRows.all(20) as TaskRow[],
+        errors: stmts.getErrorTaskRows.all(50) as TaskRow[],
+        media,
+        photos: { total: ps.uniqueTotal || 0, thumbnailed: ps.thumbnailed || 0, indexed: ps.indexed || 0 },
+      }
+    },
+    retryFailedTasks: (ids?: number[]): number => {
+      const json = ids && ids.length > 0 ? JSON.stringify(ids) : null
+      return stmts.retryFailedTasks.run(json, json).changes
+    },
+    clearFailedTasks: (): number => stmts.clearFailedTasks.run().changes,
+    pruneDoneTasks: (): number => stmts.pruneDoneTasks.run().changes,
+    getMediaDetail: (videoId: number): MediaDetail | undefined => {
+      const v = stmts.getVideoById.get(videoId) as VideoRecord | undefined
+      if (!v || v.deletedAt) return undefined
+      const segments = (stmts.getVideoSegmentsByVideo.all(videoId) as Array<{ startMs: number; endMs: number }>)
+        .map(({ startMs, endMs }) => ({ startMs, endMs }))
+      return {
+        id: v.id,
+        kind: v.mediaKind,
+        filePath: v.filePath,
+        fileName: v.fileName,
+        durationMs: v.durationMs ?? null,
+        width: v.width ?? null,
+        height: v.height ?? null,
+        segments,
+      }
     },
     getPhotoStats: () => {
       const result = stmts.getPhotoStats.get() as {
@@ -1332,10 +1465,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         return []
       }
     },
-    getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo) => {
+    getRepresentativePhotosFiltered: (limit, offset, dateFrom, dateTo, kind) => {
       return stmts.getRepresentativePhotosFiltered.all(
         dateFrom || null, dateFrom || null,
         dateTo || null, dateTo || null,
+        kind || null, kind || null,
         limit, offset
       ) as Photo[]
     },
@@ -1467,8 +1601,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     // 视频
-    addVideo: (folderId, filePath, fileName, fileSize, fileMtime, fileHash): number => {
-      const result = stmts.addVideo.get(folderId, filePath, fileName, fileSize, fileMtime, fileHash) as { id: number }
+    addVideo: (folderId, filePath, fileName, fileSize, fileMtime, fileHash, kind = 'video'): number => {
+      const result = stmts.addVideo.get(folderId, filePath, fileName, fileSize, fileMtime, fileHash, kind) as { id: number }
       return result.id
     },
     getVideoById: (id) => {
