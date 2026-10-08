@@ -278,6 +278,8 @@ export interface DatabaseInstance {
 
   // 索引队列
   addToQueue: (photoId: number, taskType: string, priority?: number) => void
+  /** 是否已有排队中 / 进行中的同类任务（避免重复入队） */
+  hasOpenTask: (photoId: number, taskType: string) => boolean
   getNextTask: () => { id: number; photoId: number; taskType: string } | undefined
   peekNextTask: () => { id: number; photoId: number; taskType: string } | undefined
   /** note：任务成功但有可报告的问题（如部分片段失败），写进 error_msg 供任务面板展示 */
@@ -662,6 +664,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     addToQueue: db.prepare(`
       INSERT INTO index_queue (photo_id, task_type, priority) VALUES (?, ?, ?)
+    `),
+    hasOpenTask: db.prepare(`
+      SELECT 1 FROM index_queue
+      WHERE photo_id = ? AND task_type = ? AND status IN ('pending', 'processing')
+      LIMIT 1
     `),
     getNextTask: db.prepare(`
       SELECT id, photo_id as photoId, task_type as taskType FROM index_queue
@@ -1149,6 +1156,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     addToQueue: (photoId: number, taskType: string, priority = 0): void => {
       stmts.addToQueue.run(photoId, taskType, priority)
+    },
+    hasOpenTask: (photoId: number, taskType: string): boolean => {
+      return stmts.hasOpenTask.get(photoId, taskType) !== undefined
     },
     getNextTask: () => {
       const task = stmts.getNextTask.get() as
