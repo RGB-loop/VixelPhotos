@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
-import type { MediaDetail, PhotoDetail as PhotoDetailType, PhotoLocation, SearchResult } from '../../../shared/types'
+import { useEffect, useState, useMemo } from 'react'
+import type { MediaDetail, SearchResult } from '../../../shared/types'
 import { MediaPlayer } from './media/MediaPlayer'
-import { formatDuration, formatFileSize, mediaKindOf } from '../lib/format'
+import { Inspector } from './inspector/Inspector'
+import { mediaKindOf } from '../lib/format'
 
 interface PhotoDetailProps {
   /** 带 segment 的搜索结果：音视频打开时跳到命中片段 */
@@ -12,12 +13,8 @@ interface PhotoDetailProps {
   onClose: () => void
 }
 
-const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' } as const
-
 /**
- * 详情页：图片显示原图；视频 / 音频主区换成 MediaPlayer（命中片段自动起播 + 片段条），
- * 侧栏"媒体信息"取代原来的"视频帧"。
- * 媒体的 photo 行是代表图（首帧 / 封面 / 波形），文件大小、路径要用 MediaDetail 里源文件的。
+ * 全屏详情：只负责看大图 / 播放；元数据都在右侧检查器（与主窗口共用）。
  */
 export function PhotoDetail({ result, siblings, onSelect, onClose }: PhotoDetailProps): JSX.Element {
   const { photo, segment } = result
@@ -25,54 +22,16 @@ export function PhotoDetail({ result, siblings, onSelect, onClose }: PhotoDetail
   const isMedia = kind !== 'image' && photo.videoId != null
   const [media, setMedia] = useState<MediaDetail | null>(null)
   const [resolution, setResolution] = useState<{ w: number; h: number } | null>(null)
-  const [detail, setDetail] = useState<PhotoDetailType | null>(null)
-  const [imageUrl, setImageUrl] = useState<string>('')
-  const [locations, setLocations] = useState<PhotoLocation[]>([])
-  const [isEditingCaption, setIsEditingCaption] = useState(false)
-  const [editCaption, setEditCaption] = useState('')
-  const [similarPhotos, setSimilarPhotos] = useState<SearchResult[]>([])
-  const [similarThumbnails, setSimilarThumbnails] = useState<Map<number, string>>(new Map())
-
-  useEffect(() => {
-    const loadDetail = async (): Promise<void> => {
-      // 原图和相似照片缩略图都走 vixel:// 协议，<img> 自己 fetch；
-      // 这里只取元数据 / 位置 / 相似列表。
-      const [data, locs, similar] = await Promise.all([
-        window.api.getPhotoDetail(photo.id),
-        window.api.getPhotoLocations(photo.id),
-        window.api.findSimilar(photo.id, 6),
-      ])
-      setDetail(data)
-      setImageUrl(`vixel://image/${photo.id}`)
-      setLocations(locs)
-      setSimilarPhotos(similar)
-      // 相似缩略图也直接用 vixel:// 协议，无需预先 base64 fetch
-      const thumbs = new Map<number, string>()
-      for (const r of similar) {
-        thumbs.set(r.photo.id, `vixel://thumb/${r.photo.id}`)
-      }
-      setSimilarThumbnails(thumbs)
-    }
-    loadDetail()
-  }, [photo])
+  const imageUrl = `vixel://image/${photo.id}`
 
   useEffect(() => {
     setMedia(null)
     setResolution(null)
     if (!isMedia || photo.videoId == null) return
     let cancelled = false
-    window.api.getMediaDetail(photo.videoId).then((m) => {
-      if (cancelled) return
-      setMedia(m)
-      if (m?.width && m.height) setResolution({ w: m.width, h: m.height })
-    })
+    window.api.getMediaDetail(photo.videoId).then((m) => { if (!cancelled) setMedia(m) })
     return () => { cancelled = true }
   }, [isMedia, photo.videoId])
-
-  const sourcePath = isMedia ? media?.filePath : photo.filePath
-  const handleShowInFinder = useCallback(async () => {
-    if (sourcePath) await window.api.showInFinder(sourcePath)
-  }, [sourcePath])
 
   useEffect(() => {
     document.body.style.overflow = 'hidden'
@@ -174,291 +133,10 @@ export function PhotoDetail({ result, siblings, onSelect, onClose }: PhotoDetail
         )}
       </div>
 
-      {/* 信息侧边栏 */}
-      <div className="w-72 bg-surface-1/80 glass border-l border-line flex flex-col animate-slide-in">
-        {/* 固定头部（不滚动） */}
-        <div className="flex items-start gap-2 p-5 pb-0">
-          <h2 className="text-body font-semibold text-white flex-1 break-all leading-5">{photo.fileName}</h2>
-          <button
-            onClick={(e) => { e.stopPropagation(); onClose() }}
-            className="w-7 h-7 rounded-md bg-fill-hover hover:bg-fill-strong active:bg-fill-strong transition-colors flex-shrink-0 flex items-center justify-center cursor-pointer"
-            title="关闭 (Esc)"
-          >
-            <svg className="w-4 h-4 text-ink-2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        {/* 可滚动内容 */}
-        <div className="flex-1 overflow-auto p-5 pt-4">
-
-        {/* Caption */}
-        <div className="mb-5">
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider">描述</h3>
-            <div className="flex items-center gap-1">
-              {detail?.caption && !isEditingCaption && (
-                <button
-                  onClick={() => { setEditCaption(detail.caption || ''); setIsEditingCaption(true) }}
-                  className="p-0.5 rounded hover:bg-fill-hover text-ink-4 hover:text-ink-2"
-                  title="编辑"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                  </svg>
-                </button>
-              )}
-              {!detail?.caption && !isEditingCaption && (
-                <button
-                  onClick={() => { setEditCaption(''); setIsEditingCaption(true) }}
-                  className="p-0.5 rounded hover:bg-fill-hover text-ink-4 hover:text-ink-2"
-                  title="添加描述"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-              )}
-            </div>
-          </div>
-          {isEditingCaption ? (
-            <div className="space-y-1.5">
-              <textarea
-                value={editCaption}
-                onChange={(e) => setEditCaption(e.target.value)}
-                className="w-full bg-fill border border-line-strong rounded p-1.5 text-ink text-callout leading-relaxed resize-none focus:outline-none focus:border-line-heavy"
-                rows={3}
-                autoFocus
-              />
-              <div className="flex gap-1.5">
-                <button
-                  onClick={async () => {
-                    await window.api.updateCaption(photo.id, editCaption)
-                    setDetail((prev) => prev ? { ...prev, caption: editCaption } : prev)
-                    setIsEditingCaption(false)
-                  }}
-                  className="px-2 py-1 text-micro bg-accent/20 text-accent rounded hover:bg-accent/30"
-                >
-                  保存
-                </button>
-                <button
-                  onClick={() => setIsEditingCaption(false)}
-                  className="px-2 py-1 text-micro bg-fill text-ink-3 rounded hover:bg-fill-hover"
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          ) : detail?.caption ? (
-            <p className="text-ink text-callout leading-relaxed">{detail.caption}</p>
-          ) : (
-            <p className="text-ink-4 text-callout italic">暂无描述</p>
-          )}
-        </div>
-
-        {/* OCR 文本（PaddleOCR 扫出来的图内文字） */}
-        {detail?.ocrText && detail.ocrText.trim().length > 0 && (
-          <div className="mb-5">
-            <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-1.5">图内文字</h3>
-            <p className="text-ink text-callout leading-relaxed whitespace-pre-line break-words">
-              {detail.ocrText}
-            </p>
-          </div>
-        )}
-
-        {/* 媒体信息：类型 / 时长 / 分辨率 / 片段 / 命中区间 */}
-        {isMedia && (
-          <div className="mb-5">
-            <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-1.5">媒体信息</h3>
-            <dl className="space-y-1.5 text-callout mb-2.5">
-              <div className="flex justify-between">
-                <dt className="text-ink-3">类型</dt>
-                <dd className="text-ink-2">{KIND_LABEL[kind]}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-ink-3">时长</dt>
-                <dd className="text-ink-2 tabular-nums">
-                  {media?.durationMs ? formatDuration(media.durationMs) : '-'}
-                </dd>
-              </div>
-              {kind === 'video' && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">分辨率</dt>
-                  <dd className="text-ink-2 tabular-nums">{resolution ? `${resolution.w} x ${resolution.h}` : '-'}</dd>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <dt className="text-ink-3">已索引片段</dt>
-                <dd className="text-ink-2 tabular-nums">
-                  {media ? `${media.segments.length}${media.durationMs ? ` / ${Math.max(1, Math.ceil(media.durationMs / 32000))}` : ''}` : '-'}
-                </dd>
-              </div>
-              {segment && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">命中</dt>
-                  <dd className="text-accent tabular-nums">
-                    {formatDuration(segment.startMs)} – {formatDuration(segment.endMs)}
-                  </dd>
-                </div>
-              )}
-            </dl>
-            <button
-              onClick={async () => {
-                if (photo.videoId != null) await window.api.openSourceVideo(photo.videoId)
-              }}
-              className="w-full py-1.5 px-3 bg-accent/15 hover:bg-accent/25 text-accent text-callout rounded-md flex items-center justify-center gap-1.5 transition-colors"
-              title="在系统默认播放器中打开"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              在系统播放器中打开
-            </button>
-          </div>
-        )}
-
-        {/* 文件信息 */}
-        <div className="mb-5">
-          <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-1.5">文件信息</h3>
-          <dl className="space-y-1.5 text-callout">
-            {!isMedia && (
-              <div className="flex justify-between">
-                <dt className="text-ink-3">尺寸</dt>
-                <dd className="text-ink-2">
-                  {detail?.width && detail?.height ? `${detail.width} x ${detail.height}` : '-'}
-                </dd>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <dt className="text-ink-3">大小</dt>
-              <dd className="text-ink-2">
-                {isMedia ? (media ? formatFileSize(media.fileSize) : '-') : formatFileSize(photo.fileSize)}
-              </dd>
-            </div>
-            {detail?.takenAt && (
-              <div className="flex justify-between">
-                <dt className="text-ink-3">拍摄</dt>
-                <dd className="text-ink-2">{formatDate(detail.takenAt)}</dd>
-              </div>
-            )}
-          </dl>
-        </div>
-
-        {/* EXIF 信息 */}
-        {!isMedia && detail?.exif && (
-          <div className="mb-5">
-            <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-1.5">相机</h3>
-            <dl className="space-y-1.5 text-callout">
-              {detail.exif.make && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">品牌</dt>
-                  <dd className="text-ink-2">{detail.exif.make}</dd>
-                </div>
-              )}
-              {detail.exif.model && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">型号</dt>
-                  <dd className="text-ink-2">{detail.exif.model}</dd>
-                </div>
-              )}
-              {detail.exif.focalLength && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">焦距</dt>
-                  <dd className="text-ink-2">{detail.exif.focalLength}mm</dd>
-                </div>
-              )}
-              {detail.exif.fNumber && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">光圈</dt>
-                  <dd className="text-ink-2">f/{detail.exif.fNumber}</dd>
-                </div>
-              )}
-              {detail.exif.exposureTime && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">快门</dt>
-                  <dd className="text-ink-2">{detail.exif.exposureTime}s</dd>
-                </div>
-              )}
-              {detail.exif.iso && (
-                <div className="flex justify-between">
-                  <dt className="text-ink-3">ISO</dt>
-                  <dd className="text-ink-2">{detail.exif.iso}</dd>
-                </div>
-              )}
-            </dl>
-          </div>
-        )}
-
-        {/* 文件位置 */}
-        <div className="mb-5">
-          <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-1.5">
-            位置{locations.length > 1 ? ` (${locations.length})` : ''}
-          </h3>
-          <div className="space-y-1.5">
-            {isMedia ? (
-              <p className="text-ink-3 text-micro break-all bg-fill p-2 rounded">{media?.filePath ?? '-'}</p>
-            ) : locations.length > 0 ? locations.map((loc, i) => (
-              <div key={i} className="bg-fill p-2 rounded">
-                <p className="text-ink-3 text-micro break-all">{loc.filePath}</p>
-                <p className="text-ink-4 text-micro mt-0.5">{loc.folderName}</p>
-              </div>
-            )) : (
-              <p className="text-ink-3 text-micro break-all bg-fill p-2 rounded">
-                {photo.filePath}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* 操作按钮 */}
-        <button
-          onClick={handleShowInFinder}
-          className="w-full py-2 px-3 bg-fill-hover hover:bg-fill-active text-ink text-callout rounded-md transition-colors flex items-center justify-center gap-1.5"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-          在访达中显示
-        </button>
-
-        {/* 相似照片 */}
-        {similarPhotos.length > 0 && (
-          <div className="mt-5 pt-4 border-t border-line">
-            <h3 className="text-caption font-medium text-ink-3 uppercase tracking-wider mb-2">相似内容</h3>
-            <div className="grid grid-cols-3 gap-1">
-              {similarPhotos.map((r) => (
-                <button
-                  key={r.photo.id}
-                  onClick={() => onSelect(r)}
-                  className="aspect-square rounded overflow-hidden bg-surface-2 hover:ring-1 hover:ring-accent/50 transition-all"
-                >
-                  {similarThumbnails.get(r.photo.id) ? (
-                    <img
-                      src={similarThumbnails.get(r.photo.id)}
-                      alt={r.photo.fileName}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full image-placeholder" />
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        </div>{/* 可滚动内容结束 */}
-      </div>{/* 侧边栏结束 */}
+      {/* 信息侧栏：与主窗口检查器同一组件 */}
+      <div className="w-[272px] flex-shrink-0 bg-sidebar border-l border-line animate-slide-in">
+        <Inspector result={result} onSelect={onSelect} onClose={onClose} resolution={resolution} />
+      </div>
     </div>
   )
-}
-
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }

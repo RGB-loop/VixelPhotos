@@ -14,7 +14,7 @@ import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
-import { installAppMenu } from './menu'
+import { installAppMenu, popupItemMenu } from './menu'
 import { IPC_CHANNELS, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
@@ -308,6 +308,11 @@ function registerIpcHandlers(): void {
     const ext = photo.filePath.split('.').pop()?.toLowerCase() || 'jpeg'
     const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
     return `data:${mimeType};base64,${buffer.toString('base64')}`
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SHOW_ITEM_MENU, async (event, opts: { count: number; isMedia: boolean }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return win ? popupItemMenu(win, opts) : null
   })
 
   ipcMain.handle(IPC_CHANNELS.SHOW_IN_FINDER, async (_event, filePath: string) => {

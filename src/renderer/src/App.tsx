@@ -5,18 +5,38 @@ import { FolderManager } from './components/FolderManager'
 import { MapView } from './components/MapView'
 import { PeopleView } from './components/PeopleView'
 import { TaskDrawer } from './components/tasks/TaskDrawer'
+import { QuickLook } from './components/QuickLook'
+import { Inspector, SelectionSummary, InspectorEmpty } from './components/inspector/Inspector'
 import { Sidebar, LIBRARY_ITEMS, SIDEBAR_MIN, SIDEBAR_MAX, folderName, type Source } from './components/shell/Sidebar'
 import { Toolbar } from './components/shell/Toolbar'
 import { StatusBar, THUMB_MIN, THUMB_MAX } from './components/shell/StatusBar'
 import { Icon } from './components/shell/icons'
-import { countLine } from './lib/format'
+import { countLine, mediaKindOf } from './lib/format'
 import type {
-  SearchResult, Photo, LibraryCounts, WatchedFolder, MenuCommand,
+  SearchResult, Photo, LibraryCounts, WatchedFolder, MenuCommand, ItemMenuAction,
   IndexProgress as IndexProgressType,
 } from '../../shared/types'
 
 /** 空查询浏览时一次取够整个资料库（网格是虚拟化的，渲染成本与总数无关） */
 const BROWSE_LIMIT = 20000
+/** "查找相似内容"一次取多少 */
+const SIMILAR_LIMIT = 60
+/** 窗口窄于此宽度时检查器自动收起（⌘I 仍可强制打开） */
+const INSPECTOR_MIN_WINDOW = 1100
+const INSPECTOR_WIDTH = 272
+
+function isTextInput(el: EventTarget | null): boolean {
+  const t = el as HTMLElement | null
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+}
+
+/** 源文件路径：音视频的 photo 行是代表图，真实路径要从 MediaDetail 取 */
+async function sourcePathOf(r: SearchResult): Promise<string | null> {
+  if (mediaKindOf(r.photo) !== 'image' && r.photo.videoId != null) {
+    return (await window.api.getMediaDetail(r.photo.videoId))?.filePath ?? null
+  }
+  return r.photo.filePath
+}
 
 // 外壳偏好只存本机，读写失败（隐私模式 / 被清空）时回落默认值
 function loadPref(key: string, fallback: number, min: number, max: number): number {
@@ -50,9 +70,21 @@ function App(): JSX.Element {
   })
   const [sidebarWidth, setSidebarWidth] = useState(() => loadPref('shell.sidebarWidth', 232, SIDEBAR_MIN, SIDEBAR_MAX))
   const [thumbSize, setThumbSize] = useState(() => loadPref('shell.thumbSize', 200, THUMB_MIN, THUMB_MAX))
+  // 选择按 photo.id 记，索引进度刷新结果列表时不会丢
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
+  const [focusId, setFocusId] = useState<number | null>(null)
+  const anchorId = useRef<number | null>(null)
+  const cols = useRef(4)
+  const [quickLookId, setQuickLookId] = useState<number | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    try { return localStorage.getItem('shell.inspector') !== '0' } catch { return true }
+  })
+  const [narrow, setNarrow] = useState(() => window.innerWidth < INSPECTOR_MIN_WINDOW)
+  // 窄窗口下用户仍可 ⌘I 强制打开；窗口变宽后恢复自动
+  const [inspectorForced, setInspectorForced] = useState(false)
 
   const hasSearchQuery = !!query.trim()
-  const isGrid = source.type === 'library' || source.type === 'folder'
+  const isGrid = source.type === 'library' || source.type === 'folder' || source.type === 'similar'
 
   // 查询条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前来源 + 日期，
   // 不用每个调用点各自传参，也不会因闭包拿到旧值
@@ -60,6 +92,7 @@ function App(): JSX.Element {
 
   const doSearch = useCallback(async (): Promise<SearchResult[]> => {
     const { query: q, from, to, source: src } = filters.current
+    if (src.type === 'similar') return window.api.findSimilar(src.photoId, SIMILAR_LIMIT)
     const kind = src.type === 'library' && src.kind !== 'all' ? src.kind : undefined
     const folderId = src.type === 'folder' ? src.id : undefined
     const options = (from || to || kind || folderId != null)
@@ -121,14 +154,18 @@ function App(): JSX.Element {
   const handleSelectSource = useCallback((next: Source) => {
     setSource(next)
     filters.current = { ...filters.current, source: next }
-    if (next.type === 'library' || next.type === 'folder') runSearch()
+    setSelectedIds(new Set())
+    setFocusId(null)
+    anchorId.current = null
+    if (next.type === 'library' || next.type === 'folder' || next.type === 'similar') runSearch()
   }, [runSearch])
 
   const handleSearch = useCallback((q: string) => {
     setQuery(q)
     filters.current = { ...filters.current, query: q }
-    // 在地图 / 人物里输入查询：回到当前资料库
-    if (q.trim() && (filters.current.source.type === 'map' || filters.current.source.type === 'people')) {
+    // 在地图 / 人物 / 相似里输入查询：回到当前资料库
+    const t = filters.current.source.type
+    if (q.trim() && (t === 'map' || t === 'people' || t === 'similar')) {
       const back: Source = { type: 'library', kind: 'all' }
       setSource(back)
       filters.current.source = back
@@ -169,11 +206,179 @@ function App(): JSX.Element {
     savePref('shell.thumbSize', String(clamped))
   }, [])
 
-  const handleSelect = useCallback((result: SearchResult) => setSelected(result), [])
   // 地图 / 人物视图只给 Photo，没有搜索上下文
   const handleSelectPhoto = useCallback((photo: Photo) => setSelected({ photo, score: 0 }), [])
   const handleCloseDetail = useCallback(() => setSelected(null), [])
   const handleCloseTasks = useCallback(() => setShowTasks(false), [])
+
+  // ---------- 选择 ----------
+  const idIndex = useMemo(() => new Map(searchResults.map((r, i) => [r.photo.id, i])), [searchResults])
+  const focusIndex = focusId != null ? idIndex.get(focusId) ?? -1 : -1
+  const selectedResults = useMemo(
+    () => (selectedIds.size === 0 ? [] : searchResults.filter((r) => selectedIds.has(r.photo.id))),
+    [searchResults, selectedIds]
+  )
+  // 网格回调要稳定（MediaCard 是 memo 的），最新状态从 ref 读
+  const live = useRef({ searchResults, selectedIds, idIndex, focusIndex })
+  live.current = { searchResults, selectedIds, idIndex, focusIndex }
+
+  const selectOnly = useCallback((id: number) => {
+    setSelectedIds(new Set([id]))
+    setFocusId(id)
+    anchorId.current = id
+  }, [])
+
+  // 打开详情（详情页 ← → 翻页、检查器里点相似内容都走这里）；在当前列表里的同步成选择
+  const handleSelect = useCallback((result: SearchResult) => {
+    setSelected(result)
+    if (live.current.idIndex.has(result.photo.id)) selectOnly(result.photo.id)
+  }, [selectOnly])
+
+  const handleItemClick = useCallback((index: number, e: React.MouseEvent) => {
+    const { searchResults: rs, selectedIds: cur, idIndex: map } = live.current
+    const id = rs[index]?.photo.id
+    if (id == null) return
+    if (e.shiftKey && anchorId.current != null) {
+      // ⇧：锚点到当前的连续范围；⌘⇧ 在已有选择上追加
+      const a = map.get(anchorId.current) ?? index
+      const [lo, hi] = a < index ? [a, index] : [index, a]
+      const next = new Set(e.metaKey ? cur : [])
+      for (let i = lo; i <= hi; i++) next.add(rs[i].photo.id)
+      setSelectedIds(next)
+      setFocusId(id)
+    } else if (e.metaKey) {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      setSelectedIds(next)
+      setFocusId(id)
+      anchorId.current = id
+    } else {
+      selectOnly(id)
+    }
+  }, [selectOnly])
+
+  const handleItemOpen = useCallback((index: number) => {
+    const r = live.current.searchResults[index]
+    if (!r) return
+    selectOnly(r.photo.id)
+    setQuickLookId(null)
+    setSelected(r)
+  }, [selectOnly])
+
+  /** 方向键移动焦点；extend = ⇧ 从锚点扩展选择 */
+  const moveFocus = useCallback((key: string, extend: boolean) => {
+    const { searchResults: rs, focusIndex: fi, idIndex: map } = live.current
+    if (rs.length === 0) return
+    const step = key === 'ArrowLeft' ? -1 : key === 'ArrowRight' ? 1 : key === 'ArrowUp' ? -cols.current : cols.current
+    const next = fi < 0 ? 0 : Math.min(rs.length - 1, Math.max(0, fi + step))
+    const id = rs[next].photo.id
+    if (extend && anchorId.current != null) {
+      const a = map.get(anchorId.current) ?? next
+      const [lo, hi] = a < next ? [a, next] : [next, a]
+      setSelectedIds(new Set(rs.slice(lo, hi + 1).map((r) => r.photo.id)))
+      setFocusId(id)
+    } else {
+      selectOnly(id)
+    }
+  }, [selectOnly])
+
+  const selectAll = useCallback(() => {
+    const { searchResults: rs } = live.current
+    setSelectedIds(new Set(rs.map((r) => r.photo.id)))
+  }, [])
+
+  const handleColsChange = useCallback((n: number) => { cols.current = n }, [])
+
+  // ---------- 项目操作（右键菜单 / 菜单栏 / 检查器共用） ----------
+  const revealItems = useCallback(async (items: SearchResult[]) => {
+    // 一次最多开 20 个访达窗口，再多没有意义
+    for (const r of items.slice(0, 20)) {
+      const p = await sourcePathOf(r)
+      if (p) await window.api.showInFinder(p)
+    }
+  }, [])
+
+  const copyPaths = useCallback(async (items: SearchResult[]) => {
+    const paths = (await Promise.all(items.map(sourcePathOf))).filter((p): p is string => !!p)
+    try { await navigator.clipboard.writeText(paths.join('\n')) } catch (e) { console.error('Copy failed:', e) }
+  }, [])
+
+  const findSimilarTo = useCallback((r: SearchResult) => {
+    handleSelectSource({ type: 'similar', photoId: r.photo.id, name: r.photo.fileName })
+  }, [handleSelectSource])
+
+  const runItemAction = useCallback((action: ItemMenuAction, items: SearchResult[]) => {
+    const first = items[0]
+    if (!first) return
+    switch (action) {
+      case 'open': setQuickLookId(null); setSelected(first); break
+      case 'quick-look': setQuickLookId(first.photo.id); break
+      case 'reveal': revealItems(items); break
+      case 'copy-path': copyPaths(items); break
+      case 'find-similar': findSimilarTo(first); break
+      case 'open-external': if (first.photo.videoId != null) window.api.openSourceVideo(first.photo.videoId); break
+    }
+  }, [revealItems, copyPaths, findSimilarTo])
+
+  const handleItemContextMenu = useCallback(async (index: number, e: React.MouseEvent) => {
+    e.preventDefault()
+    const { searchResults: rs, selectedIds: cur } = live.current
+    const r = rs[index]
+    if (!r) return
+    // 在未选中的项上右键：先把它设为唯一选择（与访达一致）
+    let items: SearchResult[]
+    if (cur.has(r.photo.id)) {
+      items = rs.filter((x) => cur.has(x.photo.id))
+    } else {
+      selectOnly(r.photo.id)
+      items = [r]
+    }
+    const isMedia = items.length === 1 && mediaKindOf(r.photo) !== 'image' && r.photo.videoId != null
+    const action = await window.api.showItemMenu({ count: items.length, isMedia })
+    if (action) runItemAction(action, items)
+  }, [selectOnly, runItemAction])
+
+  // 当前"主项"：焦点项，否则第一个选中项
+  const primary = useMemo(() => {
+    if (focusIndex >= 0 && selectedIds.has(searchResults[focusIndex].photo.id)) return searchResults[focusIndex]
+    return selectedResults[0] ?? null
+  }, [focusIndex, selectedIds, searchResults, selectedResults])
+
+  const quickLookResult = quickLookId != null ? searchResults[idIndex.get(quickLookId) ?? -1] ?? null : null
+  const handleCloseQuickLook = useCallback(() => setQuickLookId(null), [])
+  const handleQuickLookNavigate = useCallback((key: string) => {
+    moveFocus(key, false)
+  }, [moveFocus])
+  // 快速查看跟随焦点
+  useEffect(() => {
+    if (quickLookId != null && focusId != null && focusId !== quickLookId) setQuickLookId(focusId)
+  }, [focusId, quickLookId])
+  const handleQuickLookOpen = useCallback(() => {
+    const id = quickLookId
+    setQuickLookId(null)
+    const r = id != null ? live.current.searchResults[live.current.idIndex.get(id) ?? -1] : undefined
+    if (r) setSelected(r)
+  }, [quickLookId])
+
+  // ---------- 检查器 ----------
+  useEffect(() => {
+    const onResize = (): void => setNarrow(window.innerWidth < INSPECTOR_MIN_WINDOW)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  useEffect(() => { if (!narrow) setInspectorForced(false) }, [narrow])
+  const inspectorShown = isGrid && (narrow ? inspectorForced : inspectorOpen)
+  const toggleInspector = useCallback(() => {
+    if (narrow) {
+      setInspectorForced((f) => !f)
+      return
+    }
+    setInspectorOpen((o) => {
+      savePref('shell.inspector', o ? '0' : '1')
+      return !o
+    })
+  }, [narrow])
 
   const handleFolderManagerClose = useCallback(async () => {
     setShowFolderManager(false)
@@ -203,20 +408,58 @@ function App(): JSX.Element {
       case 'settings': setShowFolderManager(true); break
       case 'activity': setShowTasks((s) => !s); break
       case 'add-folder': handleAddFolder(); break
+      case 'toggle-inspector': toggleInspector(); break
+      case 'select-all':
+        // ⌘A 由菜单接管：焦点在输入框时照常全选文字
+        if (isTextInput(document.activeElement)) (document.activeElement as HTMLInputElement).select?.()
+        else if (isGrid && !selected) selectAll()
+        break
+      case 'reveal': {
+        const items = selected ? [selected] : selectedResults
+        if (items.length) revealItems(items)
+        break
+      }
+      case 'quick-look':
+        if (primary && isGrid && !selected) setQuickLookId((q) => (q == null ? primary.photo.id : null))
+        break
+      case 'open-item':
+        if (primary && isGrid && !selected) { setQuickLookId(null); setSelected(primary) }
+        break
     }
   }
   useEffect(() => window.api.onMenuCommand((cmd) => menuHandler.current(cmd)), [])
 
-  // Esc：关详情 / 设置（抽屉自己处理 Esc）
+  // 键盘：Esc 逐层退出（快速查看自己在捕获阶段处理）→ 详情 → 设置 → 清空选择；
+  // 网格上的方向键 / Space / ↩ 只在没有浮层时生效。抽屉自己处理 Esc。
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return
-      if (selected) setSelected(null)
-      else if (showFolderManager) setShowFolderManager(false)
+      if (e.key === 'Escape') {
+        if (selected) setSelected(null)
+        else if (showFolderManager) setShowFolderManager(false)
+        else if (!showTasks && selectedIds.size > 0 && !isTextInput(e.target)) {
+          setSelectedIds(new Set())
+          setFocusId(null)
+        }
+        return
+      }
+      if (!isGrid || selected || showFolderManager || showTasks) return
+      if (isTextInput(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        moveFocus(e.key, e.shiftKey)
+      } else if (e.key === ' ') {
+        if (!primary) return
+        e.preventDefault()
+        setQuickLookId(primary.photo.id)
+      } else if (e.key === 'Enter') {
+        if (!primary) return
+        e.preventDefault()
+        setSelected(primary)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showFolderManager])
+  }, [selected, showFolderManager, showTasks, selectedIds, isGrid, primary, moveFocus])
 
   const hasDateFilter = !!(dateFrom || dateTo)
   const libraryEmpty = counts !== null && counts.all === 0
@@ -230,12 +473,15 @@ function App(): JSX.Element {
       }
       case 'map': return '地图'
       case 'people': return '人物'
+      case 'similar': return `与“${source.name}”相似`
     }
   }, [source, folders])
 
   const breakdown = useMemo(() => countLine(searchResults.map((r) => r.photo)), [searchResults])
   const subtitle = isGrid
-    ? hasSearchQuery
+    ? source.type === 'similar'
+      ? `${searchResults.length.toLocaleString()} 项 · 按相似度排序`
+      : hasSearchQuery
       ? `“${query.trim()}” · ${searchResults.length.toLocaleString()} 项`
       : searchResults.length > 0 ? `${searchResults.length.toLocaleString()} 项${hasDateFilter ? ' · 已按时间过滤' : ''}` : undefined
     : undefined
@@ -298,13 +544,24 @@ function App(): JSX.Element {
         )}
 
         {/* 主内容区 */}
-        <main className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex-1 min-h-0 flex">
+        <main className="flex-1 min-w-0 overflow-hidden">
           {source.type === 'people' ? (
             <PeopleView onSelectPhoto={handleSelectPhoto} />
           ) : source.type === 'map' ? (
             <MapView onSelect={handleSelectPhoto} />
           ) : searchResults.length > 0 ? (
-            <PhotoGrid results={searchResults} onSelect={handleSelect} isSearching={hasSearchQuery} thumbSize={thumbSize} />
+            <PhotoGrid
+              results={searchResults}
+              isSearching={hasSearchQuery && source.type !== 'similar'}
+              thumbSize={thumbSize}
+              selectedIds={selectedIds}
+              focusIndex={focusIndex}
+              onItemClick={handleItemClick}
+              onItemOpen={handleItemOpen}
+              onItemContextMenu={handleItemContextMenu}
+              onColsChange={handleColsChange}
+            />
           ) : libraryEmpty ? (
             <EmptyState
               icon="image"
@@ -323,10 +580,30 @@ function App(): JSX.Element {
           )}
         </main>
 
+        {/* 检查器 */}
+        {inspectorShown && (
+          <aside style={{ width: INSPECTOR_WIDTH }} className="flex-shrink-0 bg-sidebar border-l border-line animate-slide-in" data-inspector>
+            {selectedResults.length > 1 ? (
+              <SelectionSummary
+                results={selectedResults}
+                breakdown={countLine(selectedResults.map((r) => r.photo))}
+                onReveal={() => revealItems(selectedResults)}
+                onCopyPaths={() => copyPaths(selectedResults)}
+              />
+            ) : primary ? (
+              <Inspector key={primary.photo.id} result={primary} onSelect={handleSelect} showPreview />
+            ) : (
+              <InspectorEmpty />
+            )}
+          </aside>
+        )}
+        </div>
+
         <StatusBar
           progress={indexProgress}
           itemCount={isGrid ? searchResults.length : counts?.all ?? 0}
           breakdown={breakdown}
+          selectedCount={isGrid ? selectedIds.size : 0}
           onOpenActivity={() => setShowTasks(true)}
           thumbSize={isGrid ? thumbSize : undefined}
           onThumbSize={handleThumbSize}
@@ -334,6 +611,16 @@ function App(): JSX.Element {
       </div>
 
       <TaskDrawer open={showTasks} onClose={handleCloseTasks} progress={indexProgress} />
+
+      {/* 快速查看 */}
+      {quickLookResult && !selected && (
+        <QuickLook
+          result={quickLookResult}
+          onClose={handleCloseQuickLook}
+          onNavigate={handleQuickLookNavigate}
+          onOpen={handleQuickLookOpen}
+        />
+      )}
 
       {/* 详情 */}
       {selected && (

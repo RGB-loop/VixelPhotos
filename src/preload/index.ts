@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction } from '../shared/types'
 
 const api = {
   // 搜索
@@ -36,6 +36,10 @@ const api = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.MENU_COMMAND, handler)
     }
+  },
+  /** 弹出原生右键菜单，resolve 为选中的动作；菜单关闭未选则为 null */
+  showItemMenu: (opts: { count: number; isMedia: boolean }): Promise<ItemMenuAction | null> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SHOW_ITEM_MENU, opts)
   },
   getFolderStats: (id: number): Promise<{ photoCount: number; photoIds: number[] }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_FOLDER_STATS, id)

@@ -4,12 +4,13 @@ import { Icon, type IconName } from './icons'
 
 export type KindFilter = 'all' | 'image' | 'video' | 'audio'
 
-/** 侧边栏选中的"来源"：资料库某一类 / 某个文件夹 / 地图 / 人物 */
+/** 侧边栏选中的"来源"：资料库某一类 / 某个文件夹 / 地图 / 人物；similar 由右键"查找相似内容"进入，不在侧栏里 */
 export type Source =
   | { type: 'library'; kind: KindFilter }
   | { type: 'folder'; id: number }
   | { type: 'map' }
   | { type: 'people' }
+  | { type: 'similar'; photoId: number; name: string }
 
 export const LIBRARY_ITEMS: { kind: KindFilter; label: string; icon: IconName; shortcut: string }[] = [
   { kind: 'all', label: '全部', icon: 'all', shortcut: '⌘1' },

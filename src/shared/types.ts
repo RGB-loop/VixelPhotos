@@ -9,6 +9,10 @@ export type MediaKind = 'image' | 'video' | 'audio'
 export type MenuCommand =
   | 'source:all' | 'source:image' | 'source:video' | 'source:audio' | 'source:map' | 'source:people'
   | 'find' | 'toggle-sidebar' | 'zoom-in' | 'zoom-out' | 'settings' | 'activity' | 'add-folder'
+  | 'toggle-inspector' | 'reveal' | 'quick-look' | 'open-item' | 'select-all'
+
+/** 网格右键菜单（原生 Menu.popup）里用户选中的动作 */
+export type ItemMenuAction = 'open' | 'quick-look' | 'reveal' | 'copy-path' | 'find-similar' | 'open-external'
 
 /** 资料库计数（侧边栏）；all = 三类之和 */
 export type LibraryCounts = Record<MediaKind | 'all', number>
@@ -192,6 +196,7 @@ export const IPC_CHANNELS = {
 
   // 原生菜单 → 渲染进程（main 发，renderer 听）
   MENU_COMMAND: 'menu-command',
+  SHOW_ITEM_MENU: 'show-item-menu',
 
   // 照片
   GET_PHOTO_DETAIL: 'get-photo-detail',

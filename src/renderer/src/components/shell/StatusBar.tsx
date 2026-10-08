@@ -9,6 +9,7 @@ interface StatusBarProps {
   /** 左侧"N 项"及悬停提示的构成明细 */
   itemCount: number
   breakdown: string
+  selectedCount?: number
   onOpenActivity: () => void
   /** 仅网格视图显示缩略图大小滑块 */
   thumbSize?: number
@@ -38,7 +39,7 @@ function describeActivity(p: IndexProgress | null): { text: string; detail?: str
   return null
 }
 
-export function StatusBar({ progress, itemCount, breakdown, onOpenActivity, thumbSize, onThumbSize }: StatusBarProps): JSX.Element {
+export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, onOpenActivity, thumbSize, onThumbSize }: StatusBarProps): JSX.Element {
   // 首个 progress 事件到来前先问一次主进程（暂停状态会跨重启保留）
   const [paused, setPaused] = useState(false)
   useEffect(() => {
@@ -59,6 +60,7 @@ export function StatusBar({ progress, itemCount, breakdown, onOpenActivity, thum
     <footer className="h-[26px] flex-shrink-0 flex items-center gap-3 px-3 bg-bar border-t border-line text-caption text-ink-3 select-none">
       <span className="tabular-nums flex-shrink-0" title={breakdown || undefined}>
         {itemCount.toLocaleString()} 项
+        {selectedCount > 0 && <span className="text-ink-2"> · 已选 {selectedCount.toLocaleString()}</span>}
       </span>
 
       {/* 活动区：点开抽屉 */}
