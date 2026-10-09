@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MediaDetail } from '../../../../shared/types'
 import { SegmentTimeline } from './SegmentTimeline'
+import { thumbUrl } from '../../lib/mediaUrl'
 
 interface MediaPlayerProps {
   media: MediaDetail
   /** 代表 photo id：视频做 poster，音频做封面 / 波形 */
   posterPhotoId: number
+  /** 代表 photo 的 fileHash：thumb URL 缓存参数 */
+  posterHash: string
   hit?: { startMs: number; endMs: number }
   onResolution?: (w: number, h: number) => void
 }
@@ -20,12 +23,12 @@ const JUMP_SEC = 10
  * ← → 留给详情页翻上一个 / 下一个。
  * Chromium 解不了的格式（mkv 里的某些编码、avi 等）→ onError → 回退到系统播放器。
  */
-export function MediaPlayer({ media, posterPhotoId, hit, onResolution }: MediaPlayerProps): JSX.Element {
+export function MediaPlayer({ media, posterPhotoId, posterHash, hit, onResolution }: MediaPlayerProps): JSX.Element {
   const ref = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const [currentMs, setCurrentMs] = useState(hit?.startMs ?? 0)
   const [failed, setFailed] = useState(false)
   const src = `vixel://media/${media.id}`
-  const poster = `vixel://thumb/${posterPhotoId}`
+  const poster = thumbUrl({ id: posterPhotoId, fileHash: posterHash })
 
   const seek = useCallback((ms: number) => {
     const el = ref.current

@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import type { SearchResult } from '../../../../shared/types'
 import { formatDuration, mediaKindOf } from '../../lib/format'
+import { spriteUrl, thumbUrl } from '../../lib/mediaUrl'
 
 export type GridDensity = 'immersive' | 'info'
 
@@ -78,7 +79,7 @@ export const MediaCard = memo(function MediaCard({
       if (n >= 2) { clearTimeout(timer.current); setPreviewing(false) }
     }
     img.onerror = () => setSpriteFrames(0)
-    img.src = `vixel://sprite/${photo.videoId}`
+    img.src = spriteUrl(photo.videoId!, photo.fileHash)
   }
   const handleMove = (e: React.MouseEvent): void => {
     if (canPreview && spriteFrames) setScrub(ratioAt(e))
@@ -122,10 +123,11 @@ export const MediaCard = memo(function MediaCard({
         </div>
       ) : (
         <img
-          src={`vixel://thumb/${photo.id}`}
+          src={thumbUrl(photo)}
           alt={photo.fileName}
           className={`absolute inset-0 w-full h-full object-cover ${loaded ? 'animate-fade-in' : 'opacity-0'}`}
           loading="lazy"
+          decoding="async"
           onLoad={() => setLoaded(true)}
           onError={() => setError(true)}
         />
@@ -136,7 +138,7 @@ export const MediaCard = memo(function MediaCard({
           className="absolute inset-0 bg-no-repeat"
           data-scrub={Math.min(spriteFrames - 1, Math.floor(scrub * spriteFrames))}
           style={{
-            backgroundImage: `url(vixel://sprite/${photo.videoId})`,
+            backgroundImage: `url(${spriteUrl(photo.videoId!, photo.fileHash)})`,
             backgroundSize: `${spriteFrames * 100}% 100%`,
             backgroundPositionX: `${(Math.min(spriteFrames - 1, Math.floor(scrub * spriteFrames)) / (spriteFrames - 1)) * 100}%`,
           }}

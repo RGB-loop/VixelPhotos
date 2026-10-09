@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { MediaDetail, SearchResult } from '../../../shared/types'
 import { MediaPlayer } from './media/MediaPlayer'
 import { mediaKindOf } from '../lib/format'
+import { thumbUrl } from '../lib/mediaUrl'
 
 interface QuickLookProps {
   result: SearchResult
@@ -55,9 +56,9 @@ export function QuickLook({ result, onClose, onNavigate, onOpen }: QuickLookProp
         <div className="flex-1 min-h-0 flex items-center justify-center pointer-events-auto">
           {isMedia ? (
             media ? (
-              <MediaPlayer key={`${media.id}-${segment?.startMs ?? ''}`} media={media} posterPhotoId={photo.id} hit={segment} />
+              <MediaPlayer key={`${media.id}-${segment?.startMs ?? ''}`} media={media} posterPhotoId={photo.id} posterHash={photo.fileHash} hit={segment} />
             ) : (
-              <img src={`vixel://thumb/${photo.id}`} alt={photo.fileName} className="max-w-full max-h-full object-contain rounded-lg opacity-60" />
+              <img src={thumbUrl(photo)} alt={photo.fileName} className="max-w-full max-h-full object-contain rounded-lg opacity-60" />
             )
           ) : (
             <img

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { MediaDetail, PhotoDetail, PhotoLocation, SearchResult } from '../../../../shared/types'
 import { formatDuration, formatFileSize, mediaKindOf } from '../../lib/format'
+import { thumbUrl } from '../../lib/mediaUrl'
 import { Icon } from '../shell/icons'
 
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' } as const
@@ -72,7 +73,7 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
       {showPreview && (
         <div className="p-3 pb-0">
           <div className="relative aspect-[4/3] rounded-lg overflow-hidden bg-surface-2">
-            <img src={`vixel://thumb/${photo.id}`} alt={photo.fileName} className="absolute inset-0 w-full h-full object-contain" />
+            <img src={thumbUrl(photo)} alt={photo.fileName} className="absolute inset-0 w-full h-full object-contain" />
           </div>
         </div>
       )}
@@ -206,7 +207,7 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
                   title={r.photo.fileName}
                   className="aspect-square rounded overflow-hidden bg-surface-2 hover:ring-2 hover:ring-accent/60 transition-shadow duration-fast"
                 >
-                  <img src={`vixel://thumb/${r.photo.id}`} alt={r.photo.fileName} className="w-full h-full object-cover" />
+                  <img src={thumbUrl(r.photo)} alt={r.photo.fileName} className="w-full h-full object-cover" loading="lazy" decoding="async" />
                 </button>
               ))}
             </div>
@@ -231,7 +232,7 @@ export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths, on
       <div className="grid grid-cols-3 gap-1">
         {preview.map((r) => (
           <div key={r.photo.id} className="aspect-square rounded overflow-hidden bg-surface-2">
-            <img src={`vixel://thumb/${r.photo.id}`} alt="" className="w-full h-full object-cover" />
+            <img src={thumbUrl(r.photo)} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
           </div>
         ))}
       </div>

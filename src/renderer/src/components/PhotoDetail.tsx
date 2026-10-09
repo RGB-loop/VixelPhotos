@@ -3,6 +3,7 @@ import type { MediaDetail, SearchResult } from '../../../shared/types'
 import { MediaPlayer } from './media/MediaPlayer'
 import { Inspector } from './inspector/Inspector'
 import { mediaKindOf } from '../lib/format'
+import { thumbUrl } from '../lib/mediaUrl'
 
 interface PhotoDetailProps {
   /** 带 segment 的搜索结果：音视频打开时跳到命中片段 */
@@ -87,11 +88,12 @@ export function PhotoDetail({ result, siblings, onSelect, onClose }: PhotoDetail
               key={`${media.id}-${segment?.startMs ?? ''}`}
               media={media}
               posterPhotoId={photo.id}
+              posterHash={photo.fileHash}
               hit={segment}
               onResolution={(w, h) => setResolution({ w, h })}
             />
           ) : (
-            <img src={`vixel://thumb/${photo.id}`} alt={photo.fileName} className="max-w-full max-h-full object-contain opacity-60" />
+            <img src={thumbUrl(photo)} alt={photo.fileName} className="max-w-full max-h-full object-contain opacity-60" />
           )
         ) : imageUrl && (
           <img
