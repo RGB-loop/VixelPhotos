@@ -1,7 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme } from 'electron'
 import { pathToFileURL } from 'url'
 import { join } from 'path'
-import { readFile, unlink, mkdir, readdir, rm } from 'fs/promises'
+import { readFile, writeFile, unlink, mkdir, readdir, rm } from 'fs/promises'
+import { createHash } from 'crypto'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase } from '../core/db'
@@ -263,6 +264,42 @@ async function runBackup(): Promise<{ path: string; sizeBytes: number }> {
   } finally {
     backupInFlight = false
   }
+}
+
+/**
+ * 人脸裁剪缓存：<userData>/face_thumbs/<hash>-<bbox摘要>.jpg。
+ * 原来每次请求都读整张原图再裁，人物页几十张脸就是几十次全图解码。
+ * 键用内容 hash + bbox 而不是 faceId：重扫后 id 可能复用，内容键不会串。
+ */
+const faceThumbInflight = new Map<string, Promise<string | null>>()
+
+async function ensureFaceThumb(faceId: number): Promise<string | null> {
+  const info = db.getFaceCoverInfo(faceId)
+  if (!info) return null
+  const key = `${info.fileHash}-${createHash('sha1').update(info.bbox).digest('hex').slice(0, 12)}`
+  const dest = join(app.getPath('userData'), 'face_thumbs', `${key}.jpg`)
+  if (existsSync(dest)) return dest
+  let p = faceThumbInflight.get(key)
+  if (!p) {
+    p = (async () => {
+      const photo = db.getRepresentativeByHash(info.fileHash)
+      if (!photo) return null
+      const crop = await getFaceThumbnail(await readFile(photo.filePath), JSON.parse(info.bbox) as FaceBbox)
+      await mkdir(join(app.getPath('userData'), 'face_thumbs'), { recursive: true })
+      await writeFile(dest, crop)
+      return dest
+    })().finally(() => faceThumbInflight.delete(key))
+    faceThumbInflight.set(key, p)
+  }
+  return p
+}
+
+/** 缩略图 / 人脸裁剪 / sprite 都按内容寻址，不会变：让 Chromium 缓存，滚动重挂时不再回到主进程 */
+async function immutable(res: Response): Promise<Response> {
+  if (!res.ok) return res
+  const headers = new Headers(res.headers)
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  return new Response(res.body, { status: res.status, headers })
 }
 
 function registerIpcHandlers(): void {
@@ -572,14 +609,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.GET_FACE_THUMBNAIL, async (_event, faceId: number) => {
     try {
-      const info = db.getFaceCoverInfo(faceId)
-      if (!info) return null
-      const photo = db.getRepresentativeByHash(info.fileHash)
-      if (!photo) return null
-      const imageBuffer = await readFile(photo.filePath)
-      const bbox = JSON.parse(info.bbox) as FaceBbox
-      const crop = await getFaceThumbnail(imageBuffer, bbox)
-      return `data:image/jpeg;base64,${crop.toString('base64')}`
+      const path = await ensureFaceThumb(faceId)
+      if (!path) return null
+      return `data:image/jpeg;base64,${(await readFile(path)).toString('base64')}`
     } catch {
       return null
     }
@@ -628,6 +660,7 @@ function registerIpcHandlers(): void {
  *   vixel://image/<photoId>           → 原图文件路径
  *   vixel://media/<videoId>           → 音视频源文件（手写 Range，供 <video>/<audio> seek）
  *   vixel://sprite/<videoId>          → 悬停拖动预览 sprite；老视频没有时按需生成
+ *   vixel://face/<faceId>             → 人脸裁剪（磁盘缓存）
  *
  * 比 base64-over-IPC 显著省事：
  *   - 主进程不必把文件读进字符串再 base64
@@ -650,7 +683,15 @@ function registerVixelProtocol(): void {
         if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
         const photo = db.getPhoto(id)
         if (!photo?.fileHash) return new Response('not found', { status: 404 })
-        return net.fetch(pathToFileURL(indexer.getThumbnailPath(photo.fileHash)).toString())
+        return immutable(await net.fetch(pathToFileURL(indexer.getThumbnailPath(photo.fileHash)).toString()))
+      }
+
+      if (host === 'face' && pathParts.length === 1) {
+        const id = parseInt(pathParts[0], 10)
+        if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
+        const path = await ensureFaceThumb(id)
+        if (!path) return new Response('not found', { status: 404 })
+        return immutable(await net.fetch(pathToFileURL(path).toString()))
       }
 
       if (host === 'image' && pathParts.length === 1) {
@@ -682,7 +723,7 @@ function registerVixelProtocol(): void {
           }
           await ensureSprite(video.filePath, video.durationMs, spritePath)
         }
-        return net.fetch(pathToFileURL(spritePath).toString())
+        return immutable(await net.fetch(pathToFileURL(spritePath).toString()))
       }
 
       return new Response('unknown vixel path', { status: 404 })
