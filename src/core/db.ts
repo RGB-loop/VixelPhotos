@@ -12,9 +12,9 @@ import { buildFtsQuery } from './text/fts-query'
 // 向量维度 - EmbeddingGemma 2 (768D，Matryoshka 可截断到 512/256/128)
 const EMBEDDING_DIM = 768
 
-// 人脸 embedding 维度 - MobileFaceNet 标准输出
+// 人脸 embedding 维度 - MobileFaceNet (w600k_mbf) 输出 512D
 // 与 src/core/face/embedding.ts 的 ONNX 模型保持一致
-const FACE_EMBEDDING_DIM = 128
+const FACE_EMBEDDING_DIM = 512
 
 // 数据库 Schema
 const SCHEMA = `
@@ -265,6 +265,19 @@ export function migrateSchema(db: Database.Database): void {
   add('people', 'centroid', 'BLOB')
   add('people', 'hidden', 'INTEGER DEFAULT 0')
   db.exec(`CREATE INDEX IF NOT EXISTS idx_faces_unassigned ON faces(cluster_state) WHERE person_id IS NULL`)
+
+  // 老库的 face_vecs 按 128 维建的，而模型实际输出 512 维 → 写入全被跳过、KNN 全部报错。
+  // vec0 不能改列维度，只能重建，再从 faces.embedding 回填。
+  const vecSql = (db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'face_vecs'`).get() as { sql: string } | undefined)?.sql
+  if (vecSql && !vecSql.includes(`float[${FACE_EMBEDDING_DIM}]`)) {
+    db.transaction(() => {
+      db.exec(`DROP TABLE face_vecs`)
+      db.exec(`CREATE VIRTUAL TABLE face_vecs USING vec0(embedding float[${FACE_EMBEDDING_DIM}])`)
+      db.prepare(
+        `INSERT INTO face_vecs(rowid, embedding) SELECT id, embedding FROM faces WHERE length(embedding) = ?`
+      ).run(FACE_EMBEDDING_DIM * 4)
+    })()
+  }
 }
 
 export interface DatabaseInstance {

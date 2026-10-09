@@ -74,7 +74,7 @@
 │                        │  │  photos | image_vecs(768)            │ │    │
 │                        │  │  video_segments | video_segment_vecs │ │    │
 │                        │  │  image_ocr+FTS5 (jieba UDF)          │ │    │
-│                        │  │  faces | face_vecs(128) ANN          │ │    │
+│                        │  │  faces | face_vecs(512) ANN          │ │    │
 │                        │  │  people | videos | meta_state        │ │    │
 │                        │  └──────────────────────────────────────┘ │    │
 │                        │  ┌──────────────────────────────────────┐ │    │
@@ -100,7 +100,7 @@
 | 人脸 embedding | **MobileFaceNet**（InsightFace w600k_mbf，ONNX） | 512 维，L2 归一化 |
 | 人脸聚类 | **sqlite-vec ANN** | 取代 v0.1 的 O(N) JS 余弦扫描 |
 | 视频 / 音频抽取 | **ffmpeg-static** | 32s 片段，每 4s 一帧（8 帧）+ mono 16 kHz 音轨；时长解析 `ffmpeg -i` stderr |
-| 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + video_segment_vecs(768) + face_vecs(128) |
+| 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + video_segment_vecs(768) + face_vecs(512) |
 | 元数据存储 | **better-sqlite3 + FTS5** | 同进程 sync API |
 | 中文分词 | **@node-rs/jieba**（UDF jiebatok） | FTS5 写入/查询两端对称切词 |
 | 文件监听 | **chokidar** | 图片 + 视频统一 add/change/unlink |
@@ -466,7 +466,7 @@ CREATE INDEX idx_faces_file_hash ON faces(file_hash);
 CREATE INDEX idx_faces_person    ON faces(person_id);
 
 -- 人脸 ANN 索引（rowid == faces.id；无需 map 表）
-CREATE VIRTUAL TABLE face_vecs USING vec0(embedding FLOAT[128]);
+CREATE VIRTUAL TABLE face_vecs USING vec0(embedding FLOAT[512]);  -- 老库按 128 建的，migrateSchema 重建并回填
 
 -- 人物
 CREATE TABLE people (

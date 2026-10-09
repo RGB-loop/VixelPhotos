@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (nice 10). IPC round-trip during indexing went from p50 2.9 s / max 20 s to
   p95 5 ms / max 32 ms; a full index of the test set also got ~1/3 faster.
   The worker restarts transparently if it crashes.
+- Face ANN index was never used: `face_vecs` was declared 128-d but
+  MobileFaceNet outputs 512-d, so every insert was skipped and every KNN
+  errored into a full scan. The table is rebuilt at 512-d and backfilled.
 - **Face alignment produced black images**, so every face got the same
   embedding and people clustering was noise. Alignment is now a pure-JS
   similarity warp on an EXIF-oriented decode shared with detection. Existing
