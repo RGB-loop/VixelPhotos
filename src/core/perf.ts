@@ -12,7 +12,7 @@
 export const PROFILE = process.env.VIXEL_PROFILE === '1'
 
 /** 超过这些阈值才打印：主进程同步工作 > 16ms 就会掉一帧 */
-const THRESHOLD_MS: Record<PerfKind, number> = { sql: 8, ipc: 16, proto: 16, infer: 2000, loop: 50, task: 0 }
+const THRESHOLD_MS: Record<PerfKind, number> = { sql: 8, ipc: 16, proto: 50, infer: 2000, loop: 50, task: 0 }
 
 export type PerfKind = 'sql' | 'ipc' | 'proto' | 'infer' | 'loop' | 'task'
 
