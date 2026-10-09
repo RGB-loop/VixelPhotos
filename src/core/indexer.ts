@@ -33,6 +33,9 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
  *   音频：extract_frames → 32s 片段（音轨）→ EmbeddingGemma 2 → video_segments；
  *         封面 / 波形图落成代表 photo（只做缩略图，不做图片向量）
  */
+// 主进程里的 sharp（缩略图 / 元数据）默认用满所有核的 libuv 线程，后台索引时会挤占 UI；限 2 个
+sharp.concurrency(2)
+
 const PAUSED_KEY = 'indexing_paused'
 /** 进度事件最小间隔：每次都要跑两条全表聚合（主进程同步），索引时每个任务 / 每个片段都会触发 */
 const PROGRESS_MIN_INTERVAL_MS = 250

@@ -5,6 +5,7 @@
 
 import * as ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import { CPU_SESSION_OPTIONS } from '../inference/session-options'
 import type { RawImage } from './alignment'
 
 export interface DetectedFace {
@@ -22,9 +23,7 @@ const NUM_ANCHORS = 2
 let session: ort.InferenceSession | null = null
 
 export async function initDetection(modelPath: string): Promise<void> {
-  session = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-  })
+  session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
   console.log('SCRFD face detection model loaded')
 }
 

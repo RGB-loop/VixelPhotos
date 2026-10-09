@@ -9,6 +9,7 @@
 
 import * as ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import { CPU_SESSION_OPTIONS } from '../inference/session-options'
 import type { TextBox } from './types'
 
 const CLS_IMG_H = 48
@@ -21,9 +22,7 @@ const STD = [0.5, 0.5, 0.5]
 let session: ort.InferenceSession | null = null
 
 export async function initCls(modelPath: string): Promise<void> {
-  session = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-  })
+  session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
 }
 
 export function isClsReady(): boolean {

@@ -11,6 +11,7 @@
 import * as ort from 'onnxruntime-node'
 import sharp from 'sharp'
 import { readFileSync } from 'fs'
+import { CPU_SESSION_OPTIONS } from '../inference/session-options'
 import type { RecognizedLine, TextBox } from './types'
 
 // PaddleOCR v5 默认配置
@@ -31,9 +32,7 @@ let charset: string[] | null = null
  * @param charsetPath path to ppocr_keys_v1.txt（每行一个字符，加空白和 \n 即可）
  */
 export async function initRecognition(modelPath: string, charsetPath: string): Promise<void> {
-  session = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-  })
+  session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
 
   const raw = readFileSync(charsetPath, 'utf-8')
   // PaddleOCR 字典：CTC blank 在 index 0，dict 从 index 1 开始

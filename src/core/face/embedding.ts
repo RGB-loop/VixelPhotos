@@ -4,6 +4,7 @@
  * 模型许可：InsightFace 预训练权重仅限非商用。
  */
 
+import { CPU_SESSION_OPTIONS } from '../inference/session-options'
 import * as ort from 'onnxruntime-node'
 
 const FACE_SIZE = 112  // 对齐后的人脸尺寸
@@ -11,9 +12,7 @@ const FACE_SIZE = 112  // 对齐后的人脸尺寸
 let session: ort.InferenceSession | null = null
 
 export async function initFaceEmbedding(modelPath: string): Promise<void> {
-  session = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-  })
+  session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
   console.log('MobileFaceNet face embedding model loaded')
 }
 

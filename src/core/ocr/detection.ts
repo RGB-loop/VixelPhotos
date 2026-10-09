@@ -12,6 +12,7 @@
 
 import * as ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import { CPU_SESSION_OPTIONS } from '../inference/session-options'
 import type { TextBox } from './types'
 
 // 模型超参（与 PaddleOCR v5 mobile/server 默认对齐）
@@ -29,9 +30,7 @@ const STD = [0.229, 0.224, 0.225]
 let session: ort.InferenceSession | null = null
 
 export async function initDetection(modelPath: string): Promise<void> {
-  session = await ort.InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-  })
+  session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
 }
 
 export function isDetectionReady(): boolean {
