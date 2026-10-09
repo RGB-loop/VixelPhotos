@@ -694,7 +694,10 @@ function registerVixelProtocol(): void {
         if (Number.isNaN(id)) return new Response('bad id', { status: 400 })
         const photo = db.getPhoto(id)
         if (!photo?.fileHash) return new Response('not found', { status: 404 })
-        return immutable(await net.fetch(pathToFileURL(indexer.getThumbnailPath(photo.fileHash)).toString()))
+        // 新导入的照片先进网格、缩略图稍后才生成：安静地 404（不缓存），卡片会自己重试
+        const thumbPath = indexer.getThumbnailPath(photo.fileHash)
+        if (!existsSync(thumbPath)) return new Response('not ready', { status: 404 })
+        return immutable(await net.fetch(pathToFileURL(thumbPath).toString()))
       }
 
       if (host === 'face' && pathParts.length === 1) {

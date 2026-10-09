@@ -2,6 +2,9 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { MatchChannel, SearchResult } from '../../../../shared/types'
 import { formatDuration, mediaKindOf } from '../../lib/format'
 
+/** 缩略图 404 时的重试上限（退避 2s…15s，合计约 4 分钟） */
+const THUMB_MAX_RETRIES = 20
+
 /** 命中原因角标：只列确定性通道 */
 const MATCH_LABELS: Array<[MatchChannel, string]> = [['text', '图中文字'], ['filename', '文件名']]
 import { spriteUrl, thumbUrl } from '../../lib/mediaUrl'
@@ -54,6 +57,14 @@ export const MediaCard = memo(function MediaCard({
   const kind = mediaKindOf(photo)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // 缩略图还没生成（新导入、索引排队中）时主进程回 404：退避重试，生成好了就自动出现
+  const [thumbAttempt, setThumbAttempt] = useState(0)
+  const retryTimer = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => clearTimeout(retryTimer.current), [])
+  const onThumbError = (): void => {
+    if (thumbAttempt >= THUMB_MAX_RETRIES) { setError(true); return }
+    retryTimer.current = setTimeout(() => setThumbAttempt((a) => a + 1), Math.min(2000 * (thumbAttempt + 1), 15_000))
+  }
   const [previewing, setPreviewing] = useState(false)
   const [previewRatio, setPreviewRatio] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout>>()
@@ -130,13 +141,13 @@ export const MediaCard = memo(function MediaCard({
         </div>
       ) : (
         <img
-          src={thumbUrl(photo)}
+          src={thumbAttempt ? `${thumbUrl(photo)}&r=${thumbAttempt}` : thumbUrl(photo)}
           alt={photo.fileName}
           className={`absolute inset-0 w-full h-full object-cover ${loaded ? 'animate-fade-in' : 'opacity-0'}`}
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}
-          onError={() => setError(true)}
+          onError={onThumbError}
         />
       )}
 
