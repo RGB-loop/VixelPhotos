@@ -38,6 +38,7 @@ const SUPPORTED_AUDIO_EXTENSIONS = new Set([
 ])
 
 const VIDEO_HASH_SAMPLE_BYTES = 64 * 1024
+const IO_CONCURRENCY = 4
 
 /**
  * 计算视频文件的"轻量内容哈希"：size + mtime + 头 N 字节 + 尾 N 字节。
@@ -91,6 +92,22 @@ export class FileWatcher {
     this.indexer = indexer
   }
 
+  /** 并发闸：同时最多 IO_CONCURRENCY 个整文件读取 / stat */
+  private active = 0
+  private waiting: Array<() => void> = []
+  private async ioLimit<T>(fn: () => Promise<T>): Promise<T> {
+    // 名额直接交接给下一个等待者，active 不回落，避免新来的插队超额
+    if (this.active >= IO_CONCURRENCY) await new Promise<void>((r) => this.waiting.push(r))
+    else this.active++
+    try {
+      return await fn()
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.active--
+    }
+  }
+
   watchFolder(folderId: number, folderPath: string): void {
     if (this.watchers.has(folderId)) {
       return
@@ -113,7 +130,7 @@ export class FileWatcher {
       .on('ready', () => {
         this.db.updateFolderScanTime(folderId)
         // 清理离线期间被删除的文件
-        this.cleanupStalePhotos(folderId)
+        void this.cleanupStale(folderId)
       })
       .on('error', (error) => {
         console.error(`Watcher error for folder ${folderId}:`, error)
@@ -136,25 +153,22 @@ export class FileWatcher {
     }
   }
 
-  /** 启动时清理离线期间被删除的文件 */
-  private async cleanupStalePhotos(folderId: number): Promise<void> {
+  /**
+   * 启动时清理离线期间被删除的文件：照片软删，音视频走完整级联（片段 / 帧目录 / 缩略图）。
+   * 一条查询拿路径，access 检查限并发，不再逐张 getPhoto。
+   */
+  private async cleanupStale(folderId: number): Promise<void> {
     try {
-      const { photoIds } = this.db.getFolderStats(folderId)
-      // 逐个检查文件是否存在（用 getPhoto 拿路径）
-      let cleaned = 0
-      for (const photoId of photoIds) {
-        const photo = this.db.getPhoto(photoId)
-        if (!photo || photo.deletedAt) continue
-        try {
-          await access(photo.filePath)
-        } catch {
-          // 文件不存在，soft delete
-          this.db.softDeletePhoto(photo.filePath)
-          cleaned++
-        }
+      const { photos, videos } = this.db.getLiveSourcePaths(folderId)
+      const missing = async (paths: string[]): Promise<string[]> => {
+        const gone: string[] = []
+        await Promise.all(paths.map((p) => this.ioLimit(() => access(p).catch(() => { gone.push(p) }))))
+        return gone
       }
+      for (const p of await missing(photos)) this.db.softDeletePhoto(p)
+      for (const p of await missing(videos)) await this.removeVideo(p)
     } catch (error) {
-      console.error(`Error cleaning stale photos for folder ${folderId}:`, error)
+      console.error(`Error cleaning stale media for folder ${folderId}:`, error)
     }
   }
 
@@ -171,8 +185,19 @@ export class FileWatcher {
       const stats = await stat(filePath)
       const fileName = basename(filePath)
 
-      // 计算文件 hash
-      const fileBuffer = await readFile(filePath)
+      // 启动时 chokidar 会对已有文件逐个触发 add。大小 / mtime 没变、缩略图也在 → 什么都不用做；
+      // 否则每次启动都要把整个图库读一遍算 hash。漏掉的 embedding 由 requeueMissingEmbeddings 补排
+      const existing = this.db.getPhotoByPath(filePath)
+      if (
+        existing && existing.deletedAt == null && existing.folderId === folderId &&
+        existing.fileSize === stats.size && existing.fileMtime === stats.mtimeMs &&
+        existing.fileHash && existsSync(this.indexer.getThumbnailPath(existing.fileHash))
+      ) {
+        return
+      }
+
+      // 计算文件 hash（限并发：首次导入时 add 事件成千上万，同时读文件会把磁盘打满）
+      const fileBuffer = await this.ioLimit(() => readFile(filePath))
       const hash = await getHasher()
       const fileHash = hash(new Uint8Array(fileBuffer.buffer, fileBuffer.byteOffset, fileBuffer.byteLength))
 
@@ -238,7 +263,15 @@ export class FileWatcher {
   }
 
   private async handleChange(filePath: string): Promise<void> {
-    if (classifyMedia(filePath) === null) return
+    const kind = classifyMedia(filePath)
+    if (kind === null) return
+
+    // 音视频原地修改：handleAddVideo 会比对轻量 hash，变了才重排
+    if (kind !== 'image') {
+      const video = this.db.getVideoByPath(filePath)
+      if (video) await this.handleAddVideo(video.folderId, filePath, kind)
+      return
+    }
 
     try {
       const existing = this.db.getPhotoByPath(filePath)
@@ -250,7 +283,7 @@ export class FileWatcher {
       }
 
       const fileName = basename(filePath)
-      const fileBuffer = await readFile(filePath)
+      const fileBuffer = await this.ioLimit(() => readFile(filePath))
       const hash = await getHasher()
       const fileHash = hash(new Uint8Array(fileBuffer.buffer, fileBuffer.byteOffset, fileBuffer.byteLength))
 
