@@ -1,7 +1,42 @@
-import { useCallback, useState, useEffect, useRef, useMemo } from 'react'
-import { FixedSizeGrid, type GridChildComponentProps } from 'react-window'
+import { memo, useState, useEffect, useRef, useMemo, type ComponentProps } from 'react'
+import { FixedSizeGrid, areEqual, type GridChildComponentProps } from 'react-window'
 import type { SearchResult } from '../../../shared/types'
 import { MediaCard, type GridDensity } from './media/MediaCard'
+
+type MediaCardProps = ComponentProps<typeof MediaCard>
+
+interface CellData {
+  results: SearchResult[]
+  cols: number
+  selectedIds: Set<number>
+  isSearching?: boolean
+  density: GridDensity
+  gap: number
+  onItemClick: MediaCardProps['onClick']
+  onItemOpen: MediaCardProps['onDoubleClick']
+  onItemContextMenu: MediaCardProps['onContextMenu']
+}
+
+// 单元渲染：从 grid 坐标反算线性 index
+const GridCell = memo(function GridCell({ columnIndex, rowIndex, style, data }: GridChildComponentProps<CellData>) {
+  const idx = rowIndex * data.cols + columnIndex
+  if (idx >= data.results.length) return null
+  const result = data.results[idx]
+  return (
+    <div style={{ ...style, padding: data.gap / 2 }}>
+      <MediaCard
+        result={result}
+        index={idx}
+        selected={data.selectedIds.has(result.photo.id)}
+        rank={data.isSearching ? idx + 1 : undefined}
+        density={data.density}
+        onClick={data.onItemClick}
+        onDoubleClick={data.onItemOpen}
+        onContextMenu={data.onItemContextMenu}
+      />
+    </div>
+  )
+}, areEqual)
 
 /** 卡片间距（px）：每格四周各留一半。沉浸式更紧，让画面连成一片 */
 const GAP = { immersive: 2, info: 6 } as const
@@ -110,27 +145,10 @@ export function PhotoGrid({
     gridRef.current.scrollToItem({ rowIndex: Math.floor(focusIndex / cols), align: 'smart' })
   }, [focusIndex, cols])
 
-  // 单元渲染：从 grid 坐标反算线性 index
-  const Cell = useCallback(
-    ({ columnIndex, rowIndex, style }: GridChildComponentProps) => {
-      const idx = rowIndex * cols + columnIndex
-      if (idx >= results.length) return null
-      const result = results[idx]
-      return (
-        <div style={{ ...style, padding: gap / 2 }}>
-          <MediaCard
-            result={result}
-            index={idx}
-            selected={selectedIds.has(result.photo.id)}
-            rank={isSearching ? idx + 1 : undefined}
-            density={density}
-            onClick={onItemClick}
-            onDoubleClick={onItemOpen}
-            onContextMenu={onItemContextMenu}
-          />
-        </div>
-      )
-    },
+  // 单元组件提到模块级、数据走 itemData：组件类型稳定，选中 / 结果变化只重渲染，
+  // 不会卸载重挂所有可见卡片（否则淡入动画重放、缩略图重试状态丢失）
+  const itemData = useMemo<CellData>(
+    () => ({ results, cols, selectedIds, isSearching, density, gap, onItemClick, onItemOpen, onItemContextMenu }),
     [results, cols, selectedIds, isSearching, density, gap, onItemClick, onItemOpen, onItemContextMenu]
   )
 
@@ -158,8 +176,9 @@ export function PhotoGrid({
           width={size.w}
           height={size.h}
           overscanRowCount={2}
+          itemData={itemData}
         >
-          {Cell}
+          {GridCell}
         </FixedSizeGrid>
       )}
     </div>

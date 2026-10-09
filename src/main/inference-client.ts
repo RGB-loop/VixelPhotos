@@ -24,16 +24,17 @@ interface Pending {
  * 卡死看门狗：有在途请求、却这么久没有任何一个完成 → 认为前向卡死（ONNX 死锁 / arena 问题），
  * 杀掉子进程。exit 处理会 reject 在途请求，任务记失败，下次调用自动重启。
  * 最慢的正常前向（32 帧视频片段）约 2.5 分钟，留足余量。
+ * 按检查次数计时而不是墙钟：合盖睡眠期间定时器不走，醒来不会把健康的进程误杀。
  */
-const STALL_MS = 10 * 60 * 1000
 const STALL_CHECK_MS = 30 * 1000
+const STALL_CHECKS = 20 // 20 × 30s = 10 分钟
 
 export class InferenceProcess implements InferenceTransport {
   private child: UtilityProcess | null = null
   private pending = new Map<number, Pending>()
   private nextId = 1
   private stopped = false
-  private lastProgressAt = 0
+  private idleChecks = 0
   private watchdog: NodeJS.Timeout | null = null
   generation = 0
 
@@ -43,7 +44,7 @@ export class InferenceProcess implements InferenceTransport {
     if (this.stopped) return Promise.reject(new Error('Inference process stopped'))
     const child = this.ensure()
     const id = this.nextId++
-    if (this.pending.size === 0) this.lastProgressAt = Date.now()
+    if (this.pending.size === 0) this.idleChecks = 0
     this.armWatchdog()
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, method, sentAt: Date.now() })
@@ -59,8 +60,9 @@ export class InferenceProcess implements InferenceTransport {
         this.watchdog = null
         return
       }
-      if (Date.now() - this.lastProgressAt > STALL_MS && this.child) {
-        console.error(`[inference] no response for ${STALL_MS / 1000}s with ${this.pending.size} pending — killing stalled process`)
+      if (++this.idleChecks >= STALL_CHECKS && this.child) {
+        console.error(`[inference] no response for ${(STALL_CHECKS * STALL_CHECK_MS) / 1000}s with ${this.pending.size} pending — killing stalled process`)
+        this.idleChecks = 0
         this.child.kill()
       }
     }, STALL_CHECK_MS)
@@ -85,7 +87,7 @@ export class InferenceProcess implements InferenceTransport {
       const p = this.pending.get(res.id)
       if (!p) return
       this.pending.delete(res.id)
-      this.lastProgressAt = Date.now()
+      this.idleChecks = 0
       // 含排队等待：搜索的文本编码在这里能看出被索引前向挡了多久
       record('infer', p.method, Date.now() - p.sentAt)
       if (res.ok) p.resolve(res.result)

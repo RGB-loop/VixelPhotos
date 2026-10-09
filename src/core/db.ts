@@ -330,6 +330,8 @@ export interface DatabaseInstance {
   addToQueue: (photoId: number, taskType: string, priority?: number) => void
   /** 是否已有排队中 / 进行中的同类任务（避免重复入队） */
   hasOpenTask: (photoId: number, taskType: string) => boolean
+  /** 有排队中 / 进行中 / 失败的任务：启动对账据此跳过，失败的留给任务面板重试，不每次启动重跑 */
+  hasOpenOrFailedTask: (photoId: number, taskType: string) => boolean
   getNextTask: () => { id: number; photoId: number; taskType: string } | undefined
   peekNextTask: () => { id: number; photoId: number; taskType: string } | undefined
   /** note：任务成功但有可报告的问题（如部分片段失败），写进 error_msg 供任务面板展示 */
@@ -772,6 +774,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       WHERE photo_id = ? AND task_type = ? AND status IN ('pending', 'processing')
       LIMIT 1
     `),
+    hasOpenOrFailedTask: db.prepare(`
+      SELECT 1 FROM index_queue
+      WHERE photo_id = ? AND task_type = ? AND status IN ('pending', 'processing', 'error')
+      LIMIT 1
+    `),
     getNextTask: db.prepare(`
       SELECT id, photo_id as photoId, task_type as taskType FROM index_queue
       WHERE status = 'pending'
@@ -803,7 +810,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     `),
     clearModelNotReadyErrors: db.prepare(`
       DELETE FROM index_queue
-      WHERE task_type IN ('embed', 'extract_frames') AND status = 'error' AND error_msg LIKE 'Embedding model not ready%'
+      WHERE task_type IN ('embed', 'extract_frames') AND status = 'error'
+        AND (error_msg LIKE 'Embedding model not ready%' OR error_msg LIKE 'Inference process exited%')
     `),
     getPhotosWithoutEmbedding: db.prepare(`
       SELECT p.id, p.file_hash FROM photos p
@@ -1369,6 +1377,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     addToQueue: (photoId: number, taskType: string, priority = 0): void => {
       stmts.addToQueue.run(photoId, taskType, priority)
     },
+    hasOpenOrFailedTask: (photoId: number, taskType: string): boolean => {
+      return stmts.hasOpenOrFailedTask.get(photoId, taskType) !== undefined
+    },
     hasOpenTask: (photoId: number, taskType: string): boolean => {
       return stmts.hasOpenTask.get(photoId, taskType) !== undefined
     },
@@ -1399,7 +1410,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       return stmts.recoverStuckTasks.run().changes
     },
     requeueMissingEmbeddings: db.transaction((): number => {
-      // 模型未就绪的失败可以自动重来（先删掉旧的失败行，免得队列里一条媒体两行）；
+      // 模型未就绪 / 推理进程退出（崩溃、看门狗）的失败可以自动重来（先删掉旧的失败行，免得队列里一条媒体两行）；
       // 单文件失败（坏图 / 解码失败）不自动重排，留在任务面板由用户重试，避免每次启动白跑
       stmts.clearModelNotReadyErrors.run()
       const photos = stmts.getPhotosWithoutEmbedding.all() as Array<{ id: number }>

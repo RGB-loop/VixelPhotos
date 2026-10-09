@@ -61,6 +61,7 @@ export class Indexer extends EventEmitter {
   private progressTimer: NodeJS.Timeout | null = null
   private lastProgressAt = 0
   private pendingProgress: { stage: IndexProgress['stage']; currentFile?: string } | null = null
+  private stopped = false
 
   constructor(db: DatabaseInstance, userDataPath: string) {
     super()
@@ -427,6 +428,14 @@ export class Indexer extends EventEmitter {
     }
   }
 
+  /** 退出前调用：清掉尾沿进度定时器，之后不再发进度 */
+  stop(): void {
+    if (this.progressTimer) clearTimeout(this.progressTimer)
+    this.progressTimer = null
+    this.pendingProgress = null
+    this.stopped = true
+  }
+
   /** 诊断用：当前任务的简短描述 */
   currentTaskLabel(): string | undefined {
     return this.current ? `${this.current.taskType} ${this.current.name}` : undefined
@@ -597,6 +606,7 @@ export class Indexer extends EventEmitter {
    * 统计查询放在真正发送时才跑，索引时主进程不再被逐任务的全表聚合占住。
    */
   private emitProgress(stage: IndexProgress['stage'], currentFile?: string): void {
+    if (this.stopped) return
     this.pendingProgress = { stage, currentFile }
     if (this.progressTimer) return
     const wait = PROGRESS_MIN_INTERVAL_MS - (Date.now() - this.lastProgressAt)

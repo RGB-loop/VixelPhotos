@@ -187,11 +187,12 @@ export class FileWatcher {
 
       // 启动时 chokidar 会对已有文件逐个触发 add。大小 / mtime 没变、缩略图也在 → 什么都不用做；
       // 否则每次启动都要把整个图库读一遍算 hash。漏掉的 embedding 由 requeueMissingEmbeddings 补排
+      // 缩略图缺失但任务失败过（坏图）同样跳过：重试走任务面板，不每次启动重读
       const existing = this.db.getPhotoByPath(filePath)
       if (
         existing && existing.deletedAt == null && existing.folderId === folderId &&
-        existing.fileSize === stats.size && existing.fileMtime === stats.mtimeMs &&
-        existing.fileHash && existsSync(this.indexer.getThumbnailPath(existing.fileHash))
+        existing.fileSize === stats.size && existing.fileMtime === stats.mtimeMs && existing.fileHash &&
+        (existsSync(this.indexer.getThumbnailPath(existing.fileHash)) || this.db.hasOpenOrFailedTask(existing.id, 'thumbnail'))
       ) {
         return
       }
@@ -247,7 +248,7 @@ export class FileWatcher {
       // 坏文件的重试走任务面板；模型未就绪导致的失败由 requeueMissingEmbeddings 补排
       const unchanged = existing != null && existing.deletedAt == null &&
         existing.fileHash === lightHash && existing.folderId === folderId
-      if (unchanged && (existing.frameCount != null || this.db.hasOpenTask(existing.id, 'extract_frames'))) {
+      if (unchanged && (existing.frameCount != null || this.db.hasOpenOrFailedTask(existing.id, 'extract_frames'))) {
         return
       }
 

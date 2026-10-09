@@ -198,7 +198,8 @@ async function initServices(): Promise<void> {
   // 都是 fire-and-forget，失败不阻塞应用。
   preloadJieba().catch(() => {})
   setTimeout(() => {
-    indexer.preloadModels().catch(() => {})
+    // 模型加载完推一次进度：库已全部索引时队列不动、不会有进度事件，状态栏的"模型未就绪"要靠这一下清掉
+    indexer.preloadModels().catch(() => {}).finally(() => indexer.emitProgressPublic())
     // 用户扫过人脸才自动重扫；从没扫过的库保持手动触发
     // 上次退出前没来得及聚类的脸（或旧版本留下的未归属脸）
     if (db.countPendingClusterFaces() > 0) void indexer.faceClusterer.run()
@@ -787,6 +788,8 @@ app.on('before-quit', () => {
   // VIXEL_PROFILE=1：退出时打印本次会话最慢的操作（p50 / p95 / max）
   if (PROFILE) console.table(perfSnapshot().slice(0, 25).map((r) => ({ ...r, p50: +r.p50.toFixed(1), p95: +r.p95.toFixed(1), max: +r.max.toFixed(1) })))
   watcher?.stopAll()
+  // 先停 indexer（清掉节流中的进度定时器），否则它可能在 db.close() 之后触发并查询已关闭的库
+  indexer?.stop()
   inference?.stop()
   if (backupTimer) {
     clearInterval(backupTimer)
