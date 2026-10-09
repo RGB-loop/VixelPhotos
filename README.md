@@ -86,7 +86,7 @@ Electron App (single Node.js process)
 │   │   ├─ EmbeddingGemma 2                 (text/image/video/audio, ~620 MB)
 │   │   ├─ PaddleOCR v5 (det + cls + rec)   (~12 MB)
 │   │   ├─ SCRFD-2.5G-KPS                   (face detection, ~3 MB)
-│   │   └─ MobileFaceNet                    (face embedding, ~5 MB)
+│   │   └─ MobileFaceNet                    (face embedding, w600k_mbf 512d, ~13 MB)
 │   └── ffmpeg-static (subprocess)           ← video frames + audio track
 └── Renderer Process (React)
     └── PhotoGrid · MapView · PeopleView · PhotoDetail

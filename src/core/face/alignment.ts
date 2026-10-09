@@ -5,102 +5,83 @@
 
 import sharp from 'sharp'
 
-// ArcFace/MobileFaceNet 标准参考点 (112×112)
+/** 已解码的 RGB 图（3 通道，行优先），检测 / 对齐共用，避免每张脸重复解码 */
+export interface RawImage {
+  data: Buffer
+  width: number
+  height: number
+}
+
+// ArcFace 标准参考点 (112×112)，与 insightface face_align.arcface_dst 一致
 const REFERENCE_POINTS: [number, number][] = [
-  [38.29, 51.69],  // 左眼
-  [73.53, 51.69],  // 右眼
-  [56.02, 71.74],  // 鼻尖
-  [41.54, 92.37],  // 左嘴角
-  [70.73, 92.37],  // 右嘴角
+  [38.2946, 51.6963],  // 左眼
+  [73.5318, 51.5014],  // 右眼
+  [56.0252, 71.7366],  // 鼻尖
+  [41.5493, 92.3655],  // 左嘴角
+  [70.7299, 92.2041],  // 右嘴角
 ]
 
-const OUTPUT_SIZE = 112
+export const ALIGNED_SIZE = 112
 
 /**
- * 计算两组点之间的最优相似变换 (旋转 + 缩放 + 平移)
- * 返回 2×3 仿射矩阵
+ * 最小二乘相似变换（旋转 + 等比缩放 + 平移），返回把 from 平面坐标映射到 to 平面的函数。
+ * 对齐时直接拟合 输出→输入 的方向，逐像素反向采样，不需要再求逆。
  */
-function estimateSimilarityTransform(
-  src: [number, number][],
-  dst: [number, number][]
-): number[][] {
-  const n = src.length
-
-  // 计算质心
-  let srcCx = 0, srcCy = 0, dstCx = 0, dstCy = 0
+export function fitSimilarity(
+  from: [number, number][],
+  to: [number, number][]
+): (x: number, y: number) => [number, number] {
+  const n = from.length
+  let fx = 0, fy = 0, tx = 0, ty = 0
   for (let i = 0; i < n; i++) {
-    srcCx += src[i][0]; srcCy += src[i][1]
-    dstCx += dst[i][0]; dstCy += dst[i][1]
+    fx += from[i][0]; fy += from[i][1]
+    tx += to[i][0]; ty += to[i][1]
   }
-  srcCx /= n; srcCy /= n; dstCx /= n; dstCy /= n
+  fx /= n; fy /= n; tx /= n; ty /= n
 
-  // 去中心化
   let num1 = 0, num2 = 0, den = 0
   for (let i = 0; i < n; i++) {
-    const sx = src[i][0] - srcCx
-    const sy = src[i][1] - srcCy
-    const dx = dst[i][0] - dstCx
-    const dy = dst[i][1] - dstCy
-
-    num1 += dx * sx + dy * sy
-    num2 += dx * sy - dy * sx
-    den += sx * sx + sy * sy
+    const x = from[i][0] - fx, y = from[i][1] - fy
+    const u = to[i][0] - tx, v = to[i][1] - ty
+    num1 += x * u + y * v
+    num2 += x * v - y * u
+    den += x * x + y * y
   }
-
   const a = num1 / den
   const b = num2 / den
-
-  return [
-    [a, b, dstCx - a * srcCx - b * srcCy],
-    [-b, a, dstCy + b * srcCx - a * srcCy],
-  ]
+  return (x, y) => [a * (x - fx) - b * (y - fy) + tx, b * (x - fx) + a * (y - fy) + ty]
 }
 
 /**
- * 对齐人脸：根据检测到的 5 个关键点，将人脸裁剪对齐为 112×112
+ * 对齐人脸：根据 5 个关键点（归一化坐标）把人脸摆正、裁成 112×112 RGB raw。
+ *
+ * 不用 sharp.affine：它要的是正向矩阵，且 sharp 管线固定先 resize 再 affine，
+ * 之前的写法输出的是尺寸不定的黑图（所有人 embedding 相似度都是 1.0）。
+ * 112×112 只有 1.2 万像素，JS 双线性采样 < 1ms。
  */
-export async function alignFace(
-  imageBuffer: Buffer,
-  landmarks: [number, number][],
-  imageWidth: number,
-  imageHeight: number
-): Promise<Buffer> {
-  // landmarks 是归一化坐标 (0-1)，转为像素坐标
-  const srcPoints: [number, number][] = landmarks.map(([x, y]) => [
-    x * imageWidth,
-    y * imageHeight,
-  ])
+export function alignFace(img: RawImage, landmarks: [number, number][], mirror = false): Buffer {
+  const { data, width: W, height: H } = img
+  const src = landmarks.map(([x, y]) => [x * W, y * H] as [number, number])
+  const map = fitSimilarity(REFERENCE_POINTS, src)
+  const out = Buffer.alloc(ALIGNED_SIZE * ALIGNED_SIZE * 3)
 
-  // 计算从源关键点到标准参考点的变换矩阵
-  const M = estimateSimilarityTransform(srcPoints, REFERENCE_POINTS)
-
-  // 计算逆变换（从输出坐标映射到输入坐标）
-  const det = M[0][0] * M[1][1] - M[0][1] * M[1][0]
-  const invM = [
-    [M[1][1] / det, -M[0][1] / det, 0],
-    [-M[1][0] / det, M[0][0] / det, 0],
-  ]
-  invM[0][2] = -(invM[0][0] * M[0][2] + invM[0][1] * M[1][2])
-  invM[1][2] = -(invM[1][0] * M[0][2] + invM[1][1] * M[1][2])
-
-  // 用 sharp 的 affine 变换实现（sharp 用逆矩阵）
-  // sharp.affine 接受 [[a, b], [c, d]] 格式的 2x2 矩阵 + offset
-  const aligned = await sharp(imageBuffer)
-    .affine(
-      [[invM[0][0], invM[0][1]], [invM[1][0], invM[1][1]]],
-      {
-        odx: invM[0][2],
-        ody: invM[1][2],
-        idx: 0,
-        idy: 0,
+  for (let oy = 0; oy < ALIGNED_SIZE; oy++) {
+    for (let ox = 0; ox < ALIGNED_SIZE; ox++) {
+      const [x, y] = map(mirror ? ALIGNED_SIZE - 1 - ox : ox, oy)
+      const x0 = Math.floor(x), y0 = Math.floor(y)
+      const ax = x - x0, ay = y - y0
+      const o = (oy * ALIGNED_SIZE + ox) * 3
+      for (let c = 0; c < 3; c++) {
+        const p = (xx: number, yy: number): number =>
+          xx < 0 || yy < 0 || xx >= W || yy >= H ? 0 : data[(yy * W + xx) * 3 + c]
+        out[o + c] = Math.round(
+          p(x0, y0) * (1 - ax) * (1 - ay) + p(x0 + 1, y0) * ax * (1 - ay) +
+          p(x0, y0 + 1) * (1 - ax) * ay + p(x0 + 1, y0 + 1) * ax * ay
+        )
       }
-    )
-    .resize(OUTPUT_SIZE, OUTPUT_SIZE)
-    .removeAlpha()
-    .raw()
-    .toBuffer()
-
-  return aligned
+    }
+  }
+  return out
 }
 
 /**
@@ -111,9 +92,10 @@ export async function cropFace(
   bbox: { x: number; y: number; w: number; h: number },
   outputSize: number = 80
 ): Promise<Buffer> {
-  const metadata = await sharp(imageBuffer).metadata()
-  const imgW = metadata.width || 1
-  const imgH = metadata.height || 1
+  // bbox 是在按 EXIF 摆正后的图上算的，这里也先摆正
+  const oriented = await sharp(imageBuffer).rotate().raw().toBuffer({ resolveWithObject: true })
+  const imgW = oriented.info.width || 1
+  const imgH = oriented.info.height || 1
 
   // bbox 是归一化坐标，加 padding
   const pad = 0.2
@@ -124,7 +106,8 @@ export async function cropFace(
 
   if (w <= 0 || h <= 0) return Buffer.alloc(0)
 
-  return sharp(imageBuffer)
+  const { width, height, channels } = oriented.info
+  return sharp(oriented.data, { raw: { width, height, channels } })
     .extract({ left: x, top: y, width: w, height: h })
     .resize(outputSize, outputSize, { fit: 'cover' })
     .jpeg({ quality: 85 })

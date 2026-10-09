@@ -7,7 +7,7 @@
 | `siglip2/` | 图文 CLIP（语义搜索） | ~190 MB | `npm run models:download siglip` |
 | `paddleocr/` | OCR（图内文字搜索） | ~12 MB | `npm run models:download paddleocr` |
 | `scrfd_2.5g_kps.onnx` | 人脸检测 | ~3 MB | 已随仓库 |
-| `mobilefacenet.onnx` | 人脸 embedding | ~5 MB | 已随仓库 |
+| `mobilefacenet.onnx` | 人脸 embedding（InsightFace w600k_mbf，512 维；权重仅限非商用） | ~13 MB | 已随仓库 |
 
 ## 首次准备
 

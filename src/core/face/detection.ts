@@ -5,6 +5,7 @@
 
 import * as ort from 'onnxruntime-node'
 import sharp from 'sharp'
+import type { RawImage } from './alignment'
 
 export interface DetectedFace {
   bbox: { x: number; y: number; w: number; h: number }  // 归一化坐标 0-1
@@ -34,7 +35,7 @@ export function isDetectionReady(): boolean {
 /**
  * 预处理图片为 SCRFD 输入格式
  */
-async function preprocessImage(imageBuffer: Buffer): Promise<{
+async function preprocessImage(img: RawImage): Promise<{
   tensor: ort.Tensor
   scale: number
   padW: number
@@ -42,9 +43,8 @@ async function preprocessImage(imageBuffer: Buffer): Promise<{
   origW: number
   origH: number
 }> {
-  const metadata = await sharp(imageBuffer).metadata()
-  const origW = metadata.width || 1
-  const origH = metadata.height || 1
+  const origW = img.width
+  const origH = img.height
 
   // 等比缩放到 INPUT_SIZE，保持宽高比
   const scale = Math.min(INPUT_SIZE / origW, INPUT_SIZE / origH)
@@ -54,7 +54,7 @@ async function preprocessImage(imageBuffer: Buffer): Promise<{
   const padH = INPUT_SIZE - newH
 
   // 缩放 + 填充
-  const raw = await sharp(imageBuffer)
+  const raw = await sharp(img.data, { raw: { width: origW, height: origH, channels: 3 } })
     .resize(newW, newH)
     .extend({
       top: 0,
@@ -135,10 +135,10 @@ function computeIoU(
 /**
  * 检测图片中的所有人脸
  */
-export async function detectFaces(imageBuffer: Buffer): Promise<DetectedFace[]> {
+export async function detectFaces(img: RawImage): Promise<DetectedFace[]> {
   if (!session) throw new Error('Detection model not initialized')
 
-  const { tensor, scale, origW, origH } = await preprocessImage(imageBuffer)
+  const { tensor, scale, origW, origH } = await preprocessImage(img)
 
   const feeds: Record<string, ort.Tensor> = {}
   const inputName = session.inputNames[0]

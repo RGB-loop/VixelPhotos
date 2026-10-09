@@ -1,5 +1,7 @@
 /**
- * MobileFaceNet 人脸 Embedding：128 维向量
+ * 人脸 Embedding：InsightFace buffalo_s 的 w600k_mbf（MobileFaceNet 骨干，WebFace600K 训练），
+ * 输入 112×112 对齐人脸，输出 512 维 L2 归一化向量。
+ * 模型许可：InsightFace 预训练权重仅限非商用。
  */
 
 import * as ort from 'onnxruntime-node'
@@ -20,7 +22,7 @@ export function isEmbeddingReady(): boolean {
 }
 
 /**
- * 从对齐的人脸 raw buffer (112×112×3 RGB) 生成 128D embedding
+ * 从对齐的人脸 raw buffer (112×112×3 RGB) 生成 512D embedding
  */
 export async function embedFace(alignedRawBuffer: Buffer): Promise<Float32Array> {
   if (!session) throw new Error('Face embedding model not initialized')

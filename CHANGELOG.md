@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
 
 ### Fixed
+- **Face alignment produced black images**, so every face got the same
+  embedding and people clustering was noise. Alignment is now a pure-JS
+  similarity warp on an EXIF-oriented decode shared with detection. Existing
+  faces / people are dropped and re-scanned once on upgrade
+  (`FACE_PIPELINE_VERSION = 2`).
 - Every launch re-queued and re-encoded all videos / audio from scratch
   (chokidar's initial scan fires `add` for every file). Unchanged media that
   was already scanned or is already queued is now skipped.

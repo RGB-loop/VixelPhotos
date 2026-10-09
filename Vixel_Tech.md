@@ -97,7 +97,7 @@
 | ONNX 运行时 | **onnxruntime-node + @huggingface/transformers** | CoreML / CPU EP；Transformers.js 负责 tokenizer + processor |
 | OCR（图内文字） | **PaddleOCR v5**（det + cls + rec ONNX） | RapidAI 社区导出；charset 用 ppocr_keys_v1 |
 | 人脸检测 | **SCRFD-2.5G-KPS**（InsightFace ONNX） | ~3 MB |
-| 人脸 embedding | **MobileFaceNet**（ONNX） | 128 维，L2 归一化 |
+| 人脸 embedding | **MobileFaceNet**（InsightFace w600k_mbf，ONNX） | 512 维，L2 归一化 |
 | 人脸聚类 | **sqlite-vec ANN** | 取代 v0.1 的 O(N) JS 余弦扫描 |
 | 视频 / 音频抽取 | **ffmpeg-static** | 32s 片段，每 4s 一帧（8 帧）+ mono 16 kHz 音轨；时长解析 `ffmpeg -i` stderr |
 | 向量存储 | **sqlite-vec**（vec0 虚表） | image_vecs(768) + video_segment_vecs(768) + face_vecs(128) |
@@ -231,8 +231,14 @@ index.ts → processPhotoOcr()
 | 组件 | 体积 | 来源 |
 |---|---|---|
 | SCRFD-2.5G-KPS（检测 + 5 关键点） | ~3 MB | InsightFace |
-| MobileFaceNet（embedding） | ~5 MB | InsightFace |
+| MobileFaceNet / w600k_mbf（embedding，512 维） | ~13 MB | InsightFace（权重非商用） |
 | 聚类 | (无模型) | sqlite-vec ANN，Immich 风格增量匹配 |
+
+对齐：解码一次（按 EXIF 摆正、限 2048 边长、统一 3 通道），检测与对齐共用这份 raw；
+对齐用 5 点最小二乘相似变换拟合"输出→输入"映射，JS 双线性采样出 112×112（< 1 ms）。
+不用 `sharp.affine`：它要正向矩阵，且 sharp 管线固定先 resize 后 affine——早期实现因此
+送进模型的是黑图，所有人 embedding 相似度都是 1.0。`FACE_PIPELINE_VERSION` 变化时启动会
+清空 faces / people 并重扫（只在用户扫过人脸时自动触发）。
 
 ```typescript
 // src/core/face/index.ts (简化)

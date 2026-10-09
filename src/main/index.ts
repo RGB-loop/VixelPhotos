@@ -9,7 +9,7 @@ import { FileWatcher } from '../core/watcher'
 import { Indexer } from '../core/indexer'
 import { SearchEngine, type SearchOptions } from '../core/search'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
-import { setFaceModelsDir, getFaceThumbnail } from '../core/face'
+import { setFaceModelsDir, getFaceThumbnail, FACE_PIPELINE_VERSION } from '../core/face'
 import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
@@ -146,6 +146,9 @@ async function initServices(): Promise<void> {
   db.pruneDoneTasks()
   db.requeueMissingEmbeddings()
 
+  // v2：修复对齐（之前送进模型的是黑图，embedding 全部无效）→ 清空重扫
+  const staleFaces = db.resetFacesIfStale(FACE_PIPELINE_VERSION)
+
   indexer = new Indexer(db, userDataPath)
   indexer.on('progress', (progress: IndexProgress) => {
     mainWindow?.webContents.send(IPC_CHANNELS.INDEX_PROGRESS, progress)
@@ -166,6 +169,11 @@ async function initServices(): Promise<void> {
   preloadJieba().catch(() => {})
   setTimeout(() => {
     indexer.preloadModels().catch(() => {})
+    // 用户扫过人脸才自动重扫；从没扫过的库保持手动触发
+    if (staleFaces > 0) {
+      console.log(`[face] pipeline upgraded, re-scanning (${staleFaces} stale faces dropped)`)
+      indexer.startFaceScan().catch((e) => console.warn('[face] re-scan failed:', e))
+    }
   }, 2000)
 
   // 启动备份调度器

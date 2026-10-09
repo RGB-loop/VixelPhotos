@@ -10,7 +10,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { initDetection, isDetectionReady, detectFaces } from './detection'
 import { initFaceEmbedding, isEmbeddingReady, embedFace } from './embedding'
-import { alignFace, cropFace } from './alignment'
+import { alignFace, cropFace, type RawImage } from './alignment'
 import { dot, l2ToCosineDistance } from './distance'
 import type { DatabaseInstance } from '../db'
 import type { FaceBbox } from '../../shared/types'
@@ -20,6 +20,9 @@ import sharp from 'sharp'
 // 余弦距离 = 1 - cosine_similarity，所以 0.6 对应相似度 0.4
 // Immich 默认 maxDistance ≈ 0.6
 const MAX_DISTANCE = 0.6
+
+/** 检测 / 对齐 / 模型任一变化导致旧 embedding 不可比时递增，启动时会清空重扫 */
+export const FACE_PIPELINE_VERSION = '2'
 
 let initialized = false
 let initializing = false
@@ -88,11 +91,8 @@ export async function processPhotoFaces(
     throw new Error('Face service not ready')
   }
 
-  const metadata = await sharp(imageBuffer).metadata()
-  const imgW = metadata.width || 1
-  const imgH = metadata.height || 1
-
-  const detected = await detectFaces(imageBuffer)
+  const img = await decodeForFaces(imageBuffer)
+  const detected = await detectFaces(img)
   if (detected.length === 0) return []
 
   const results: Array<{
@@ -105,7 +105,7 @@ export async function processPhotoFaces(
   for (let i = 0; i < detected.length; i++) {
     const face = detected[i]
     try {
-      const alignedRaw = await alignFace(imageBuffer, face.landmarks, imgW, imgH)
+      const alignedRaw = alignFace(img, face.landmarks)
       const embedding = await embedFace(alignedRaw)
       results.push({ faceIndex: i, bbox: face.bbox, confidence: face.confidence, embedding })
     } catch (e) {
@@ -114,6 +114,21 @@ export async function processPhotoFaces(
   }
 
   return results
+}
+
+// 检测只看 640 输入，对齐出 112×112：解码到 2048 足够，省掉 4800 万像素原图的内存和时间
+const FACE_DECODE_MAX = 2048
+
+/** 按 EXIF 摆正 + 限制尺寸 + 统一成 3 通道 sRGB（灰度图 raw 只有 1 通道） */
+export async function decodeForFaces(imageBuffer: Buffer): Promise<RawImage> {
+  const { data, info } = await sharp(imageBuffer)
+    .rotate()
+    .resize(FACE_DECODE_MAX, FACE_DECODE_MAX, { fit: 'inside', withoutEnlargement: true })
+    .removeAlpha()
+    .toColourspace('srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  return { data, width: info.width, height: info.height }
 }
 
 /**

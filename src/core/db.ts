@@ -295,6 +295,11 @@ export interface DatabaseInstance {
   clearFailedTasks: () => number
   /** done 行只是历史，启动时清掉，避免队列表无限增长 */
   pruneDoneTasks: () => number
+  /**
+   * 人脸流水线版本不符时清空 faces / face_vecs / people 并把图片 face_status 置回 pending。
+   * 返回清掉的旧人脸数（0 = 无需重扫）。
+   */
+  resetFacesIfStale: (version: string) => number
   getMediaDetail: (videoId: number) => MediaDetail | undefined
 
   // 照片统计
@@ -1261,6 +1266,20 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
     clearFailedTasks: (): number => stmts.clearFailedTasks.run().changes,
     pruneDoneTasks: (): number => stmts.pruneDoneTasks.run().changes,
+    resetFacesIfStale: (version: string): number => {
+      const key = 'face.pipeline'
+      const cur = (db.prepare(`SELECT value FROM meta_state WHERE key = ?`).get(key) as { value: string } | undefined)?.value
+      if (cur === version) return 0
+      const tx = db.transaction((): number => {
+        const n = (db.prepare(`SELECT COUNT(*) as n FROM faces`).get() as { n: number }).n
+        db.exec(`DELETE FROM face_vecs; DELETE FROM faces; DELETE FROM people;`)
+        db.prepare(`DELETE FROM index_queue WHERE task_type = 'face'`).run()
+        db.prepare(`UPDATE photos SET face_status = 'pending'`).run()
+        db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, ?)`).run(key, version)
+        return n
+      })
+      return tx()
+    },
     getMediaDetail: (videoId: number): MediaDetail | undefined => {
       const v = stmts.getVideoById.get(videoId) as VideoRecord | undefined
       if (!v || v.deletedAt) return undefined
