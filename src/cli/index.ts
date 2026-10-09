@@ -201,7 +201,8 @@ async function cmdSimilar(db: DatabaseInstance, positional: string[], flags: Rec
 
   const limit = Number(flags.limit) || 10
   const engine = new SearchEngine(db)
-  const results = engine.findSimilar(photo.fileHash, limit)
+  const minSim = flags['min-similarity'] !== undefined ? Number(flags['min-similarity']) : undefined
+  const results = engine.findSimilar(photo.fileHash, limit, minSim)
 
   if (flags.json) {
     output(results.map((r) => ({
@@ -361,6 +362,7 @@ Flags:
   --date-from <YYYY-MM-DD>    Filter by date
   --date-to <YYYY-MM-DD>      Filter by date
   --set <text>                 Set caption text
+  --min-similarity <0..1>      similar: cosine threshold (default 0.8)
   --runs <n>                   bench: repetitions per operation (default 5)
   --query <a,b,c>              bench: comma-separated search queries
 

@@ -24,6 +24,16 @@ interface TextSearchResult {
   score: number
 }
 
+/**
+ * "相似"的最低余弦相似度：先按它过滤，再截取条数，不够就少给、一张都没有就不展示。
+ * EmbeddingGemma 2 图片向量的基线偏高：实测随机不相关图片 0.57–0.68，同场景 / 连拍 0.85+，
+ * 近似帧 0.95+。0.80 能挡住"只是凑数的最近邻"，又不至于把同主题的照片漏掉。
+ */
+export const SIMILAR_MIN_COSINE = 0.8
+
+/** vec0 默认 L2 距离；向量已 L2 归一化，余弦相似度 = 1 − d²/2 */
+export const l2ToCosine = (distance: number): number => 1 - (distance * distance) / 2
+
 export interface SearchOptions {
   dateFrom?: string
   dateTo?: string
@@ -147,13 +157,16 @@ export class SearchEngine {
     }
   }
 
-  findSimilar(fileHash: string, limit: number = 12): SearchResult[] {
+  findSimilar(fileHash: string, limit: number = 12, minCosine: number = SIMILAR_MIN_COSINE): SearchResult[] {
     // 取超采，因为下面会按 hash + video 去重，可能丢一部分
     const results = this.db.findSimilar(fileHash, limit * 3)
     const photos: SearchResult[] = []
     const seenHashes = new Set<string>([fileHash]) // 排除查询本身
     const seenVideos = new Set<number>()
     for (const { fileHash: hash, distance } of results) {
+      const similarity = l2ToCosine(distance)
+      // KNN 按距离升序：第一个低于门槛的之后全都更低
+      if (similarity < minCosine) break
       if (seenHashes.has(hash)) continue
       seenHashes.add(hash)
       const photo = this.db.getRepresentativeByHash(hash)
@@ -162,7 +175,7 @@ export class SearchEngine {
           if (seenVideos.has(photo.videoId)) continue
           seenVideos.add(photo.videoId)
         }
-        photos.push({ photo, score: 1 - distance })
+        photos.push({ photo, score: similarity })
         if (photos.length >= limit) break
       }
     }
