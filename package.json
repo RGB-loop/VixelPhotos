@@ -20,7 +20,7 @@
     "preview": "electron-vite preview",
     "package": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "build:cli": "tsc -p tsconfig.cli.json",
     "cli": "npm run build:cli && npx electron dist/cli/cli/index.js",
     "models:download": "node scripts/download-models.mjs",
