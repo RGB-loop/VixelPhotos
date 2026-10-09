@@ -9,17 +9,19 @@
 
 *AI-powered local search for photos, videos and audio. Private. Fast. No cloud.*
 
-<a href="https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4">
-  <img src="docs/media/hero.gif" width="860" alt="Vixel 语义搜索演示" />
-</a>
+</div>
 
-▶ [下载完整宣传片（66 秒 · 1080p · 含配乐 · 5.9 MB）](https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4)
+https://github.com/user-attachments/assets/6515e6f5-d4b6-4b27-9122-9d113374b2d9
 
+<div align="center">
+<sub>66 秒宣传片 · 1080p · 原创配乐 · <a href="https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4">下载 mp4</a></sub>
 </div>
 
 ---
 
 ## 它能做什么
+
+<p align="center"><img src="docs/media/hero.gif" width="860" alt="Vixel 语义搜索演示" /></p>
 
 ### 自然语言搜索
 输入"海边的日落""宝宝第一次走路"，直接找到对应的照片和视频片段。
