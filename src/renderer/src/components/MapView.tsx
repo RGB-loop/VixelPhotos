@@ -198,7 +198,7 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
       <div className="h-full flex items-center justify-center bg-canvas">
         <div className="text-center">
           <p className="text-bad/60 text-body">地图加载失败</p>
-          <p className="text-ink-4 text-callout mt-1">{error}</p>
+          <p className="text-ink-3 text-callout mt-1">{error}</p>
         </div>
       </div>
     )
@@ -213,7 +213,7 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
           <p className="text-ink-3 text-body">暂无带位置信息的内容</p>
-          <p className="text-ink-4 text-callout mt-1">手机拍摄的图片和视频通常包含 GPS 数据</p>
+          <p className="text-ink-3 text-callout mt-1">手机拍摄的图片和视频通常包含 GPS 数据</p>
         </div>
       </div>
     )

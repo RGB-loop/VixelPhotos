@@ -82,6 +82,7 @@ function App(): JSX.Element {
   const [focusId, setFocusId] = useState<number | null>(null)
   const anchorId = useRef<number | null>(null)
   const cols = useRef(4)
+  const rowsPerPage = useRef(4)
   const [quickLookId, setQuickLookId] = useState<number | null>(null)
   // 新搜索 / 换来源时 +1，驱动网格滚回顶部
   const [scrollResetKey, setScrollResetKey] = useState(0)
@@ -100,7 +101,12 @@ function App(): JSX.Element {
   const toggleDensity = useCallback(() => {
     setDensityOverride(density === 'info' ? 'immersive' : 'info')
   }, [density])
-  useEffect(() => { setDensityOverride(null) }, [query, source])
+  // 来源按内容签名比较：重复点击同一侧栏项（对象引用变了）不应重置密度
+  const sourceKey = source.type === 'library' ? `library:${source.kind}`
+    : source.type === 'folder' ? `folder:${source.id}`
+    : source.type === 'similar' ? `similar:${source.photoId}`
+    : source.type
+  useEffect(() => { setDensityOverride(null) }, [query, sourceKey])
   const isGrid = source.type === 'library' || source.type === 'folder' || source.type === 'similar'
 
   // 查询条件放 ref：索引进度刷新等所有 doSearch 调用都自动带上当前来源 + 日期，
@@ -312,12 +318,22 @@ function App(): JSX.Element {
     setSelected(r)
   }, [selectOnly])
 
-  /** 方向键移动焦点；extend = ⇧ 从锚点扩展选择 */
+  /** 方向键 / Home / End / PageUp / PageDown 移动焦点；extend = ⇧ 从锚点扩展选择 */
   const moveFocus = useCallback((key: string, extend: boolean) => {
     const { searchResults: rs, focusIndex: fi, idIndex: map } = live.current
     if (rs.length === 0) return
-    const step = key === 'ArrowLeft' ? -1 : key === 'ArrowRight' ? 1 : key === 'ArrowUp' ? -cols.current : cols.current
-    const next = fi < 0 ? 0 : Math.min(rs.length - 1, Math.max(0, fi + step))
+    let next: number
+    if (key === 'Home') next = 0
+    else if (key === 'End') next = rs.length - 1
+    else {
+      const page = cols.current * rowsPerPage.current
+      const step = key === 'ArrowLeft' ? -1
+        : key === 'ArrowRight' ? 1
+        : key === 'ArrowUp' ? -cols.current
+        : key === 'ArrowDown' ? cols.current
+        : key === 'PageUp' ? -page : page
+      next = fi < 0 ? 0 : Math.min(rs.length - 1, Math.max(0, fi + step))
+    }
     const id = rs[next].photo.id
     if (extend && anchorId.current != null) {
       const a = map.get(anchorId.current) ?? next
@@ -339,7 +355,10 @@ function App(): JSX.Element {
     setSelectedIds(new Set(rs.map((r) => r.photo.id)))
   }, [])
 
-  const handleColsChange = useCallback((n: number) => { cols.current = n }, [])
+  const handleColsChange = useCallback((n: number, rows: number) => {
+    cols.current = n
+    rowsPerPage.current = rows
+  }, [])
 
   // ---------- 项目操作（右键菜单 / 菜单栏 / 检查器共用） ----------
   const revealItems = useCallback(async (items: SearchResult[]) => {
@@ -492,7 +511,8 @@ function App(): JSX.Element {
     }
     if (!isGrid || selected || showTasks) return
     if (isTextInput(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown'
+      || e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown') {
       e.preventDefault()
       moveFocus(e.key, e.shiftKey)
     } else if (e.key === ' ') {
@@ -719,7 +739,7 @@ function EmptyState({ icon, title, hint, action }: {
       <div className="max-w-xs text-center animate-fade-in">
         <Icon name={icon} className="w-10 h-10 mx-auto mb-3 text-ink-ghost" />
         <p className="text-ink-2 text-body">{title}</p>
-        <p className="text-ink-4 text-callout mt-1.5">{hint}</p>
+        <p className="text-ink-3 text-callout mt-1.5">{hint}</p>
         {action && (
           <button
             onClick={action.onClick}

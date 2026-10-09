@@ -20,8 +20,8 @@ interface PhotoGridProps {
   onItemClick: (index: number, e: React.MouseEvent) => void
   onItemOpen: (index: number) => void
   onItemContextMenu: (index: number, e: React.MouseEvent) => void
-  /** 上报列数：方向键 ↑ ↓ 按行移动要用 */
-  onColsChange: (cols: number) => void
+  /** 上报列数与每屏行数：方向键 ↑ ↓ 按行、PageUp/Down 按屏移动要用 */
+  onColsChange: (cols: number, rowsPerPage: number) => void
   /** 点在卡片之外的空白处：取消选择 */
   onBackgroundClick: () => void
   /** 用户滚动了网格（索引刷新用它避开滚动中的重拉） */
@@ -95,7 +95,9 @@ export function PhotoGrid({
     }
   }, [cols, cellSize])
 
-  useEffect(() => { onColsChange(cols) }, [cols, onColsChange])
+  useEffect(() => {
+    onColsChange(cols, cellSize > 0 ? Math.max(1, Math.floor(size.h / cellSize)) : 1)
+  }, [cols, cellSize, size.h, onColsChange])
 
   // 新搜索：滚回顶部（挂载时也执行一次，无害）
   useEffect(() => {
@@ -135,6 +137,9 @@ export function PhotoGrid({
   return (
     <div
       ref={containerRef}
+      role="listbox"
+      aria-multiselectable="true"
+      aria-label="内容网格"
       className="h-full overflow-hidden"
       style={{ padding: gap / 2 }}
       onClick={(e) => { if (!(e.target as HTMLElement).closest('.photo-card')) onBackgroundClick() }}

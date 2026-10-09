@@ -116,7 +116,7 @@ export function MediaPlayer({ media, posterPhotoId, posterHash, hit, onResolutio
             currentMs={currentMs}
             onSeek={seek}
           />
-          <p className="mt-1.5 text-micro text-ink-4 text-center">Space 播放/暂停 · J / L 后退/前进 10 秒 · M 静音</p>
+          <p className="mt-1.5 text-micro text-ink-3 text-center">Space 播放/暂停 · J / L 后退/前进 10 秒 · M 静音</p>
         </div>
       )}
     </div>

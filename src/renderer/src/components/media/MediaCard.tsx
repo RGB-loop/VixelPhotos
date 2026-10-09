@@ -102,6 +102,9 @@ export const MediaCard = memo(function MediaCard({
   return (
     <div
       className="photo-card relative w-full h-full rounded-lg overflow-hidden cursor-default bg-surface-2 group"
+      role="option"
+      aria-selected={selected}
+      aria-label={photo.fileName}
       onClick={(e) => onClick(index, e)}
       onDoubleClick={() => onDoubleClick(index)}
       onContextMenu={(e) => onContextMenu(index, e)}

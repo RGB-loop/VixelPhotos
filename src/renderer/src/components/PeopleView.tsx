@@ -205,7 +205,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
           <span className="text-callout text-ink-3">{shown.length}</span>
           <span className="flex-1" />
           {!showHidden && (
-            <span className="text-micro text-ink-4">双击名字命名 · ⌘ 点击多选 · 拖到另一人上合并</span>
+            <span className="text-micro text-ink-3">双击名字命名 · ⌘ 点击多选 · 拖到另一人上合并</span>
           )}
           {(hidden.length > 0 || showHidden) && (
             <button
@@ -238,7 +238,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
 
         {!scanning && !showHidden && (
           <div className="text-center mt-6">
-            <button onClick={handleStartScan} className="text-micro text-ink-4 hover:text-ink-3">
+            <button onClick={handleStartScan} className="text-micro text-ink-3 hover:text-ink-2">
               扫描新照片中的人脸
             </button>
           </div>
@@ -411,7 +411,7 @@ function PersonCard({ person, selected, onOpen, onToggleSelect, onRename, onDrop
         }`}
       />
       <EditableName name={person.name} onSave={onRename} className="text-callout" />
-      <p className="text-center text-micro text-ink-4 mt-0.5">{person.photoCount} 张图片</p>
+      <p className="text-center text-micro text-ink-3 mt-0.5">{person.photoCount} 张图片</p>
     </div>
   )
 }

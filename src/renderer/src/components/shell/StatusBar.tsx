@@ -52,6 +52,23 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
     if (progress?.paused !== undefined) setPaused(progress.paused)
   }, [progress?.paused])
 
+  // 语义模型缺失 / 初始化失败时在主窗口给出可见入口，而不是搜索静默无结果
+  const [modelIssue, setModelIssue] = useState<string | null>(null)
+  useEffect(() => {
+    window.api.getModelStatus().then((s) => {
+      setModelIssue(
+        s.initError ? '语义模型初始化失败'
+          : !s.localModelExists ? '语义模型缺失'
+          : !s.embeddingReady ? '语义模型未就绪'
+          : null
+      )
+    }).catch(() => {})
+  }, [])
+  // progress 事件带模型就绪位：就绪后自动清掉提示
+  useEffect(() => {
+    if (progress?.aiModelReady) setModelIssue(null)
+  }, [progress?.aiModelReady])
+
   const togglePause = (): void => {
     window.api.setIndexPaused(!paused).then(setPaused).catch(() => {})
   }
@@ -89,9 +106,19 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
             )}
           </>
         ) : (
-          <span className="text-ink-4">{itemCount > 0 ? '索引已是最新' : '添加文件夹开始使用'}</span>
+          <span className="text-ink-3">{itemCount > 0 ? '索引已是最新' : '添加文件夹开始使用'}</span>
         )}
       </button>
+
+      {modelIssue && (
+        <button
+          onClick={() => window.api.openSettings()}
+          title="语义搜索暂不可用，点击打开设置查看模型状态"
+          className="flex-shrink-0 px-1.5 rounded bg-warn/10 text-warn/80 hover:bg-warn/20 transition-colors duration-fast"
+        >
+          {modelIssue} · 设置
+        </button>
+      )}
 
       {errorCount > 0 && (
         <button

@@ -77,6 +77,9 @@ export function PhotoDetail({ result, siblings, onSelect, onClose }: PhotoDetail
   return (
     <div
       className="theme-dark fixed inset-0 bg-black/95 text-ink flex animate-fade-in modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={photo.fileName}
       onClick={handleBackdropClick}
     >
       {/* 图片预览区域 */}

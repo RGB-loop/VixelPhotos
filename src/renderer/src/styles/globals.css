@@ -130,6 +130,12 @@ body {
   color: var(--ink);
 }
 
+/* 键盘焦点：统一的强调色描边（仅 :focus-visible，鼠标点击不出现） */
+:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.9);
+  outline-offset: 1px;
+}
+
 /* macOS 标题栏拖拽区域 */
 .titlebar {
   -webkit-app-region: drag;

@@ -110,7 +110,12 @@ export function TaskDrawer({ open, onClose, progress }: TaskDrawerProps): JSX.El
   return (
     <>
       <div className="fixed inset-0 z-30 bg-black/30 animate-fade-in" onClick={onClose} />
-      <div className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-raised border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up">
+      <div
+        className="fixed inset-x-0 bottom-0 z-40 h-[55vh] bg-raised border-t border-line-strong rounded-t-xl shadow-2xl flex flex-col animate-slide-up"
+        role="dialog"
+        aria-modal="true"
+        aria-label="活动"
+      >
         {/* 头部 */}
         <div className="flex items-center gap-3 px-5 h-11 border-b border-line flex-shrink-0">
           <h2 className="text-body font-medium text-ink">活动</h2>

@@ -145,7 +145,7 @@ export function Sidebar({
           }
         >
           {folders.length === 0 ? (
-            <p className="px-2 py-1 text-caption text-ink-4">还没有文件夹</p>
+            <p className="px-2 py-1 text-caption text-ink-3">还没有文件夹</p>
           ) : (
             folders.map((f) => (
               <Row
@@ -202,8 +202,15 @@ function Row({ icon, label, active, onClick, count, hint, title, muted, onRemove
   return (
     <div
       role="button"
-      tabIndex={-1}
+      tabIndex={0}
+      aria-current={active || undefined}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      }}
       title={title ?? (hint ? `${label} (${hint})` : label)}
       className={`group/row h-7 px-2 rounded-md flex items-center gap-2 text-body text-left cursor-default transition-colors duration-fast ${
         active ? 'bg-accent-fill text-ink' : `${muted ? 'text-ink-3' : 'text-ink-2'} hover:bg-fill hover:text-ink`
