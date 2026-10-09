@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import type { Photo } from '../../../shared/types'
 import { useColorScheme } from '../lib/theme'
+import { thumbUrl } from '../lib/mediaUrl'
 
 const tileUrl = (scheme: 'dark' | 'light'): string =>
   `https://{s}.basemaps.cartocdn.com/${scheme === 'dark' ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png`
@@ -54,7 +55,6 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
     if (mapInstanceRef.current) return
 
     let cancelled = false
-    const thumbCache = new Map<number, string>()
 
     const initMap = async () => {
       try {
@@ -108,62 +108,48 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
           iconAnchor: L.point(6, 6),
         })
 
-        // 构建 popup HTML
-        const makePopupHtml = (photo: Photo, thumbSrc?: string) => {
-          const dateStr = photo.takenAt
-            ? new Date(photo.takenAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-            : ''
-          const thumbHtml = thumbSrc
-            ? `<img src="${thumbSrc}" style="width:180px;border-radius:6px;object-fit:cover;" />`
-            : '<div style="width:180px;height:120px;background:var(--surface-2);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--ink-4);font-size:11px;">加载中...</div>'
-          return `
-            <div style="cursor:pointer;width:180px;">
-              <div class="popup-thumb-${photo.id}">${thumbHtml}</div>
-              <div style="font-size:11px;color:var(--ink);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${photo.fileName}</div>
-              ${dateStr ? `<div style="font-size:10px;color:var(--ink-3);margin-top:2px;">${dateStr}</div>` : ''}
-              <div style="font-size:10px;color:rgb(var(--accent));margin-top:4px;">点击查看详情 →</div>
-            </div>`
+        // popup 内容用 DOM 构建（fileName 是用户数据，textContent 防注入）；
+        // 缩略图直接走 vixel://thumb 协议，不再经 base64 IPC
+        const makePopupEl = (photo: Photo): HTMLElement => {
+          const root = document.createElement('div')
+          root.style.cssText = 'cursor:pointer;width:180px;'
+          const img = document.createElement('img')
+          img.src = thumbUrl(photo)
+          img.decoding = 'async'
+          img.style.cssText = 'width:180px;border-radius:6px;object-fit:cover;'
+          root.appendChild(img)
+          const name = document.createElement('div')
+          name.style.cssText = 'font-size:11px;color:var(--ink);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+          name.textContent = photo.fileName
+          root.appendChild(name)
+          if (photo.takenAt) {
+            const date = document.createElement('div')
+            date.style.cssText = 'font-size:10px;color:var(--ink-3);margin-top:2px;'
+            date.textContent = new Date(photo.takenAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+            root.appendChild(date)
+          }
+          const hint = document.createElement('div')
+          hint.style.cssText = 'font-size:10px;color:rgb(var(--accent));margin-top:4px;'
+          hint.textContent = '点击查看详情 →'
+          root.appendChild(hint)
+          root.onclick = (e) => {
+            e.stopPropagation()
+            map.closePopup()
+            onSelectRef.current(photo)
+          }
+          return root
         }
-
-        // photoId → photo 映射
-        const photoMap = new Map<number, Photo>()
 
         for (const photo of gpsPhotos) {
           if (photo.lat == null || photo.lng == null) continue
-          photoMap.set(photo.id, photo)
 
           const marker = L.marker([photo.lat, photo.lng], { icon: photoIcon })
 
-          // 一次性绑定 popup（不在 click 里重复 bind）
-          const popup = L.popup({
+          // 内容函数在 popup 打开时才构建 DOM，两万个点也不会预先建节点
+          marker.bindPopup(() => makePopupEl(photo), {
             className: 'dark-popup',
             closeButton: false,
             offset: L.point(0, -4),
-          }).setContent(makePopupHtml(photo, thumbCache.get(photo.id)))
-
-          marker.bindPopup(popup)
-
-          // popup 打开时按需加载缩略图 + 绑定点击
-          marker.on('popupopen', async () => {
-            // 绑定点击事件
-            const popupEl = popup.getElement()
-            if (popupEl) {
-              popupEl.style.cursor = 'pointer'
-              popupEl.onclick = (e) => {
-                e.stopPropagation()
-                map.closePopup()
-                onSelectRef.current(photo)
-              }
-            }
-
-            // 按需加载缩略图
-            if (!thumbCache.has(photo.id)) {
-              const thumb = await window.api.getThumbnailData(photo.id)
-              if (thumb) {
-                thumbCache.set(photo.id, thumb)
-                popup.setContent(makePopupHtml(photo, thumb))
-              }
-            }
           })
 
           clusterGroup.addLayer(marker)

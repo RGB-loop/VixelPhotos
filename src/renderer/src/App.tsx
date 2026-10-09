@@ -76,6 +76,8 @@ function App(): JSX.Element {
   const anchorId = useRef<number | null>(null)
   const cols = useRef(4)
   const [quickLookId, setQuickLookId] = useState<number | null>(null)
+  // 新搜索 / 换来源时 +1，驱动网格滚回顶部
+  const [scrollResetKey, setScrollResetKey] = useState(0)
   // 检查器跟随选择出现：inspectorAuto 是 ⌘I 切换的长期偏好（选中时是否自动弹出），
   // inspectorDismissed 是点 × 的一次性收起，下次点选项目时复位
   const [inspectorAuto, setInspectorAuto] = useState(() => {
@@ -163,12 +165,18 @@ function App(): JSX.Element {
     setSelectedIds(new Set())
     setFocusId(null)
     anchorId.current = null
+    setScrollResetKey((k) => k + 1)
     if (next.type === 'library' || next.type === 'folder' || next.type === 'similar') runSearch()
   }, [runSearch])
 
   const handleSearch = useCallback((q: string) => {
     setQuery(q)
     filters.current = { ...filters.current, query: q }
+    // 新查询：选择 / 焦点都是上一个结果集的，清掉并滚回顶部
+    setSelectedIds(new Set())
+    setFocusId(null)
+    anchorId.current = null
+    setScrollResetKey((k) => k + 1)
     // 在地图 / 人物 / 相似里输入查询：回到当前资料库
     const t = filters.current.source.type
     if (q.trim() && (t === 'map' || t === 'people' || t === 'similar')) {
@@ -460,8 +468,10 @@ function App(): JSX.Element {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
+        // 输入框里的 Esc 留给输入框自己（取消编辑 / 清空搜索），不关浮层不丢文本
+        if (isTextInput(e.target)) return
         if (selected) setSelected(null)
-        else if (!showTasks && selectedIds.size > 0 && !isTextInput(e.target)) clearSelection()
+        else if (!showTasks && selectedIds.size > 0) clearSelection()
         return
       }
       if (!isGrid || selected || showTasks) return
@@ -591,6 +601,7 @@ function App(): JSX.Element {
               thumbSize={thumbSize}
               selectedIds={selectedIds}
               focusIndex={focusIndex}
+              scrollResetKey={scrollResetKey}
               onItemClick={handleItemClick}
               onItemOpen={handleItemOpen}
               onItemContextMenu={handleItemContextMenu}

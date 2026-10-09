@@ -101,6 +101,13 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
               <textarea
                 value={editCaption}
                 onChange={(e) => setEditCaption(e.target.value)}
+                onKeyDown={(e) => {
+                  // Esc 只取消编辑，不冒泡到 App 关掉详情 / 清空选择
+                  if (e.key === 'Escape') {
+                    e.stopPropagation()
+                    setIsEditingCaption(false)
+                  }
+                }}
                 className="w-full bg-fill border border-line-strong rounded-md p-1.5 text-ink text-callout resize-none focus:outline-none focus:border-accent/50"
                 rows={3}
                 autoFocus
@@ -278,10 +285,12 @@ function Section({ title, action, children }: { title: string; action?: React.Re
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+  // 截断的长值悬停能看全：纯文本内容直接作 tooltip
+  const title = typeof children === 'string' || typeof children === 'number' ? String(children) : undefined
   return (
     <div className="flex justify-between gap-3">
       <dt className="text-ink-3 flex-shrink-0">{label}</dt>
-      <dd className="text-ink-2 tabular-nums text-right truncate">{children}</dd>
+      <dd className="text-ink-2 tabular-nums text-right truncate" title={title}>{children}</dd>
     </div>
   )
 }

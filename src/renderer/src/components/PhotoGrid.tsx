@@ -15,6 +15,8 @@ interface PhotoGridProps {
   selectedIds: Set<number>
   /** 键盘焦点所在 index；变化时滚动到可见 */
   focusIndex: number
+  /** 新搜索 / 换来源时变化：滚回顶部 */
+  scrollResetKey?: number
   onItemClick: (index: number, e: React.MouseEvent) => void
   onItemOpen: (index: number) => void
   onItemContextMenu: (index: number, e: React.MouseEvent) => void
@@ -25,7 +27,7 @@ interface PhotoGridProps {
 }
 
 export function PhotoGrid({
-  results, isSearching, density, thumbSize, selectedIds, focusIndex,
+  results, isSearching, density, thumbSize, selectedIds, focusIndex, scrollResetKey,
   onItemClick, onItemOpen, onItemContextMenu, onColsChange, onBackgroundClick,
 }: PhotoGridProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -78,6 +80,12 @@ export function PhotoGrid({
   }, [layoutKey])
 
   useEffect(() => { onColsChange(cols) }, [cols, onColsChange])
+
+  // 新搜索：滚回顶部（挂载时也执行一次，无害）
+  useEffect(() => {
+    scrollTop.current = 0
+    gridRef.current?.scrollTo({ scrollLeft: 0, scrollTop: 0 })
+  }, [scrollResetKey])
 
   useEffect(() => {
     if (focusIndex < 0 || !gridRef.current) return

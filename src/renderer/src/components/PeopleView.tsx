@@ -53,18 +53,30 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
 
   useEffect(() => {
     loadPeople()
-    // 后台聚类改动了人物：稍微合并一下刷新
+    // 后台聚类改动了人物：稍微合并一下刷新；人物开始出现即收起扫描横幅
     let t: ReturnType<typeof setTimeout> | null = null
     const off = window.api.onPeopleChanged(() => {
+      setScanning(false)
       if (t) clearTimeout(t)
       t = setTimeout(loadPeople, 500)
     })
     return () => { off(); if (t) clearTimeout(t) }
   }, [loadPeople])
 
+  // 扫描横幅事件驱动：索引队列回到空闲说明人脸任务都跑完了
+  useEffect(() => {
+    if (!scanning) return
+    return window.api.onIndexProgress((p) => {
+      if (p.stage === 'idle') setScanning(false)
+    })
+  }, [scanning])
+
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => clearTimeout(flashTimer.current), [])
   const flash = (msg: string): void => {
     setNotice(msg)
-    setTimeout(() => setNotice((m) => (m === msg ? '' : m)), 2500)
+    clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => setNotice((m) => (m === msg ? '' : m)), 2500)
   }
 
   const handleStartScan = async (): Promise<void> => {
@@ -78,7 +90,6 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
         return
       }
       setScanProgress(`已入队 ${result.queued} 张图片，识别出的人物会陆续出现`)
-      setTimeout(() => setScanning(false), 15000)
     } catch (e) {
       setScanProgress(`扫描失败: ${e}`)
       setScanning(false)
