@@ -424,6 +424,11 @@ export class Indexer extends EventEmitter {
     }
   }
 
+  /** 诊断用：当前任务的简短描述 */
+  currentTaskLabel(): string | undefined {
+    return this.current ? `${this.current.taskType} ${this.current.name}` : undefined
+  }
+
   /** 公开的进度发射（供 watcher 调用） */
   emitProgressPublic(): void {
     this.emitProgress(this.isProcessing ? 'indexing' : 'idle', this.current?.name)

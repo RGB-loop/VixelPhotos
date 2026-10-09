@@ -20,6 +20,7 @@ import { ensureSprite } from '../core/video/sprite'
 import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { InferenceProcess } from './inference-client'
+import { timed, watchEventLoop, perfSnapshot, PROFILE } from '../core/perf'
 import { setInferenceTransport } from '../core/inference/transport'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
@@ -200,6 +201,9 @@ async function initServices(): Promise<void> {
     }
   }, 2000)
 
+  // VIXEL_PROFILE=1：主进程事件循环被同步工作占住 > 50ms 时打印，带上当前索引任务
+  watchEventLoop('main', () => indexer.currentTaskLabel())
+
   // 启动备份调度器
   scheduleBackups()
 }
@@ -303,22 +307,26 @@ async function immutable(res: Response): Promise<Response> {
 }
 
 function registerIpcHandlers(): void {
+  // VIXEL_PROFILE=1 时每个 handler 计时：主进程同步工作 > 16ms 就会让界面掉帧
+  const handle = (channel: string, fn: Parameters<typeof ipcMain.handle>[1]): void =>
+    ipcMain.handle(channel, timed('ipc', channel, fn))
+
   // 搜索
-  ipcMain.handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: SearchOptions) => {
+  handle(IPC_CHANNELS.SEARCH, async (_event, query: string, limit?: number, options?: SearchOptions) => {
     return searchEngine.search(query, limit, options)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PHOTOS_WITH_GPS, async () => {
+  handle(IPC_CHANNELS.GET_PHOTOS_WITH_GPS, async () => {
     return db.getPhotosWithGPS()
   })
 
-  ipcMain.handle(IPC_CHANNELS.FIND_SIMILAR, async (_event, photoId: number, limit?: number) => {
+  handle(IPC_CHANNELS.FIND_SIMILAR, async (_event, photoId: number, limit?: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return searchEngine.findSimilar(photo.fileHash, limit || 12)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SELECT_FOLDER, async () => {
+  handle(IPC_CHANNELS.SELECT_FOLDER, async () => {
     const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow!, {
       properties: ['openDirectory'],
     })
@@ -326,14 +334,14 @@ function registerIpcHandlers(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle(IPC_CHANNELS.ADD_FOLDER, async (_event, folderPath: string) => {
+  handle(IPC_CHANNELS.ADD_FOLDER, async (_event, folderPath: string) => {
     const folder = db.addFolder(folderPath)
     watcher.watchFolder(folder.id, folder.path)
     broadcastLibraryChanged()
     return folder
   })
 
-  ipcMain.handle(IPC_CHANNELS.REMOVE_FOLDER, async (_event, folderId: number) => {
+  handle(IPC_CHANNELS.REMOVE_FOLDER, async (_event, folderId: number) => {
     const folder = db.getFolder(folderId)
     if (folder) {
       watcher.unwatchFolder(folderId)
@@ -360,70 +368,70 @@ function registerIpcHandlers(): void {
     return true
   })
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_SETTINGS, async () => openSettingsWindow())
+  handle(IPC_CHANNELS.OPEN_SETTINGS, async () => openSettingsWindow())
 
-  ipcMain.handle(IPC_CHANNELS.GET_THEME, async () => loadTheme())
+  handle(IPC_CHANNELS.GET_THEME, async () => loadTheme())
 
-  ipcMain.handle(IPC_CHANNELS.SET_THEME, async (_event, mode: ThemeMode) => {
+  handle(IPC_CHANNELS.SET_THEME, async (_event, mode: ThemeMode) => {
     const next: ThemeMode = mode === 'light' || mode === 'dark' ? mode : 'system'
     db.setMetaState(META_KEY_THEME, next)
     applyTheme(next)
     return next
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_INDEX_PAUSED, async () => {
+  handle(IPC_CHANNELS.GET_INDEX_PAUSED, async () => {
     return indexer.isPaused()
   })
 
-  ipcMain.handle(IPC_CHANNELS.SET_INDEX_PAUSED, async (_event, paused: boolean) => {
+  handle(IPC_CHANNELS.SET_INDEX_PAUSED, async (_event, paused: boolean) => {
     indexer.setPaused(paused)
     return indexer.isPaused()
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_TASK_OVERVIEW, async () => {
+  handle(IPC_CHANNELS.GET_TASK_OVERVIEW, async () => {
     return db.getTaskOverview()
   })
 
-  ipcMain.handle(IPC_CHANNELS.RETRY_FAILED_TASKS, async (_event, ids?: number[]) => {
+  handle(IPC_CHANNELS.RETRY_FAILED_TASKS, async (_event, ids?: number[]) => {
     const n = db.retryFailedTasks(ids)
     if (n > 0) indexer.processNext()
     indexer.emitProgressPublic()
     return n
   })
 
-  ipcMain.handle(IPC_CHANNELS.CLEAR_FAILED_TASKS, async () => {
+  handle(IPC_CHANNELS.CLEAR_FAILED_TASKS, async () => {
     const n = db.clearFailedTasks()
     indexer.emitProgressPublic()
     return n
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_MEDIA_DETAIL, async (_event, videoId: number) => {
+  handle(IPC_CHANNELS.GET_MEDIA_DETAIL, async (_event, videoId: number) => {
     return db.getMediaDetail(videoId) ?? null
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_FOLDERS, async () => {
+  handle(IPC_CHANNELS.GET_FOLDERS, async () => {
     return db.getFoldersWithStats()
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_LIBRARY_COUNTS, async () => {
+  handle(IPC_CHANNELS.GET_LIBRARY_COUNTS, async () => {
     return db.getLibraryCounts()
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_FOLDER_STATS, async (_event, folderId: number) => {
+  handle(IPC_CHANNELS.GET_FOLDER_STATS, async (_event, folderId: number) => {
     return db.getFolderStats(folderId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PHOTO_DETAIL, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_PHOTO_DETAIL, async (_event, photoId: number) => {
     return db.getPhotoDetail(photoId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_THUMBNAIL, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return null
     return indexer.getThumbnailPath(photo.fileHash)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return null
     try {
@@ -433,13 +441,13 @@ function registerIpcHandlers(): void {
     } catch { return null }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PHOTO_LOCATIONS, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_PHOTO_LOCATIONS, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return db.getPhotoLocations(photo.fileHash)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_FULL_IMAGE_DATA, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_FULL_IMAGE_DATA, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo || !photo.filePath || !existsSync(photo.filePath)) {
       return null
@@ -450,22 +458,22 @@ function registerIpcHandlers(): void {
     return `data:${mimeType};base64,${buffer.toString('base64')}`
   })
 
-  ipcMain.handle(IPC_CHANNELS.SHOW_ITEM_MENU, async (event, opts: { count: number; isMedia: boolean }) => {
+  handle(IPC_CHANNELS.SHOW_ITEM_MENU, async (event, opts: { count: number; isMedia: boolean }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     return win ? popupItemMenu(win, opts) : null
   })
 
-  ipcMain.handle(IPC_CHANNELS.SHOW_IN_FINDER, async (_event, filePath: string) => {
+  handle(IPC_CHANNELS.SHOW_IN_FINDER, async (_event, filePath: string) => {
     shell.showItemInFolder(filePath)
     return true
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_APP_PATH, async () => {
+  handle(IPC_CHANNELS.GET_APP_PATH, async () => {
     return app.getPath('userData')
   })
 
   // 模型状态（EmbeddingGemma 2 本地模型）
-  ipcMain.handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
+  handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
     const embeddingService = getEmbeddingService()
     const config = embeddingService.getConfig()
     const gemma2Dir = join(bundledModelsDir, config.modelDirName || 'gemma2')
@@ -484,7 +492,7 @@ function registerIpcHandlers(): void {
   })
 
   // Embedding 配置：量化档位 / 推理设备（纯本地，无 API 后端）
-  ipcMain.handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
+  handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
     const config = getEmbeddingService().getConfig()
     return {
       textQuantization: config.textQuantization,
@@ -512,7 +520,7 @@ function registerIpcHandlers(): void {
   )
 
   // 手动更新 caption（用户编辑）
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CAPTION, async (_event, photoId: number, text: string) => {
+  handle(IPC_CHANNELS.UPDATE_CAPTION, async (_event, photoId: number, text: string) => {
     try {
       const photo = db.getPhoto(photoId)
       if (!photo?.fileHash) return { success: false, error: 'Photo not found' }
@@ -524,7 +532,7 @@ function registerIpcHandlers(): void {
   })
 
   // 人脸识别
-  ipcMain.handle(IPC_CHANNELS.START_FACE_SCAN, async () => {
+  handle(IPC_CHANNELS.START_FACE_SCAN, async () => {
     try {
       return await indexer.startFaceScan()
     } catch (error) {
@@ -533,7 +541,7 @@ function registerIpcHandlers(): void {
   })
 
   // OCR 扫描
-  ipcMain.handle(IPC_CHANNELS.START_OCR_SCAN, async () => {
+  handle(IPC_CHANNELS.START_OCR_SCAN, async () => {
     try {
       return await indexer.startOcrScan()
     } catch (error) {
@@ -542,7 +550,7 @@ function registerIpcHandlers(): void {
   })
 
   // 打开视频源文件（系统默认播放器）
-  ipcMain.handle(IPC_CHANNELS.OPEN_SOURCE_VIDEO, async (_event, videoId: number) => {
+  handle(IPC_CHANNELS.OPEN_SOURCE_VIDEO, async (_event, videoId: number) => {
     try {
       const video = db.getVideoById(videoId)
       if (!video || !existsSync(video.filePath)) {
@@ -556,26 +564,26 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PEOPLE, async () => {
+  handle(IPC_CHANNELS.GET_PEOPLE, async () => {
     return db.getPeople()
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PERSON_PHOTOS, async (_event, personId: number, limit?: number) => {
+  handle(IPC_CHANNELS.GET_PERSON_PHOTOS, async (_event, personId: number, limit?: number) => {
     const photos = db.getPersonPhotos(personId, limit || 50)
     return photos.map((p) => ({ photo: p, score: 1.0 }))
   })
 
-  ipcMain.handle(IPC_CHANNELS.SET_PERSON_NAME, async (_event, personId: number, name: string) => {
+  handle(IPC_CHANNELS.SET_PERSON_NAME, async (_event, personId: number, name: string) => {
     db.updatePersonName(personId, name)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.MERGE_PEOPLE, async (_event, targetId: number, sourceIds: number[]) => {
+  handle(IPC_CHANNELS.MERGE_PEOPLE, async (_event, targetId: number, sourceIds: number[]) => {
     db.mergePeople(targetId, sourceIds)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PERSON_SUGGESTIONS, async (): Promise<PersonSuggestion[]> => {
+  handle(IPC_CHANNELS.GET_PERSON_SUGGESTIONS, async (): Promise<PersonSuggestion[]> => {
     const people = new Map(db.getPeople().filter((p) => !p.hidden).map((p) => [p.id, p]))
     const centroids = db.getPersonCentroids().filter((c) => people.has(c.id))
     return suggestMerges(centroids, db.getDismissedPairs(), 10).map((s) => ({
@@ -583,31 +591,31 @@ function registerIpcHandlers(): void {
     }))
   })
 
-  ipcMain.handle(IPC_CHANNELS.DISMISS_PERSON_SUGGESTION, async (_event, a: number, b: number) => {
+  handle(IPC_CHANNELS.DISMISS_PERSON_SUGGESTION, async (_event, a: number, b: number) => {
     db.dismissPersonPair(a, b)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PERSON_FACES, async (_event, personId: number, limit?: number): Promise<PersonFace[]> => {
+  handle(IPC_CHANNELS.GET_PERSON_FACES, async (_event, personId: number, limit?: number): Promise<PersonFace[]> => {
     return db.getPersonFaces(personId, limit).map((f) => ({ id: f.id, quality: f.quality, assignedBy: f.assignedBy as PersonFace['assignedBy'] }))
   })
 
-  ipcMain.handle(IPC_CHANNELS.REJECT_FACE, async (_event, faceId: number) => {
+  handle(IPC_CHANNELS.REJECT_FACE, async (_event, faceId: number) => {
     db.rejectFaceFromPerson(faceId)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.ASSIGN_FACE, async (_event, faceId: number, personId: number) => {
+  handle(IPC_CHANNELS.ASSIGN_FACE, async (_event, faceId: number, personId: number) => {
     db.assignFaceManually(faceId, personId)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.SET_PERSON_HIDDEN, async (_event, personId: number, hidden: boolean) => {
+  handle(IPC_CHANNELS.SET_PERSON_HIDDEN, async (_event, personId: number, hidden: boolean) => {
     db.setPersonHidden(personId, hidden)
     return { success: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_FACE_THUMBNAIL, async (_event, faceId: number) => {
+  handle(IPC_CHANNELS.GET_FACE_THUMBNAIL, async (_event, faceId: number) => {
     try {
       const path = await ensureFaceThumb(faceId)
       if (!path) return null
@@ -617,14 +625,14 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_PHOTO_FACES, async (_event, photoId: number) => {
+  handle(IPC_CHANNELS.GET_PHOTO_FACES, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return db.getFacesByHash(photo.fileHash)
   })
 
   // 备份：手动触发 + 状态查询
-  ipcMain.handle(IPC_CHANNELS.TRIGGER_BACKUP, async () => {
+  handle(IPC_CHANNELS.TRIGGER_BACKUP, async () => {
     try {
       const result = await runBackup()
       return { success: true, ...result }
@@ -633,7 +641,7 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.GET_BACKUP_STATUS, async () => {
+  handle(IPC_CHANNELS.GET_BACKUP_STATUS, async () => {
     const last = parseInt(db.getMetaState(META_KEY_LAST_BACKUP) || '0', 10)
     const backupsDir = join(app.getPath('userData'), 'backups')
     let count = 0
@@ -672,7 +680,7 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 function registerVixelProtocol(): void {
-  protocol.handle('vixel', async (request) => {
+  protocol.handle('vixel', timed('proto', 'vixel://', async (request: Request) => {
     try {
       const url = new URL(request.url)
       const host = url.host
@@ -731,7 +739,7 @@ function registerVixelProtocol(): void {
       console.error('vixel:// handler error:', err)
       return new Response(String(err), { status: 500 })
     }
-  })
+  }))
 }
 
 app.whenReady().then(async () => {
@@ -769,6 +777,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // VIXEL_PROFILE=1：退出时打印本次会话最慢的操作（p50 / p95 / max）
+  if (PROFILE) console.table(perfSnapshot().slice(0, 25).map((r) => ({ ...r, p50: +r.p50.toFixed(1), p95: +r.p95.toFixed(1), max: +r.max.toFixed(1) })))
   watcher?.stopAll()
   inference?.stop()
   if (backupTimer) {

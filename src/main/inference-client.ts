@@ -11,17 +11,30 @@ import type {
   InferenceTransport,
 } from '../core/inference/transport'
 import { lowerPriority } from '../core/video/extract'
+import { record } from '../core/perf'
 
 interface Pending {
   resolve: (v: unknown) => void
   reject: (e: Error) => void
+  method: InferenceMethod
+  sentAt: number
 }
+
+/**
+ * 卡死看门狗：有在途请求、却这么久没有任何一个完成 → 认为前向卡死（ONNX 死锁 / arena 问题），
+ * 杀掉子进程。exit 处理会 reject 在途请求，任务记失败，下次调用自动重启。
+ * 最慢的正常前向（32 帧视频片段）约 2.5 分钟，留足余量。
+ */
+const STALL_MS = 10 * 60 * 1000
+const STALL_CHECK_MS = 30 * 1000
 
 export class InferenceProcess implements InferenceTransport {
   private child: UtilityProcess | null = null
   private pending = new Map<number, Pending>()
   private nextId = 1
   private stopped = false
+  private lastProgressAt = 0
+  private watchdog: NodeJS.Timeout | null = null
   generation = 0
 
   constructor(private entry: string) {}
@@ -30,13 +43,33 @@ export class InferenceProcess implements InferenceTransport {
     if (this.stopped) return Promise.reject(new Error('Inference process stopped'))
     const child = this.ensure()
     const id = this.nextId++
+    if (this.pending.size === 0) this.lastProgressAt = Date.now()
+    this.armWatchdog()
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, method, sentAt: Date.now() })
       child.postMessage({ id, method, args } satisfies InferenceRequest)
     })
   }
 
+  private armWatchdog(): void {
+    if (this.watchdog) return
+    this.watchdog = setInterval(() => {
+      if (this.pending.size === 0) {
+        clearInterval(this.watchdog!)
+        this.watchdog = null
+        return
+      }
+      if (Date.now() - this.lastProgressAt > STALL_MS && this.child) {
+        console.error(`[inference] no response for ${STALL_MS / 1000}s with ${this.pending.size} pending — killing stalled process`)
+        this.child.kill()
+      }
+    }, STALL_CHECK_MS)
+    this.watchdog.unref?.()
+  }
+
   stop(): void {
+    if (this.watchdog) clearInterval(this.watchdog)
+    this.watchdog = null
     this.stopped = true
     this.child?.kill()
     this.child = null
@@ -52,6 +85,9 @@ export class InferenceProcess implements InferenceTransport {
       const p = this.pending.get(res.id)
       if (!p) return
       this.pending.delete(res.id)
+      this.lastProgressAt = Date.now()
+      // 含排队等待：搜索的文本编码在这里能看出被索引前向挡了多久
+      record('infer', p.method, Date.now() - p.sentAt)
       if (res.ok) p.resolve(res.result)
       else p.reject(new Error(res.error))
     })

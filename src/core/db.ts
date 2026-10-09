@@ -7,6 +7,7 @@ import type { LibraryCounts,
 } from '../shared/types'
 import { tokenizeForFtsSync } from './text/tokenize'
 import type { ClusterPlan, PendingFace, PersonCentroid } from './face/cluster'
+import { instrumentStatements } from './perf'
 import { buildFtsQuery } from './text/fts-query'
 
 // 向量维度 - EmbeddingGemma 2 (768D，Matryoshka 可截断到 512/256/128)
@@ -1165,6 +1166,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     getFaceCoverInfo: db.prepare(`SELECT file_hash as fileHash, bbox FROM faces WHERE id = ?`),
     checkFaceStatusColumn: db.prepare(`SELECT face_status FROM photos LIMIT 0`),
   }
+  // VIXEL_PROFILE=1 时给每条语句计时，慢查询按语句名打印
+  instrumentStatements(stmts)
 
   const toF32 = (b: Buffer): Float32Array => {
     // 拷贝一份：better-sqlite3 的 Buffer 可能落在共享池上，byteOffset 不一定 4 字节对齐
