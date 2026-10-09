@@ -13,7 +13,7 @@
   <img src="docs/media/hero.gif" width="860" alt="Vixel 语义搜索演示" />
 </a>
 
-▶ [观看完整宣传片（66 秒，含配乐）](https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4)
+▶ [下载完整宣传片（66 秒 · 1080p · 含配乐 · 5.9 MB）](https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4)
 
 </div>
 
