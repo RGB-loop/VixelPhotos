@@ -237,19 +237,21 @@ export class FileWatcher {
       //   - 头尾采样能可靠区分 mtime 巧合相同的不同文件
       //     (rsync --times / cp -p / 时钟回拨等场景下 size+mtime 单独是不够的)
       const hasher = await getHasher()
-      const lightHash = await computeVideoLightHash(filePath, stats.size, stats.mtimeMs, hasher)
+      const lightHash = await this.ioLimit(() => computeVideoLightHash(filePath, stats.size, stats.mtimeMs, hasher))
 
       const existing = this.db.getVideoByPath(filePath)
-      const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash, kind)
 
       // 启动时 chokidar 会对已有文件逐个触发 add。内容没变且已扫过
       // （frame_count 非空：成功 = 片段数，坏文件 = 0）或已在队列里 → 不重排，
-      // 否则每次启动都把整个音视频库从头重新编码一遍。
+      // 否则每次启动都把整个音视频库从头重新编码一遍。判定放在 upsert 之前：没变就连行都不写。
       // 坏文件的重试走任务面板；模型未就绪导致的失败由 requeueMissingEmbeddings 补排
-      const unchanged = existing != null && existing.deletedAt == null && existing.fileHash === lightHash
-      if (unchanged && (existing.frameCount != null || this.db.hasOpenTask(videoId, 'extract_frames'))) {
+      const unchanged = existing != null && existing.deletedAt == null &&
+        existing.fileHash === lightHash && existing.folderId === folderId
+      if (unchanged && (existing.frameCount != null || this.db.hasOpenTask(existing.id, 'extract_frames'))) {
         return
       }
+
+      const videoId = this.db.addVideo(folderId, filePath, fileName, stats.size, stats.mtimeMs, lightHash, kind)
 
       // 同步抽帧太慢；用 indexer 队列异步处理。约定：task_type='extract_frames'
       // 时，photo_id 字段携带的是 videos.id 而非 photos.id（schema 不变）。

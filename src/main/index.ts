@@ -81,6 +81,12 @@ const WEB_PREFERENCES: Electron.WebPreferences = {
 
 /** 主窗口和设置窗口共用一个渲染入口，按 hash 区分（main.tsx 里路由） */
 function loadRenderer(win: BrowserWindow, hash?: string): void {
+  // VIXEL_PROFILE=1：渲染进程的警告 / 错误（含 [longtask]）汇进主进程日志，自动化跑一遍就能看全
+  if (PROFILE) {
+    win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      if (level >= 2) console.log(`[renderer${hash ? `:${hash}` : ''}] ${message}${level === 3 ? ` (${sourceId}:${line})` : ''}`)
+    })
+  }
   win.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
