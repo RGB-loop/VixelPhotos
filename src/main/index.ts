@@ -10,6 +10,7 @@ import { Indexer } from '../core/indexer'
 import { SearchEngine, type SearchOptions } from '../core/search'
 import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
 import { setFaceModelsDir, getFaceThumbnail, FACE_PIPELINE_VERSION } from '../core/face'
+import { suggestMerges } from '../core/face/cluster'
 import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
@@ -17,7 +18,7 @@ import { serveMediaFile } from '../core/media/serve'
 import { ensureSprite } from '../core/video/sprite'
 import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
-import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig } from '../shared/types'
+import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
 const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -153,6 +154,9 @@ async function initServices(): Promise<void> {
   indexer.on('progress', (progress: IndexProgress) => {
     mainWindow?.webContents.send(IPC_CHANNELS.INDEX_PROGRESS, progress)
   })
+  indexer.on('people-changed', () => {
+    mainWindow?.webContents.send(IPC_CHANNELS.PEOPLE_CHANGED)
+  })
 
   watcher = new FileWatcher(db, indexer)
   searchEngine = new SearchEngine(db)
@@ -170,6 +174,8 @@ async function initServices(): Promise<void> {
   setTimeout(() => {
     indexer.preloadModels().catch(() => {})
     // 用户扫过人脸才自动重扫；从没扫过的库保持手动触发
+    // 上次退出前没来得及聚类的脸（或旧版本留下的未归属脸）
+    if (db.countPendingClusterFaces() > 0) void indexer.faceClusterer.run()
     if (staleFaces > 0) {
       console.log(`[face] pipeline upgraded, re-scanning (${staleFaces} stale faces dropped)`)
       indexer.startFaceScan().catch((e) => console.warn('[face] re-scan failed:', e))
@@ -512,6 +518,38 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.MERGE_PEOPLE, async (_event, targetId: number, sourceIds: number[]) => {
     db.mergePeople(targetId, sourceIds)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_PERSON_SUGGESTIONS, async (): Promise<PersonSuggestion[]> => {
+    const people = new Map(db.getPeople().filter((p) => !p.hidden).map((p) => [p.id, p]))
+    const centroids = db.getPersonCentroids().filter((c) => people.has(c.id))
+    return suggestMerges(centroids, db.getDismissedPairs(), 10).map((s) => ({
+      a: people.get(s.a)!, b: people.get(s.b)!, similarity: s.similarity,
+    }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.DISMISS_PERSON_SUGGESTION, async (_event, a: number, b: number) => {
+    db.dismissPersonPair(a, b)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.GET_PERSON_FACES, async (_event, personId: number, limit?: number): Promise<PersonFace[]> => {
+    return db.getPersonFaces(personId, limit).map((f) => ({ id: f.id, quality: f.quality, assignedBy: f.assignedBy as PersonFace['assignedBy'] }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REJECT_FACE, async (_event, faceId: number) => {
+    db.rejectFaceFromPerson(faceId)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.ASSIGN_FACE, async (_event, faceId: number, personId: number) => {
+    db.assignFaceManually(faceId, personId)
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SET_PERSON_HIDDEN, async (_event, personId: number, hidden: boolean) => {
+    db.setPersonHidden(personId, hidden)
     return { success: true }
   })
 

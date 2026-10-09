@@ -6,6 +6,7 @@ import type { LibraryCounts,
   Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord, MediaKind, MediaDetail, TaskOverview, TaskRow,
 } from '../shared/types'
 import { tokenizeForFtsSync } from './text/tokenize'
+import type { ClusterPlan, PendingFace, PersonCentroid } from './face/cluster'
 import { buildFtsQuery } from './text/fts-query'
 
 // 向量维度 - EmbeddingGemma 2 (768D，Matryoshka 可截断到 512/256/128)
@@ -123,6 +124,9 @@ CREATE TABLE IF NOT EXISTS faces (
   confidence  REAL NOT NULL,
   embedding   BLOB NOT NULL,
   person_id   INTEGER REFERENCES people(id),
+  quality     REAL DEFAULT 1,              -- 0–1，见 face/quality.ts
+  cluster_state INTEGER DEFAULT 0,         -- 未归属时：0 = 新脸待聚类，1 = 聚类过仍落单
+  assigned_by TEXT,                        -- 'auto' | 'user'
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(file_hash, face_index)
 );
@@ -142,7 +146,23 @@ CREATE TABLE IF NOT EXISTS people (
   name        TEXT,
   cover_face_id INTEGER,
   face_count  INTEGER DEFAULT 0,
+  centroid    BLOB,                        -- 成员 embedding 均值（L2 归一化），聚类用
+  hidden      INTEGER DEFAULT 0,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- "不是此人"：这张脸永远不会再被自动归到这个人物
+CREATE TABLE IF NOT EXISTS face_rejections (
+  face_id   INTEGER NOT NULL,
+  person_id INTEGER NOT NULL,
+  PRIMARY KEY (face_id, person_id)
+);
+
+-- 用户驳回的合并建议（a < b）
+CREATE TABLE IF NOT EXISTS person_dismissed_pairs (
+  a INTEGER NOT NULL,
+  b INTEGER NOT NULL,
+  PRIMARY KEY (a, b)
 );
 
 -- 内部状态 / 一次性迁移标记
@@ -236,6 +256,15 @@ export function migrateSchema(db: Database.Database): void {
   if (!hasColumn('videos', 'media_kind')) {
     db.exec(`ALTER TABLE videos ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'`)
   }
+  const add = (table: string, column: string, def: string): void => {
+    if (!hasColumn(table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`)
+  }
+  add('faces', 'quality', 'REAL DEFAULT 1')
+  add('faces', 'cluster_state', 'INTEGER DEFAULT 0')
+  add('faces', 'assigned_by', 'TEXT')
+  add('people', 'centroid', 'BLOB')
+  add('people', 'hidden', 'INTEGER DEFAULT 0')
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_faces_unassigned ON faces(cluster_state) WHERE person_id IS NULL`)
 }
 
 export interface DatabaseInstance {
@@ -371,7 +400,7 @@ export interface DatabaseInstance {
   getPhotosWithGPS: (limit?: number) => Photo[]
 
   // 人脸
-  saveFace: (fileHash: string, faceIndex: number, bbox: string, confidence: number, embedding: Float32Array) => number
+  saveFace: (fileHash: string, faceIndex: number, bbox: string, confidence: number, embedding: Float32Array, quality?: number) => number
   updateFaceStatusByHash: (fileHash: string) => void
   hasFacesForHash: (fileHash: string) => boolean
   getFacesByHash: (fileHash: string) => Array<{ id: number; faceIndex: number; bbox: string; confidence: number; personId: number | null; personName: string | null }>
@@ -390,10 +419,32 @@ export interface DatabaseInstance {
   setFacePersonId: (faceId: number, personId: number) => void
   createPerson: (coverFaceId: number) => number
   updatePersonFaceCount: (personId: number) => void
-  getPeople: () => Array<{ id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; createdAt: string }>
+  getPeople: () => Array<{ id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; hidden: boolean; createdAt: string }>
   getPersonPhotos: (personId: number, limit?: number) => Photo[]
   updatePersonName: (personId: number, name: string) => void
   mergePeople: (targetId: number, sourceIds: number[]) => void
+
+  // 聚类（face/cluster.ts 的输入输出）
+  getPersonCentroids: (opts?: { includeHidden?: boolean }) => PersonCentroid[]
+  getPendingClusterFaces: () => PendingFace[]
+  getDormantFaces: () => PendingFace[]
+  getFaceRejections: () => Map<number, Set<number>>
+  getDismissedPairs: () => Set<string>
+  countPendingClusterFaces: () => number
+  applyClusterPlan: (plan: ClusterPlan) => void
+  /** 新脸入库时的即时归属：只更新计数 / 封面 / 质心，不全量重算 */
+  addFaceToPerson: (faceId: number, personId: number, embedding: Float32Array) => void
+  /** 重算人物的计数 / 封面 / 质心；没有脸了就删掉人物 */
+  refreshPerson: (personId: number) => void
+
+  // 手动整理
+  setPersonHidden: (personId: number, hidden: boolean) => void
+  /** "不是此人"：脱离人物并记为约束 */
+  rejectFaceFromPerson: (faceId: number) => void
+  /** 手动指定（不受聚类阈值限制，也会清掉对该人物的拒绝） */
+  assignFaceManually: (faceId: number, personId: number) => void
+  dismissPersonPair: (a: number, b: number) => void
+  getPersonFaces: (personId: number, limit?: number) => Array<{ id: number; fileHash: string; bbox: string; quality: number; assignedBy: string | null }>
   getPendingFacePhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
   getFaceCoverInfo: (faceId: number) => { fileHash: string; bbox: string } | undefined
 
@@ -962,10 +1013,10 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
 
     // 人脸相关
     saveFace: db.prepare(`
-      INSERT INTO faces (file_hash, face_index, bbox, confidence, embedding)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO faces (file_hash, face_index, bbox, confidence, embedding, quality)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_hash, face_index) DO UPDATE SET
-        bbox = excluded.bbox, confidence = excluded.confidence, embedding = excluded.embedding
+        bbox = excluded.bbox, confidence = excluded.confidence, embedding = excluded.embedding, quality = excluded.quality
       RETURNING id
     `),
     // 写入 face_vecs（与 faces.id 同 rowid）。INSERT OR REPLACE 处理 ON CONFLICT 路径。
@@ -979,7 +1030,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       DELETE FROM face_vecs WHERE rowid = ?
     `),
     // 给 deleteContentByHash 用：先按 hash 找到 faces.id，再删 face_vecs + faces
-    getFaceIdsByHash: db.prepare(`SELECT id FROM faces WHERE file_hash = ?`),
+    getFaceIdsByHash: db.prepare(`SELECT id, person_id as personId FROM faces WHERE file_hash = ?`),
+    deleteFaceRejections: db.prepare(`DELETE FROM face_rejections WHERE face_id = ?`),
     deleteFacesByHash: db.prepare(`DELETE FROM faces WHERE file_hash = ?`),
     // KNN：rowid 即 faces.id；join faces 拿 person_id
     searchFaceKnnRaw: db.prepare(`
@@ -1010,13 +1062,13 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     updatePersonFaceCount: db.prepare(`
       UPDATE people SET
         face_count = (SELECT COUNT(*) FROM faces WHERE person_id = people.id),
-        cover_face_id = (SELECT id FROM faces WHERE person_id = people.id ORDER BY confidence DESC LIMIT 1)
+        cover_face_id = (SELECT id FROM faces WHERE person_id = people.id ORDER BY quality DESC, confidence DESC LIMIT 1)
       WHERE id = ?
     `),
     getPeople: db.prepare(`
       SELECT p.id, p.name, p.cover_face_id as coverFaceId, p.face_count as faceCount,
              (SELECT COUNT(DISTINCT f.file_hash) FROM faces f WHERE f.person_id = p.id) as photoCount,
-             p.created_at as createdAt
+             p.hidden, p.created_at as createdAt
       FROM people p
       WHERE p.face_count > 0
       ORDER BY photoCount DESC
@@ -1050,8 +1102,78 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         )
     `),
     setFacePersonId: db.prepare(`UPDATE faces SET person_id = ? WHERE id = ?`),
+    assignFace: db.prepare(`UPDATE faces SET person_id = ?, assigned_by = ?, cluster_state = 0 WHERE id = ?`),
+    // 自动归属只动仍未归属的脸：聚类跑的过程中用户可能已经手动处理过
+    autoAssignFace: db.prepare(`UPDATE faces SET person_id = ?, assigned_by = 'auto', cluster_state = 0 WHERE id = ? AND person_id IS NULL`),
+    getPersonMeta: db.prepare(`SELECT id, name FROM people WHERE id = ?`),
+    setFaceDormant: db.prepare(`UPDATE faces SET cluster_state = 1 WHERE id = ? AND person_id IS NULL`),
+    getPersonCentroids: db.prepare(`SELECT id, name, centroid, face_count as count, hidden FROM people WHERE face_count > 0`),
+    getUnassignedFaces: db.prepare(`SELECT id, embedding, quality FROM faces WHERE person_id IS NULL AND cluster_state = ?`),
+    countUnassigned: db.prepare(`SELECT COUNT(*) as n FROM faces WHERE person_id IS NULL AND cluster_state = 0`),
+    getPersonEmbeddings: db.prepare(`SELECT embedding FROM faces WHERE person_id = ?`),
+    setPersonCentroid: db.prepare(`UPDATE people SET centroid = ? WHERE id = ?`),
+    getPersonRow: db.prepare(`SELECT centroid, face_count as count FROM people WHERE id = ?`),
+    getRejections: db.prepare(`SELECT face_id as faceId, person_id as personId FROM face_rejections`),
+    insertRejection: db.prepare(`INSERT OR IGNORE INTO face_rejections(face_id, person_id) VALUES (?, ?)`),
+    deleteRejection: db.prepare(`DELETE FROM face_rejections WHERE face_id = ? AND person_id = ?`),
+    moveRejections: db.prepare(`UPDATE OR IGNORE face_rejections SET person_id = ? WHERE person_id = ?`),
+    deleteRejectionsForPerson: db.prepare(`DELETE FROM face_rejections WHERE person_id = ?`),
+    getDismissedPairs: db.prepare(`SELECT a, b FROM person_dismissed_pairs`),
+    insertDismissedPair: db.prepare(`INSERT OR IGNORE INTO person_dismissed_pairs(a, b) VALUES (?, ?)`),
+    deleteDismissedForPerson: db.prepare(`DELETE FROM person_dismissed_pairs WHERE a = ? OR b = ?`),
+    getFacePerson: db.prepare(`SELECT person_id as personId FROM faces WHERE id = ?`),
+    setPersonHidden: db.prepare(`UPDATE people SET hidden = ? WHERE id = ?`),
+    getPersonFaces: db.prepare(`
+      SELECT id, file_hash as fileHash, bbox, quality, assigned_by as assignedBy
+      FROM faces WHERE person_id = ? ORDER BY quality DESC LIMIT ?
+    `),
     getFaceCoverInfo: db.prepare(`SELECT file_hash as fileHash, bbox FROM faces WHERE id = ?`),
     checkFaceStatusColumn: db.prepare(`SELECT face_status FROM photos LIMIT 0`),
+  }
+
+  const toF32 = (b: Buffer): Float32Array => {
+    // 拷贝一份：better-sqlite3 的 Buffer 可能落在共享池上，byteOffset 不一定 4 字节对齐
+    const out = new Float32Array(b.byteLength / 4)
+    new Uint8Array(out.buffer).set(b)
+    return out
+  }
+  const unassigned = (state: 0 | 1): PendingFace[] =>
+    (stmts.getUnassignedFaces.all(state) as Array<{ id: number; embedding: Buffer; quality: number | null }>)
+      .map((r) => ({ id: r.id, embedding: toF32(r.embedding), quality: r.quality ?? 1 }))
+  /** 计数 / 封面 / 质心全量重算；人物空了就删 */
+  const refreshPerson = (personId: number): void => {
+    stmts.updatePersonFaceCount.run(personId)
+    const rows = stmts.getPersonEmbeddings.all(personId) as Array<{ embedding: Buffer }>
+    if (rows.length === 0) {
+      stmts.deletePerson.run(personId)
+      stmts.deleteRejectionsForPerson.run(personId)
+      stmts.deleteDismissedForPerson.run(personId, personId)
+      return
+    }
+    const dim = rows[0].embedding.byteLength / 4
+    const sum = new Float64Array(dim)
+    for (const r of rows) { const e = toF32(r.embedding); for (let i = 0; i < dim; i++) sum[i] += e[i] }
+    let n = 0
+    for (let i = 0; i < dim; i++) n += sum[i] * sum[i]
+    n = Math.sqrt(n) || 1
+    const c = Float32Array.from(sum, (v) => v / n)
+    stmts.setPersonCentroid.run(Buffer.from(c.buffer), personId)
+  }
+  /** 删一个 hash 的所有人脸（含 ANN 行），受影响的人物重算 / 清空 */
+  const deleteFacesForHash = (hash: string): void => {
+    const rows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number; personId: number | null }>
+    if (rows.length === 0) return
+    for (const f of rows) { stmts.deleteFaceVec.run(f.id); stmts.deleteFaceRejections.run(f.id) }
+    stmts.deleteFacesByHash.run(hash)
+    for (const pid of new Set(rows.map((r) => r.personId).filter((x): x is number => x != null))) refreshPerson(pid)
+  }
+  /** from 的脸 / 约束全部转给 into，删掉 from（调用方负责 refreshPerson(into)） */
+  const mergeInto = (from: number, into: number): void => {
+    stmts.mergePeopleFaces.run(into, from)
+    stmts.moveRejections.run(into, from)
+    stmts.deleteRejectionsForPerson.run(from)
+    stmts.deleteDismissedForPerson.run(from, from)
+    stmts.deletePerson.run(from)
   }
 
   return {
@@ -1100,9 +1222,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
             stmts.deleteVecByRowid.run(Number(row.rowid))
             stmts.deleteVecMapByHash.run(hash)
           }
-          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
-          for (const f of faceRows) stmts.deleteFaceVec.run(f.id)
-          stmts.deleteFacesByHash.run(hash)
+          deleteFacesForHash(hash)
           stmts.deleteCaptionByHash.run(hash)
           stmts.deleteOcrByHash.run(hash)
         }
@@ -1272,7 +1392,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       if (cur === version) return 0
       const tx = db.transaction((): number => {
         const n = (db.prepare(`SELECT COUNT(*) as n FROM faces`).get() as { n: number }).n
-        db.exec(`DELETE FROM face_vecs; DELETE FROM faces; DELETE FROM people;`)
+        db.exec(`DELETE FROM face_vecs; DELETE FROM faces; DELETE FROM people; DELETE FROM face_rejections; DELETE FROM person_dismissed_pairs;`)
         db.prepare(`DELETE FROM index_queue WHERE task_type = 'face'`).run()
         db.prepare(`UPDATE photos SET face_status = 'pending'`).run()
         db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, ?)`).run(key, version)
@@ -1477,11 +1597,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         stmts.deleteVecMapByHash.run(fileHash)
       }
       // 人脸：face_vecs rowid 与 faces.id 一致，按 id 逐个清
-      const faceRows = stmts.getFaceIdsByHash.all(fileHash) as Array<{ id: number }>
-      for (const f of faceRows) {
-        stmts.deleteFaceVec.run(f.id)
-      }
-      stmts.deleteFacesByHash.run(fileHash)
+      deleteFacesForHash(fileHash)
       // image_ocr_fts 通过触发器随 image_ocr 的 DELETE 自动清
       stmts.deleteCaptionByHash.run(fileHash)
       stmts.deleteOcrByHash.run(fileHash)
@@ -1566,9 +1682,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     },
 
     // 人脸
-    saveFace: (fileHash, faceIndex, bbox, confidence, embedding) => {
+    saveFace: (fileHash, faceIndex, bbox, confidence, embedding, quality = 1) => {
       const buffer = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
-      const result = stmts.saveFace.get(fileHash, faceIndex, bbox, confidence, buffer) as { id: number }
+      const result = stmts.saveFace.get(fileHash, faceIndex, bbox, confidence, buffer, quality) as { id: number }
 
       // 写 vec0 索引。维度必须匹配 face_vecs schema。
       if (embedding.length === FACE_EMBEDDING_DIM) {
@@ -1639,9 +1755,9 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       stmts.updatePersonFaceCount.run(personId)
     },
     getPeople: () => {
-      return stmts.getPeople.all() as Array<{
-        id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; createdAt: string
-      }>
+      return (stmts.getPeople.all() as Array<{
+        id: number; name: string | null; coverFaceId: number | null; faceCount: number; photoCount: number; hidden: number; createdAt: string
+      }>).map((p) => ({ ...p, hidden: !!p.hidden }))
     },
     getPersonPhotos: (personId, limit = 50) => {
       return stmts.getPersonPhotos.all(personId, limit) as Photo[]
@@ -1652,13 +1768,107 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     mergePeople: (targetId, sourceIds) => {
       const transaction = db.transaction(() => {
         for (const sourceId of sourceIds) {
-          stmts.mergePeopleFaces.run(targetId, sourceId)
-          stmts.deletePerson.run(sourceId)
+          if (sourceId === targetId) continue
+          mergeInto(sourceId, targetId)
         }
-        stmts.updatePersonFaceCount.run(targetId)
+        refreshPerson(targetId)
       })
       transaction()
     },
+
+    getPersonCentroids: (opts) => {
+      const rows = stmts.getPersonCentroids.all() as Array<{ id: number; name: string | null; centroid: Buffer | null; count: number; hidden: number }>
+      const out: PersonCentroid[] = []
+      for (const r of rows) {
+        if (r.hidden && !opts?.includeHidden) continue
+        let c = r.centroid ? toF32(r.centroid) : null
+        if (!c) { refreshPerson(r.id); const again = stmts.getPersonRow.get(r.id) as { centroid: Buffer | null } | undefined; c = again?.centroid ? toF32(again.centroid) : null }
+        if (c) out.push({ id: r.id, named: !!r.name, centroid: c, count: r.count })
+      }
+      return out
+    },
+    getPendingClusterFaces: () => unassigned(0),
+    getDormantFaces: () => unassigned(1),
+    countPendingClusterFaces: () => (stmts.countUnassigned.get() as { n: number }).n,
+    getFaceRejections: () => {
+      const m = new Map<number, Set<number>>()
+      for (const r of stmts.getRejections.all() as Array<{ faceId: number; personId: number }>) {
+        if (!m.has(r.faceId)) m.set(r.faceId, new Set())
+        m.get(r.faceId)!.add(r.personId)
+      }
+      return m
+    },
+    getDismissedPairs: () => new Set((stmts.getDismissedPairs.all() as Array<{ a: number; b: number }>).map((r) => `${r.a}:${r.b}`)),
+    applyClusterPlan: (plan) => {
+      db.transaction(() => {
+        const touched = new Set<number>()
+        const meta = (id: number) => stmts.getPersonMeta.get(id) as { id: number; name: string | null } | undefined
+        // 计划是异步算出来的：期间被删 / 被并走 / 双方都被命名的人物，相关操作跳过
+        const gone = new Set<number>()
+        for (const m of plan.merges) {
+          const from = meta(m.from), into = meta(m.into)
+          if (!from || !into || (from.name && into.name)) { if (!from) gone.add(m.from); continue }
+          mergeInto(m.from, m.into)
+          touched.delete(m.from)
+          touched.add(m.into)
+        }
+        for (const a of plan.assign) {
+          if (gone.has(a.personId) || !meta(a.personId)) continue
+          if (stmts.autoAssignFace.run(a.personId, a.faceId).changes) touched.add(a.personId)
+        }
+        for (const group of plan.create) {
+          const { id } = stmts.createPerson.get(group[0]) as { id: number }
+          for (const faceId of group) stmts.autoAssignFace.run(id, faceId)
+          touched.add(id)
+        }
+        for (const faceId of plan.dormant) stmts.setFaceDormant.run(faceId)
+        for (const id of touched) refreshPerson(id)
+      })()
+    },
+    addFaceToPerson: (faceId, personId, embedding) => {
+      db.transaction(() => {
+        stmts.assignFace.run(personId, 'auto', faceId)
+        const row = stmts.getPersonRow.get(personId) as { centroid: Buffer | null; count: number } | undefined
+        stmts.updatePersonFaceCount.run(personId)
+        if (row?.centroid) {
+          // 增量：normalize(c·n + e)，避免每张新脸都读回该人物的全部 embedding
+          const c = toF32(row.centroid), out = new Float32Array(c.length)
+          let n2 = 0
+          for (let i = 0; i < c.length; i++) { out[i] = c[i] * row.count + embedding[i]; n2 += out[i] * out[i] }
+          const n = Math.sqrt(n2) || 1
+          for (let i = 0; i < c.length; i++) out[i] /= n
+          stmts.setPersonCentroid.run(Buffer.from(out.buffer), personId)
+        } else {
+          refreshPerson(personId)
+        }
+      })()
+    },
+    refreshPerson: (personId) => refreshPerson(personId),
+
+    setPersonHidden: (personId, hidden) => { stmts.setPersonHidden.run(hidden ? 1 : 0, personId) },
+    rejectFaceFromPerson: (faceId) => {
+      db.transaction(() => {
+        const cur = (stmts.getFacePerson.get(faceId) as { personId: number | null } | undefined)?.personId
+        if (cur == null) return
+        stmts.insertRejection.run(faceId, cur)
+        stmts.setFacePersonId.run(null, faceId)
+        // 落单而不是回到"新脸"：之后只会被别的人物 KNN 拉走，不会再开新簇搅乱
+        stmts.setFaceDormant.run(faceId)
+        refreshPerson(cur)
+      })()
+    },
+    assignFaceManually: (faceId, personId) => {
+      db.transaction(() => {
+        const cur = (stmts.getFacePerson.get(faceId) as { personId: number | null } | undefined)?.personId
+        stmts.deleteRejection.run(faceId, personId)
+        stmts.assignFace.run(personId, 'user', faceId)
+        if (cur != null && cur !== personId) refreshPerson(cur)
+        refreshPerson(personId)
+      })()
+    },
+    dismissPersonPair: (a, b) => { stmts.insertDismissedPair.run(Math.min(a, b), Math.max(a, b)) },
+    getPersonFaces: (personId, limit = 200) =>
+      stmts.getPersonFaces.all(personId, limit) as Array<{ id: number; fileHash: string; bbox: string; quality: number; assignedBy: string | null }>,
     getPendingFacePhotos: () => {
       return stmts.getPendingFacePhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
     },
@@ -1714,9 +1924,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
             stmts.deleteVecByRowid.run(Number(vec.rowid))
             stmts.deleteVecMapByHash.run(hash)
           }
-          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
-          for (const fr of faceRows) stmts.deleteFaceVec.run(fr.id)
-          stmts.deleteFacesByHash.run(hash)
+          deleteFacesForHash(hash)
           stmts.deleteCaptionByHash.run(hash)
           stmts.deleteOcrByHash.run(hash)
         }
@@ -1754,9 +1962,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
             stmts.deleteVecByRowid.run(Number(vec.rowid))
             stmts.deleteVecMapByHash.run(hash)
           }
-          const faceRows = stmts.getFaceIdsByHash.all(hash) as Array<{ id: number }>
-          for (const fr of faceRows) stmts.deleteFaceVec.run(fr.id)
-          stmts.deleteFacesByHash.run(hash)
+          deleteFacesForHash(hash)
           stmts.deleteCaptionByHash.run(hash)
           stmts.deleteOcrByHash.run(hash)
         }

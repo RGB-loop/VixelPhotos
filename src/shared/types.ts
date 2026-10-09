@@ -256,6 +256,14 @@ export const IPC_CHANNELS = {
   MERGE_PEOPLE: 'merge-people',
   GET_FACE_THUMBNAIL: 'get-face-thumbnail',
   GET_PHOTO_FACES: 'get-photo-faces',
+  GET_PERSON_SUGGESTIONS: 'get-person-suggestions',
+  DISMISS_PERSON_SUGGESTION: 'dismiss-person-suggestion',
+  GET_PERSON_FACES: 'get-person-faces',
+  REJECT_FACE: 'reject-face',
+  ASSIGN_FACE: 'assign-face',
+  SET_PERSON_HIDDEN: 'set-person-hidden',
+  /** 主 → 渲染：自动聚类改动了人物 */
+  PEOPLE_CHANGED: 'people-changed',
 } as const
 
 export interface ModelStatus {
@@ -312,7 +320,21 @@ export interface Person {
   coverFaceId: number | null
   faceCount: number
   photoCount?: number
+  hidden?: boolean
   createdAt: string
+}
+
+/** "是同一个人吗？"：a 优先是已命名的那个 */
+export interface PersonSuggestion {
+  a: Person
+  b: Person
+  similarity: number
+}
+
+export interface PersonFace {
+  id: number
+  quality: number
+  assignedBy: 'auto' | 'user' | null
 }
 
 export type ProcessingStatus = 'pending' | 'done' | 'error'

@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filename. The query is encoded once and shared by both vector channels.
 
 ### Added
+- **Person clustering rewrite** (`face/cluster.ts`, `face/clusterer.ts`):
+  per-face quality score (size / yaw / sharpness); new faces join a person
+  immediately only on a confident KNN vote, the rest are batch-clustered by
+  centroid with a merge pass. Thresholds calibrated on LFW. Low-quality faces
+  never seed a person. Named people are never auto-merged with each other.
+- Person curation backend: merge suggestions, "不是此人" rejections, manual
+  face assignment, hidden people (`face_rejections`, `person_dismissed_pairs`).
 - **Standalone audio** (`.mp3 .m4a .aac .wav .flac .ogg .opus`): cut into 32s
   segments, each embedded from the audio track alone, stored in the same
   `videos` / `video_segments` tables (`videos.media_kind = 'audio'`). The grid

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction, type ThemeMode } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction, type ThemeMode, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 const api = {
   // 搜索
@@ -174,6 +174,29 @@ const api = {
   },
   getPhotoFaces: (photoId: number): Promise<FaceRecord[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTO_FACES, photoId)
+  },
+  getPersonSuggestions: (): Promise<PersonSuggestion[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PERSON_SUGGESTIONS)
+  },
+  dismissPersonSuggestion: (a: number, b: number): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DISMISS_PERSON_SUGGESTION, a, b)
+  },
+  getPersonFaces: (personId: number, limit?: number): Promise<PersonFace[]> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PERSON_FACES, personId, limit)
+  },
+  rejectFace: (faceId: number): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REJECT_FACE, faceId)
+  },
+  assignFace: (faceId: number, personId: number): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.ASSIGN_FACE, faceId, personId)
+  },
+  setPersonHidden: (personId: number, hidden: boolean): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_PERSON_HIDDEN, personId, hidden)
+  },
+  onPeopleChanged: (callback: () => void): (() => void) => {
+    const handler = (): void => callback()
+    ipcRenderer.on(IPC_CHANNELS.PEOPLE_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.PEOPLE_CHANGED, handler) }
   },
 }
 

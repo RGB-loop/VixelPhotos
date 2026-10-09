@@ -232,7 +232,7 @@ index.ts → processPhotoOcr()
 |---|---|---|
 | SCRFD-2.5G-KPS（检测 + 5 关键点） | ~3 MB | InsightFace |
 | MobileFaceNet / w600k_mbf（embedding，512 维） | ~13 MB | InsightFace（权重非商用） |
-| 聚类 | (无模型) | sqlite-vec ANN，Immich 风格增量匹配 |
+| 聚类 | (无模型) | 即时 KNN 投票 + 批量质心聚类（`face/cluster.ts`） |
 
 对齐：解码一次（按 EXIF 摆正、限 2048 边长、统一 3 通道），检测与对齐共用这份 raw；
 对齐用 5 点最小二乘相似变换拟合"输出→输入"映射，JS 双线性采样出 112×112（< 1 ms）。
@@ -240,22 +240,39 @@ index.ts → processPhotoOcr()
 送进模型的是黑图，所有人 embedding 相似度都是 1.0。`FACE_PIPELINE_VERSION` 变化时启动会
 清空 faces / people 并重扫（只在用户扫过人脸时自动触发）。
 
-```typescript
-// src/core/face/index.ts (简化)
-const candidates = db.searchFaceKnn(embedding, 10, /* excludeFaceId */ newFaceId)
-for (const c of candidates) {
-  const cosDistance = (c.distance * c.distance) / 2  // vec0 L2 → cos
-  if (cosDistance > MAX_DISTANCE) break  // 已升序
-  if (c.personId != null) return assignTo(c.personId)
-}
-return createNewPerson()
-```
+**质量分**（`face/quality.ts`，不跑额外模型）：min(尺寸, 姿态, 清晰度)。尺寸 = 原图人脸短边
+24→72 px；姿态 = 鼻尖相对两眼中点在眼线方向的偏移 / 眼距（≈ yaw）；清晰度 = 对齐图中央
+拉普拉斯方差。质量 < 0.4 的脸不能"开新人物"，< 0.12 不参与自动聚类。
+
+**归属分两段，原则是宁可漏归、不可错归：**
+
+1. 入库即时归属（`assignFaceToPerson`）：高质量脸取 KNN 10，相似度 ≥ T_LINK 的已归属邻居
+   按相似度加权投票，赢家质心还要 ≥ T_ASSIGN 才归入；否则留给批量。
+2. 批量聚类（`FaceClusterer`，攒 200 张或人脸队列空闲 3 s 后跑）：新脸按质量降序和
+   人物质心 + 本批临时簇比较 → 归入 / 开簇（顺带 KNN 拉回旧落单脸）/ 落单；
+   然后质心合并（union-find，合并后复核）；再用新质心拉一次落单脸；少于 2 张的临时簇解散。
+   纯 JS，每 64 张让出一次事件循环。
+
+阈值（余弦，LFW 标定：脸↔本人质心 p1 0.57、脸↔他人质心 max 0.26）：
+
+| 阈值 | 值 | 用途 |
+|---|---|---|
+| T_ASSIGN / T_ASSIGN_LOWQ | 0.45 / 0.52 | 脸 → 质心 |
+| T_LINK | 0.5 | 脸 ↔ 脸（KNN 投票、拉回落单） |
+| T_MERGE / T_MERGE_NAMED | 0.6 / 0.7 | 质心合并：未命名之间 / 并入已命名 |
+| T_SUGGEST | 0.4 | [0.4, 合并阈值) 进"是同一个人吗？" |
+
+用户约束优先于算法：已归属的脸批量聚类不再移动；两个已命名人物永不自动合并；
+"不是此人"写入 `face_rejections`，该脸以后不会再自动归入这个人物，含有这张脸的簇也不会并入；
+驳回的合并建议写入 `person_dismissed_pairs`；隐藏人物仍参与聚类（避免同一人又冒出新人物），只是不展示。
 
 为什么不用 buffalo_l (~166 MB) 的 ArcFace r50：
 - MobileFaceNet 在 LFW 上 ~99.5%，buffalo_l ~99.85%；0.3% 收益换 33x 体积，
   对个人相册量级（一般 < 50k 张）不划算。
 
 性能曲线（PR5 之前 → 之后）：
+
+即时归属的 KNN 走 sqlite-vec（vec0 无法按"未归属"过滤，所以批量里落单脸的 KNN 在内存暴力算）：
 
 | 库内人脸数 | JS 暴力 O(N) | sqlite-vec ANN |
 |---|---|---|
@@ -439,6 +456,9 @@ CREATE TABLE faces (
   confidence  REAL NOT NULL,
   embedding   BLOB NOT NULL,         -- source-of-truth；face_vecs 是 ANN 索引
   person_id   INTEGER REFERENCES people(id),
+  quality     REAL DEFAULT 1,        -- face/quality.ts
+  cluster_state INTEGER DEFAULT 0,   -- 未归属时：0 待聚类 / 1 落单
+  assigned_by TEXT,                  -- 'auto' | 'user'
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(file_hash, face_index)
 );
@@ -454,8 +474,12 @@ CREATE TABLE people (
   name          TEXT,
   cover_face_id INTEGER,
   face_count    INTEGER DEFAULT 0,
+  centroid      BLOB,                -- 成员 embedding 均值（L2 归一化）
+  hidden        INTEGER DEFAULT 0,
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE face_rejections (face_id INTEGER, person_id INTEGER, PRIMARY KEY (face_id, person_id));  -- "不是此人"
+CREATE TABLE person_dismissed_pairs (a INTEGER, b INTEGER, PRIMARY KEY (a, b));                       -- 驳回的合并建议
 
 -- 视频
 CREATE TABLE videos (

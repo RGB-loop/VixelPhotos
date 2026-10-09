@@ -15,6 +15,7 @@ import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/ex
 import { generateSprite } from './video/sprite'
 import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
 import { SEGMENT_MS } from './db'
+import { FaceClusterer } from './face/clusterer'
 
 // xxHash 懒加载（与 watcher 共用语义；模块级单例避免重复 init）
 let _hasher: ((input: Uint8Array) => string) | null = null
@@ -46,6 +47,8 @@ export class Indexer extends EventEmitter {
   private resumeWaiters: Array<() => void> = []
   // 正在处理的任务，随 progress 事件推给任务面板
   private current: CurrentTask | null = null
+  // 新脸先即时归属（只认很确定的），剩下的攒批聚类；人物有变动时发 'people-changed'
+  readonly faceClusterer: FaceClusterer
 
   constructor(db: DatabaseInstance, userDataPath: string) {
     super()
@@ -55,6 +58,7 @@ export class Indexer extends EventEmitter {
     this.ensureThumbnailDir()
     // 持久化：暂停后退出应用，下次启动仍保持暂停
     this.paused = db.getMetaState(PAUSED_KEY) === '1'
+    this.faceClusterer = new FaceClusterer(db, () => this.emit('people-changed'))
   }
 
   isPaused(): boolean {
@@ -377,13 +381,15 @@ export class Indexer extends EventEmitter {
           face.faceIndex,
           JSON.stringify(face.bbox),
           face.confidence,
-          face.embedding
+          face.embedding,
+          face.quality
         )
 
-        assignFaceToPerson(this.db, faceId, face.embedding)
+        assignFaceToPerson(this.db, faceId, face.embedding, face.quality)
       }
 
       this.db.updateFaceStatusByHash(fileHash)
+      if (faces.length > 0) this.faceClusterer.schedule()
     } catch (error) {
       console.error(`Error processing faces for ${filePath}:`, error)
       throw error
