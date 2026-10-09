@@ -48,8 +48,15 @@ function loadPref(key: string, fallback: number, min: number, max: number): numb
     return fallback
   }
 }
+// 写入防抖：拖侧栏 / 缩略图滑块每帧都会调，合并成停稳后一次同步写
+const prefTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function savePref(key: string, value: string): void {
-  try { localStorage.setItem(key, value) } catch { /* 忽略 */ }
+  const prev = prefTimers.get(key)
+  if (prev) clearTimeout(prev)
+  prefTimers.set(key, setTimeout(() => {
+    prefTimers.delete(key)
+    try { localStorage.setItem(key, value) } catch { /* 忽略 */ }
+  }, 300))
 }
 
 function App(): JSX.Element {
@@ -135,23 +142,31 @@ function App(): JSX.Element {
     refreshLibrary().then((f) => { if (f.length > 0) runSearch() })
   }, [refreshLibrary, runSearch])
 
-  // 索引进度：照片数变化时节流刷新计数和（无查询时的）网格
+  // 索引进度：照片数变化时节流刷新计数和（无查询时的）网格。
+  // 2 万条结果重拉不便宜，节流 ≥5s，且用户正在滚动时先推迟，别打断浏览
+  const scrollActivityAt = useRef(0)
+  const handleUserScroll = useCallback(() => { scrollActivityAt.current = Date.now() }, [])
   useEffect(() => {
     let last = ''
     let timer: ReturnType<typeof setTimeout> | null = null
+    const refresh = (): void => {
+      if (Date.now() - scrollActivityAt.current < 2000) {
+        timer = setTimeout(refresh, 2000)
+        return
+      }
+      timer = null
+      refreshLibrary()
+      if (!filters.current.query.trim() && filters.current.source.type !== 'map' && filters.current.source.type !== 'people') {
+        doSearch().then(setSearchResults).catch(() => {})
+      }
+    }
     const unsubscribe = window.api.onIndexProgress((progress) => {
       setIndexProgress(progress)
       const sig = `${progress.totalPhotos}/${progress.thumbnailedPhotos}/${progress.indexedPhotos}/${progress.ocrPhotos || 0}`
       if (sig === last) return
       last = sig
       if (timer) return
-      timer = setTimeout(() => {
-        timer = null
-        refreshLibrary()
-        if (!filters.current.query.trim() && filters.current.source.type !== 'map' && filters.current.source.type !== 'people') {
-          doSearch().then(setSearchResults).catch(() => {})
-        }
-      }, 1500)
+      timer = setTimeout(refresh, 5000)
     })
     return () => {
       unsubscribe()
@@ -465,36 +480,39 @@ function App(): JSX.Element {
 
   // 键盘：Esc 逐层退出（快速查看自己在捕获阶段处理）→ 详情 → 清空选择；
   // 网格上的方向键 / Space / ↩ 只在没有浮层时生效。抽屉自己处理 Esc。
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        // 输入框里的 Esc 留给输入框自己（取消编辑 / 清空搜索），不关浮层不丢文本
-        if (isTextInput(e.target)) return
-        if (selected) setSelected(null)
-        else if (!showTasks && selectedIds.size > 0) clearSelection()
-        return
-      }
-      if (!isGrid || selected || showTasks) return
-      if (isTextInput(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        e.preventDefault()
-        moveFocus(e.key, e.shiftKey)
-      } else if (e.key === ' ') {
-        if (!primary) return
-        e.preventDefault()
-        setQuickLookId(primary.photo.id)
-      } else if (e.key === 'Enter') {
-        if (!primary) return
-        e.preventDefault()
-        setSelected(primary)
-      } else if (e.key === 'g' || e.key === 'G') {
-        e.preventDefault()
-        toggleDensity()
-      }
+  // 处理函数走 ref（menuHandler 同款）：选择变化不重订阅全局监听
+  const keyHandler = useRef<(e: KeyboardEvent) => void>(() => {})
+  keyHandler.current = (e) => {
+    if (e.key === 'Escape') {
+      // 输入框里的 Esc 留给输入框自己（取消编辑 / 清空搜索），不关浮层不丢文本
+      if (isTextInput(e.target)) return
+      if (selected) setSelected(null)
+      else if (!showTasks && selectedIds.size > 0) clearSelection()
+      return
     }
+    if (!isGrid || selected || showTasks) return
+    if (isTextInput(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveFocus(e.key, e.shiftKey)
+    } else if (e.key === ' ') {
+      if (!primary) return
+      e.preventDefault()
+      setQuickLookId(primary.photo.id)
+    } else if (e.key === 'Enter') {
+      if (!primary) return
+      e.preventDefault()
+      setSelected(primary)
+    } else if (e.key === 'g' || e.key === 'G') {
+      e.preventDefault()
+      toggleDensity()
+    }
+  }
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent): void => keyHandler.current(e)
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selected, showTasks, selectedIds, isGrid, primary, moveFocus, clearSelection, toggleDensity])
+  }, [])
 
   const hasDateFilter = !!(dateFrom || dateTo)
   const libraryEmpty = counts !== null && counts.all === 0
@@ -607,6 +625,7 @@ function App(): JSX.Element {
               onItemContextMenu={handleItemContextMenu}
               onColsChange={handleColsChange}
               onBackgroundClick={clearSelection}
+              onUserScroll={handleUserScroll}
             />
           ) : libraryEmpty ? (
             <EmptyState
@@ -644,7 +663,7 @@ function App(): JSX.Element {
                 onClose={dismissInspector}
               />
             ) : primary && (
-              <Inspector key={primary.photo.id} result={primary} onSelect={handleSelect} onClose={dismissInspector} showPreview />
+              <Inspector result={primary} onSelect={handleSelect} onClose={dismissInspector} showPreview />
             )}
           </aside>
         )}

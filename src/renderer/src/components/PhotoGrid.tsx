@@ -24,11 +24,13 @@ interface PhotoGridProps {
   onColsChange: (cols: number) => void
   /** 点在卡片之外的空白处：取消选择 */
   onBackgroundClick: () => void
+  /** 用户滚动了网格（索引刷新用它避开滚动中的重拉） */
+  onUserScroll?: () => void
 }
 
 export function PhotoGrid({
   results, isSearching, density, thumbSize, selectedIds, focusIndex, scrollResetKey,
-  onItemClick, onItemOpen, onItemContextMenu, onColsChange, onBackgroundClick,
+  onItemClick, onItemOpen, onItemContextMenu, onColsChange, onBackgroundClick, onUserScroll,
 }: PhotoGridProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<FixedSizeGrid>(null)
@@ -55,17 +57,16 @@ export function PhotoGrid({
   const cellSize = useMemo(() => (size.w > 0 ? Math.floor(size.w / cols) : 0), [size.w, cols])
   const rowCount = Math.ceil(results.length / cols)
 
-  // 宽度变化（检查器开合、侧栏拖动、窗口缩放）会改列宽 / 列数，网格按 key 重新挂载。
+  // 列数变化（侧栏拖动跨过阈值、缩略图滑块、窗口缩放）时网格按 key 重新挂载；
+  // 只有列宽微调（像素级）时不重挂，react-window 对 Fixed 尺寸变化会自行重置样式缓存。
   // 重挂载默认回到顶部，所以先算好新位置：以焦点项（不可见时用首个可见项）为锚，
   // 让它在视口里的纵向偏移保持不变，点选后卡片不会"跳走"。
   const scrollTop = useRef(0)
   const prevLayout = useRef({ cols, cellSize })
   const focusRef = useRef(focusIndex)
   focusRef.current = focusIndex
-  const layoutKey = `${cols}-${cellSize}`
   const initialScrollTop = useMemo(() => {
     const prev = prevLayout.current
-    prevLayout.current = { cols, cellSize }
     if (prev.cellSize <= 0 || cellSize <= 0) return scrollTop.current
     const st = scrollTop.current
     const fi = focusRef.current
@@ -76,8 +77,23 @@ export function PhotoGrid({
     const next = Math.max(0, Math.floor(anchor / cols) * cellSize - offset)
     scrollTop.current = next
     return next
-    // 只在布局变化时重算；其余输入都从 ref 读
-  }, [layoutKey])
+    // 只在列数变化（重挂载）时重算；其余输入都从 ref 读
+  }, [cols])
+  // 每次渲染都记录当前布局，供下次重算 / 换算用
+  prevLayout.current = { cols, cellSize }
+
+  // 列宽变但列数没变：等比换算滚动位置，保持可视内容不跳
+  const prevScale = useRef({ cols, cellSize })
+  useEffect(() => {
+    const prev = prevScale.current
+    prevScale.current = { cols, cellSize }
+    if (prev.cols !== cols) return // 列数变化走重挂载 + 锚点逻辑
+    if (prev.cellSize > 0 && cellSize > 0 && prev.cellSize !== cellSize && gridRef.current) {
+      const next = Math.round((scrollTop.current / prev.cellSize) * cellSize)
+      scrollTop.current = next
+      gridRef.current.scrollTo({ scrollTop: next })
+    }
+  }, [cols, cellSize])
 
   useEffect(() => { onColsChange(cols) }, [cols, onColsChange])
 
@@ -126,10 +142,10 @@ export function PhotoGrid({
       {size.w > 0 && size.h > 0 && (
         <FixedSizeGrid
           ref={gridRef}
-          // key 让 cols 变化时强制重新挂载，避免内部缓存把错位单元留在原位
-          key={layoutKey}
+          // key 让列数变化时强制重新挂载，避免内部缓存把错位单元留在原位
+          key={cols}
           initialScrollTop={initialScrollTop}
-          onScroll={({ scrollTop: t }) => { scrollTop.current = t }}
+          onScroll={({ scrollTop: t }) => { scrollTop.current = t; onUserScroll?.() }}
           columnCount={cols}
           columnWidth={cellSize}
           rowCount={rowCount}

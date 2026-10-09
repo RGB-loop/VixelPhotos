@@ -37,17 +37,24 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
   useEffect(() => {
     let cancelled = false
     setIsEditingCaption(false)
-    Promise.all([
-      window.api.getPhotoDetail(photo.id),
-      window.api.getPhotoLocations(photo.id),
-      window.api.findSimilar(photo.id, 6),
-    ]).then(([d, locs, sim]) => {
-      if (cancelled) return
-      setDetail(d)
-      setLocations(locs)
-      setSimilar(sim)
-    })
-    return () => { cancelled = true }
+    // 清掉上一张的内容，避免新照片顶着旧元数据
+    setDetail(null)
+    setLocations([])
+    setSimilar([])
+    // 方向键连按时防抖 250ms：停在哪张才为哪张发详情 / 位置 / 相似检索
+    const timer = setTimeout(() => {
+      Promise.all([
+        window.api.getPhotoDetail(photo.id),
+        window.api.getPhotoLocations(photo.id),
+        window.api.findSimilar(photo.id, 6),
+      ]).then(([d, locs, sim]) => {
+        if (cancelled) return
+        setDetail(d)
+        setLocations(locs)
+        setSimilar(sim)
+      })
+    }, 250)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [photo.id])
 
   useEffect(() => {

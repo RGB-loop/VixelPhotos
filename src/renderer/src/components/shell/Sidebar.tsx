@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { LibraryCounts, WatchedFolder } from '../../../../shared/types'
 import { Icon, type IconName } from './icons'
 
@@ -50,18 +50,24 @@ export function Sidebar({
   width, onResize, source, onSelect, counts, folders, onAddFolder,
   savedSearches, recentSearches, activeQuery, onRunSearch, onRemoveSearch,
 }: SidebarProps): JSX.Element {
-  const dragStart = useRef<{ x: number; w: number } | null>(null)
+  // 拖动期间宽度只记在本地，mouseup 才提交给 App——否则每帧都触发
+  // savePref + 主内容区 ResizeObserver，虚拟网格跟着抖
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const dragStart = useRef<{ x: number; w: number; cur: number } | null>(null)
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    dragStart.current = { x: e.clientX, w: width }
+    dragStart.current = { x: e.clientX, w: width, cur: width }
     const move = (ev: MouseEvent): void => {
-      if (!dragStart.current) return
-      const next = dragStart.current.w + ev.clientX - dragStart.current.x
-      onResize(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, next)))
+      const d = dragStart.current
+      if (!d) return
+      d.cur = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, d.w + ev.clientX - d.x))
+      setDragWidth(d.cur)
     }
     const up = (): void => {
+      if (dragStart.current) onResize(dragStart.current.cur)
       dragStart.current = null
+      setDragWidth(null)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
       document.body.style.cursor = ''
@@ -74,7 +80,7 @@ export function Sidebar({
   const recentShown = recentSearches.filter((q) => !savedSearches.includes(q)).slice(0, RECENT_SHOWN)
 
   return (
-    <aside style={{ width }} className="relative flex-shrink-0 h-full flex flex-col bg-sidebar border-r border-line select-none">
+    <aside style={{ width: dragWidth ?? width }} className="relative flex-shrink-0 h-full flex flex-col bg-sidebar border-r border-line select-none">
       {/* 红绿灯区：整条可拖动窗口 */}
       <div className="titlebar h-[52px] flex-shrink-0" />
 
