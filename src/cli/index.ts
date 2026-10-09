@@ -9,15 +9,29 @@ import { existsSync } from 'fs'
 import { initDatabase, type DatabaseInstance } from '../core/db'
 import { SearchEngine } from '../core/search'
 import { initEmbeddingServicePath, getEmbeddingService } from '../core/embedding'
+import { cmdDoctor, cmdBench } from './doctor'
 
-// 跨平台 userData 路径
+// 跨平台 userData 路径。打包版目录名取 productName（Vixel），开发版取 package.json name（vixel）；
+// 大小写敏感的卷上两者不同，所以都试一遍，VIXEL_DATA_DIR 可显式指定
 function getUserDataPath(): string {
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'vixel')
-  } else if (process.platform === 'win32') {
-    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'vixel')
-  }
-  return join(homedir(), '.config', 'vixel')
+  if (process.env.VIXEL_DATA_DIR) return process.env.VIXEL_DATA_DIR
+  const base = process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Application Support')
+    : process.platform === 'win32'
+      ? process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
+      : process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
+  const candidates = ['Vixel', 'vixel'].map((n) => join(base, n))
+  return candidates.find((d) => existsSync(join(d, 'library.db'))) ?? candidates[0]
+}
+
+// 模型目录：VIXEL_MODELS_DIR > 源码仓库 resources/models > 已安装的 Vixel.app
+function getModelsDir(): string | undefined {
+  const candidates = [
+    process.env.VIXEL_MODELS_DIR,
+    join(__dirname, '..', '..', '..', 'resources', 'models'),
+    process.platform === 'darwin' ? '/Applications/Vixel.app/Contents/Resources/models' : undefined,
+  ]
+  return candidates.find((d): d is string => !!d && existsSync(d))
 }
 
 function getDbPath(): string {
@@ -320,6 +334,11 @@ async function main(): Promise<void> {
   }
   const args = process.argv.slice(startIdx)
 
+  // --profile 等同 VIXEL_PROFILE=1；perf 模块在导入时读取环境变量，这里只能提示用法
+  if (args.includes('--profile') && process.env.VIXEL_PROFILE !== '1') {
+    console.error('Tip: use VIXEL_PROFILE=1 vixel <command> to print slow SQL statements.')
+  }
+
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     console.log(`Vixel CLI — query your local photo library
 
@@ -332,13 +351,22 @@ Usage:
   vixel stats                  Library statistics
   vixel caption <id>           View or update caption
   vixel folders                List watched folders
+  vixel doctor                 Health check: counts, queue errors, query plans
+  vixel bench                  Time hot queries and searches on this library
 
 Flags:
   --json                       JSON output (for scripts/agents)
   --limit <n>                  Max results (default 20)
   --date-from <YYYY-MM-DD>    Filter by date
   --date-to <YYYY-MM-DD>      Filter by date
-  --set <text>                 Set caption text`)
+  --set <text>                 Set caption text
+  --runs <n>                   bench: repetitions per operation (default 5)
+  --query <a,b,c>              bench: comma-separated search queries
+
+Environment:
+  VIXEL_DATA_DIR               Library directory (default: app data dir)
+  VIXEL_MODELS_DIR             Models directory (enables semantic search)
+  VIXEL_PROFILE=1              Log slow SQL statements`)
     process.exit(0)
   }
 
@@ -352,9 +380,21 @@ Flags:
     process.exit(1)
   }
 
-  // 初始化
-  initEmbeddingServicePath(getUserDataPath())
-  const db = initDatabase(dbPath, { runCleanup: false })
+  // 初始化。只有改 caption 需要写库；其余只读打开，不跑迁移，应用开着也安全
+  const modelsDir = getModelsDir()
+  initEmbeddingServicePath(getUserDataPath(), modelsDir)
+  if (!modelsDir && (command === 'search' || command === 'similar' || command === 'bench')) {
+    console.error('Note: models not found — semantic search disabled (set VIXEL_MODELS_DIR). Text and filename matching still work.')
+  }
+  const writes = command === 'caption' && flags.set !== undefined
+  let db: DatabaseInstance
+  try {
+    db = initDatabase(dbPath, { runCleanup: false, readonly: !writes })
+  } catch {
+    // 只读打开失败的两种情况：库是旧版本、还没迁移；或应用没在运行、WAL 的 -shm 文件不存在
+    // （只读连接创建不了它）。两种情况下读写打开都安全 —— 迁移与应用启动时跑的完全相同
+    db = initDatabase(dbPath, { runCleanup: false })
+  }
 
   try {
     switch (command) {
@@ -378,6 +418,12 @@ Flags:
         break
       case 'caption':
         cmdCaption(db, positional, flags)
+        break
+      case 'doctor':
+        cmdDoctor(db, dbPath, flags)
+        break
+      case 'bench':
+        await cmdBench(db, flags)
         break
       default:
         console.error(`Unknown command: ${command}`)

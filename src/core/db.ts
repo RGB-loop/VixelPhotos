@@ -514,19 +514,27 @@ export interface DatabaseInstance {
   /** 写入 meta_state 任一键 */
   setMetaState: (key: string, value: string) => void
 
+  /** 底层连接：只给诊断（vixel doctor / bench）跑 EXPLAIN 和计时用，业务代码别碰 */
+  raw: Database.Database
+
   // 关闭
   close: () => void
 }
 
 
-export function initDatabase(dbPath: string, options?: { runCleanup?: boolean }): DatabaseInstance {
+/**
+ * readonly：CLI 的只读命令用。不跑 DDL / 迁移 / checkpoint —— 应用开着时 CLI 也不会去改库结构
+ * （迁移可能触发 face_vecs 重建）。库必须已由应用创建并迁移过。
+ */
+export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; readonly?: boolean }): DatabaseInstance {
   const dir = dirname(dbPath)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
 
-  const db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
+  const readonly = options?.readonly === true
+  const db = new Database(dbPath, readonly ? { readonly: true, fileMustExist: true } : undefined)
+  if (!readonly) db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   // WAL 下 NORMAL 不会损坏库，只是掉电时可能丢最后几笔提交；FULL 会让首次导入的每次写都 fsync
   db.pragma('synchronous = NORMAL')
@@ -545,13 +553,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     return tokenizeForFtsSync(text)
   })
 
-  db.exec(SCHEMA)
-  migrateSchema(db)
+  if (!readonly) {
+    db.exec(SCHEMA)
+    migrateSchema(db)
+    // WAL checkpoint — 确保其他进程写入的数据对当前连接可见
+    db.pragma('wal_checkpoint(PASSIVE)')
+  }
 
-  // WAL checkpoint — 确保其他进程写入的数据对当前连接可见
-  db.pragma('wal_checkpoint(PASSIVE)')
-
-  if (options?.runCleanup !== false) {
+  if (!readonly && options?.runCleanup !== false) {
     cleanupStaleVecMap(db)
   }
 
@@ -2031,6 +2040,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       db.prepare(`INSERT OR REPLACE INTO meta_state(key, value) VALUES (?, ?)`).run(key, value)
     },
 
+    raw: db,
     close: (): void => { db.close() },
   }
 }
