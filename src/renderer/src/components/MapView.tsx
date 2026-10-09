@@ -74,6 +74,8 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
           showCoverageOnHover: false,
           maxClusterRadius: 60,
           spiderfyOnMaxZoom: true,
+          // 大量点位分帧入组，不卡首屏
+          chunkedLoading: true,
           iconCreateFunction: (cluster) => {
             const count = cluster.getChildCount()
             const size = count < 10 ? 36 : count < 50 ? 44 : count < 200 ? 52 : 60
@@ -140,6 +142,7 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
           return root
         }
 
+        const markers: ReturnType<typeof L.marker>[] = []
         for (const photo of gpsPhotos) {
           if (photo.lat == null || photo.lng == null) continue
 
@@ -152,8 +155,10 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
             offset: L.point(0, -4),
           })
 
-          clusterGroup.addLayer(marker)
+          markers.push(marker)
         }
+        // 一次性入组（配合 chunkedLoading 分帧），比逐个 addLayer 快一个量级
+        clusterGroup.addLayers(markers)
 
         map.addLayer(clusterGroup)
 

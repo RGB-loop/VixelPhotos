@@ -1,30 +1,30 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import type { Person, PersonFace, PersonSuggestion, Photo, SearchResult } from '../../../shared/types'
+import { faceUrl, thumbUrl } from '../lib/mediaUrl'
 
 interface PeopleViewProps {
   onSelectPhoto: (photo: Photo) => void
 }
 
-// 人脸裁剪要读原图，按 faceId 缓存在模块级，人物列表刷新时不重复裁
-const faceThumbCache = new Map<number, string>()
-function useFaceThumb(faceId: number | null | undefined): string | undefined {
-  const [src, setSrc] = useState(() => (faceId ? faceThumbCache.get(faceId) : undefined))
-  useEffect(() => {
-    if (!faceId) { setSrc(undefined); return }
-    const hit = faceThumbCache.get(faceId)
-    if (hit) { setSrc(hit); return }
-    let alive = true
-    window.api.getFaceThumbnail(faceId).then((data) => {
-      if (!data) return
-      faceThumbCache.set(faceId, data)
-      if (alive) setSrc(data)
-    })
-    return () => { alive = false }
-  }, [faceId])
-  return src
-}
-
 const DRAG_TYPE = 'application/x-vixel-person'
+
+/** 大列表分批渲染：先挂一批，滚到哨兵附近再追加，避免一次创建几百个节点 */
+function useIncremental(total: number, chunk = 120): { count: number; sentinelRef: (el: HTMLElement | null) => void } {
+  const [count, setCount] = useState(chunk)
+  useEffect(() => setCount(chunk), [total, chunk])
+  const observer = useRef<IntersectionObserver | null>(null)
+  const sentinelRef = useCallback((el: HTMLElement | null) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!el) return
+    observer.current = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setCount((n) => n + chunk)
+    }, { rootMargin: '600px' })
+    observer.current.observe(el)
+  }, [chunk])
+  useEffect(() => () => observer.current?.disconnect(), [])
+  return { count, sentinelRef }
+}
 
 /** 合并时保留谁：已命名 > 脸多的 */
 function pickTarget(group: Person[]): Person {
@@ -279,11 +279,20 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
 }
 
 function FaceCircle({ faceId, className = '' }: { faceId: number | null | undefined; className?: string }): JSX.Element {
-  const src = useFaceThumb(faceId)
+  // 人脸裁剪由主进程落盘缓存、经 vixel://face 协议直出（faceId 不复用，无需缓存参数）
+  const [error, setError] = useState(false)
+  useEffect(() => setError(false), [faceId])
   return (
     <div className={`rounded-full overflow-hidden bg-surface-3 ${className}`}>
-      {src ? (
-        <img src={src} className="w-full h-full object-cover" draggable={false} />
+      {faceId && !error ? (
+        <img
+          src={faceUrl(faceId)}
+          className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          onError={() => setError(true)}
+        />
       ) : (
         <div className="w-full h-full flex items-center justify-center text-ink-ghost">
           <svg className="w-1/3 h-1/3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -484,6 +493,9 @@ function PersonDetail({ person, others, onBack, onSelectPhoto, onRename, onHide,
 
   useEffect(() => { load() }, [load, person.faceCount])
 
+  const photosInc = useIncremental(photos.length)
+  const facesInc = useIncremental(faces.length)
+
   const reject = async (faceId: number): Promise<void> => {
     setFaces((fs) => fs.filter((f) => f.id !== faceId))
     await window.api.rejectFace(faceId)
@@ -532,16 +544,17 @@ function PersonDetail({ person, others, onBack, onSelectPhoto, onRename, onHide,
       {tab === 'photos' ? (
         <div className="flex-1 overflow-auto p-0.5">
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-0.5">
-            {photos.map((r) => (
+            {photos.slice(0, photosInc.count).map((r) => (
               <PhotoThumb key={r.photo.id} photo={r.photo} onClick={() => onSelectPhoto(r.photo)} />
             ))}
           </div>
+          {photos.length > photosInc.count && <div ref={photosInc.sentinelRef} className="h-8" />}
         </div>
       ) : (
         <div className="flex-1 overflow-auto p-4">
           <p className="text-callout text-ink-3 mb-3">认错的脸点「不是此人」，以后也不会再自动归到这里；也可以直接移给另一个人。</p>
           <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-3">
-            {faces.map((f) => (
+            {faces.slice(0, facesInc.count).map((f) => (
               <div key={f.id} className="group relative" data-face-id={f.id}>
                 <FaceCircle faceId={f.id} className={`w-full aspect-square ${f.quality < 0.4 ? 'opacity-70' : ''}`} />
                 <div className="absolute inset-x-0 bottom-0 flex flex-col gap-0.5 p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -577,32 +590,27 @@ function PersonDetail({ person, others, onBack, onSelectPhoto, onRename, onHide,
               </div>
             ))}
           </div>
+          {faces.length > facesInc.count && <div ref={facesInc.sentinelRef} className="h-8" />}
         </div>
       )}
     </div>
   )
 }
 
-/** 简单的照片缩略图（复用于人物详情） */
+/** 简单的照片缩略图（复用于人物详情）：直接走 vixel://thumb 协议 + 懒加载 */
 function PhotoThumb({ photo, onClick }: { photo: Photo; onClick: () => void }): JSX.Element {
-  const [thumb, setThumb] = useState<string>('')
-
-  useEffect(() => {
-    window.api.getThumbnailData(photo.id).then((data) => {
-      if (data) setThumb(data)
-    })
-  }, [photo.id])
-
   return (
     <div
       className="aspect-square overflow-hidden cursor-pointer bg-surface-2 hover:brightness-110"
       onClick={onClick}
     >
-      {thumb ? (
-        <img src={thumb} alt={photo.fileName} className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full image-placeholder" />
-      )}
+      <img
+        src={thumbUrl(photo)}
+        alt={photo.fileName}
+        className="w-full h-full object-cover"
+        loading="lazy"
+        decoding="async"
+      />
     </div>
   )
 }
