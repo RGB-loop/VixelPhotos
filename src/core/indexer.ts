@@ -10,7 +10,7 @@ import type { CurrentTask, IndexProgress, TaskType } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
-import { decodeImage } from './image/decode'
+import { decodeImage, type DecodedImage } from './image/decode'
 import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
 import { generateSprite } from './video/sprite'
 import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
@@ -34,6 +34,10 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
  *         封面 / 波形图落成代表 photo（只做缩略图，不做图片向量）
  */
 const PAUSED_KEY = 'indexing_paused'
+/** 进度事件最小间隔：每次都要跑两条全表聚合（主进程同步），索引时每个任务 / 每个片段都会触发 */
+const PROGRESS_MIN_INTERVAL_MS = 250
+/** 模型未就绪导致的失败以此开头；requeueMissingEmbeddings 只自动重排这类，坏文件留给任务面板 */
+export const MODEL_NOT_READY_PREFIX = 'Embedding model not ready'
 
 export class Indexer extends EventEmitter {
   private db: DatabaseInstance
@@ -49,6 +53,11 @@ export class Indexer extends EventEmitter {
   private current: CurrentTask | null = null
   // 新脸先即时归属（只认很确定的），剩下的攒批聚类；人物有变动时发 'people-changed'
   readonly faceClusterer: FaceClusterer
+  // 同一张图的 thumbnail → embed → face → ocr 任务通常相邻，复用最近两次解码（HEIC 走 sips 很贵）
+  private decodeCache: Array<{ key: string; decoded: Promise<DecodedImage> }> = []
+  private progressTimer: NodeJS.Timeout | null = null
+  private lastProgressAt = 0
+  private pendingProgress: { stage: IndexProgress['stage']; currentFile?: string } | null = null
 
   constructor(db: DatabaseInstance, userDataPath: string) {
     super()
@@ -132,7 +141,7 @@ export class Indexer extends EventEmitter {
         }
       }
 
-      const decoded = await decodeImage(filePath)
+      const decoded = await this.decode(fileHash, filePath)
       const result = await processPhotoOcr(decoded.buffer)
       if (result.text.trim().length > 0) {
         this.db.saveOcrText(fileHash, result.text)
@@ -312,7 +321,7 @@ export class Indexer extends EventEmitter {
     }
 
     if (!modelReady) {
-      throw new Error(`Embedding model not ready: ${embeddingService.getInitError() ?? 'unknown'}`)
+      throw new Error(`${MODEL_NOT_READY_PREFIX}: ${embeddingService.getInitError() ?? 'unknown'}`)
     }
     if (failed === numSegments) {
       throw new Error(`全部 ${numSegments} 个片段失败：${lastError.slice(0, 300)}`)
@@ -372,7 +381,7 @@ export class Indexer extends EventEmitter {
         await initFaceService()
       }
 
-      const decoded = await decodeImage(filePath)
+      const decoded = await this.decode(fileHash, filePath)
       const faces = await processPhotoFaces(decoded.buffer)
 
       for (const face of faces) {
@@ -420,6 +429,17 @@ export class Indexer extends EventEmitter {
     this.emitProgress(this.isProcessing ? 'indexing' : 'idle', this.current?.name)
   }
 
+  private decode(fileHash: string, filePath: string): Promise<DecodedImage> {
+    const key = `${fileHash}:${filePath}`
+    const hit = this.decodeCache.find((e) => e.key === key)
+    if (hit) return hit.decoded
+    const decoded = decodeImage(filePath)
+    // 失败的不缓存，重试时重新读
+    decoded.catch(() => { this.decodeCache = this.decodeCache.filter((e) => e.decoded !== decoded) })
+    this.decodeCache = [{ key, decoded }, ...this.decodeCache].slice(0, 2)
+    return decoded
+  }
+
   /** 获取缩略图路径（按 hash） */
   getThumbnailPath(fileHash: string): string {
     return join(this.thumbnailDir, `${fileHash}.webp`)
@@ -463,7 +483,7 @@ export class Indexer extends EventEmitter {
 
         this.setCurrent(task.taskType as TaskType, photo.mediaKind ?? 'image', photo.fileName, 0, 1)
         if (task.taskType === 'thumbnail') {
-          await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId)
+          await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId, photo.width != null)
         } else if (task.taskType === 'embed') {
           await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
         } else if (task.taskType === 'face') {
@@ -484,16 +504,15 @@ export class Indexer extends EventEmitter {
     setImmediate(() => this.processNext())
   }
 
-  private async processThumbnail(fileHash: string, filePath: string, photoId: number): Promise<void> {
+  private async processThumbnail(fileHash: string, filePath: string, photoId: number, hasMeta = false): Promise<void> {
     try {
-      const decoded = await decodeImage(filePath)
       const thumbnailPath = this.getThumbnailPath(fileHash)
-      if (existsSync(thumbnailPath)) {
-        await this.parseAndUpdateMeta(photoId, decoded.buffer, decoded.originalBuffer)
-        return
-      }
+      const hasThumb = existsSync(thumbnailPath)
+      // 缩略图和元数据都在 → 不必再解码原图
+      if (hasThumb && hasMeta) return
+      const decoded = await this.decode(fileHash, filePath)
       await this.parseAndUpdateMeta(photoId, decoded.buffer, decoded.originalBuffer)
-      await this.generateThumbnail(fileHash, decoded.buffer)
+      if (!hasThumb) await this.generateThumbnail(fileHash, decoded.buffer)
     } catch (error) {
       console.error(`Error processing thumbnail for ${filePath}:`, error)
       throw error
@@ -536,21 +555,20 @@ export class Indexer extends EventEmitter {
         return
       }
 
-      const decoded = await decodeImage(filePath)
-
-      // 兜底：确保缩略图存在
-      const thumbnailPath = this.getThumbnailPath(fileHash)
-      if (!existsSync(thumbnailPath)) {
+      // 兜底：确保缩略图存在（与下面共用同一次解码）
+      if (!existsSync(this.getThumbnailPath(fileHash))) {
         await this.processThumbnail(fileHash, filePath, photoId)
       }
+      const decoded = await this.decode(fileHash, filePath)
 
-      try {
-        const embeddingService = getEmbeddingService()
-        const embedding = await embeddingService.encodeImage(decoded.buffer)
-        this.db.saveImageVec(fileHash, embedding)
-      } catch (embedError) {
-        console.warn(`Image embedding failed for ${filePath}:`, embedError)
+      // 失败要抛出：吞掉的话任务记 done、没有向量，下次启动又被 requeueMissingEmbeddings 悄悄重排
+      const embeddingService = getEmbeddingService()
+      await embeddingService.init()
+      if (!embeddingService.isReady()) {
+        throw new Error(`${MODEL_NOT_READY_PREFIX}: ${embeddingService.getInitError() ?? 'unknown'}`)
       }
+      const embedding = await embeddingService.encodeImage(decoded.buffer)
+      this.db.saveImageVec(fileHash, embedding)
     } catch (error) {
       console.error(`Error processing embedding for ${filePath}:`, error)
       throw error
@@ -566,7 +584,24 @@ export class Indexer extends EventEmitter {
       .toFile(thumbnailPath)
   }
 
+  /**
+   * 合并发送：间隔内的多次调用只发最后一次（尾沿一定会发出，最终状态不丢）。
+   * 统计查询放在真正发送时才跑，索引时主进程不再被逐任务的全表聚合占住。
+   */
   private emitProgress(stage: IndexProgress['stage'], currentFile?: string): void {
+    this.pendingProgress = { stage, currentFile }
+    if (this.progressTimer) return
+    const wait = PROGRESS_MIN_INTERVAL_MS - (Date.now() - this.lastProgressAt)
+    if (wait <= 0) this.flushProgress()
+    else this.progressTimer = setTimeout(() => this.flushProgress(), wait)
+  }
+
+  private flushProgress(): void {
+    this.progressTimer = null
+    const pending = this.pendingProgress
+    if (!pending) return
+    this.pendingProgress = null
+    this.lastProgressAt = Date.now()
     const photoStats = this.db.getPhotoStats()
     const queue = this.db.getQueueStats()
     const progress: IndexProgress = {
@@ -574,8 +609,8 @@ export class Indexer extends EventEmitter {
       thumbnailedPhotos: photoStats.thumbnailed,
       indexedPhotos: photoStats.indexed,
       ocrPhotos: photoStats.ocred,
-      stage,
-      currentFile,
+      stage: pending.stage,
+      currentFile: pending.currentFile,
       paused: this.paused,
       current: this.current ?? undefined,
       queue: { pending: queue.pending + queue.processing, error: queue.error },

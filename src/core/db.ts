@@ -55,6 +55,11 @@ CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(embed_status);
 CREATE INDEX IF NOT EXISTS idx_photos_video ON photos(video_id);
 CREATE INDEX IF NOT EXISTS idx_photos_deleted ON photos(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_photos_file_hash ON photos(file_hash);
+-- 网格分页：ORDER BY 走索引，LIMIT 提前截断，不再每页全表扫描 + 临时排序
+CREATE INDEX IF NOT EXISTS idx_photos_live_created ON photos(created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_photos_live_taken ON photos(taken_at DESC, created_at DESC) WHERE deleted_at IS NULL;
+-- 代表行判定 MIN(id) / 重复计数：一次索引查找
+CREATE INDEX IF NOT EXISTS idx_photos_live_hash_id ON photos(file_hash, id) WHERE deleted_at IS NULL;
 
 -- 索引任务队列
 CREATE TABLE IF NOT EXISTS index_queue (
@@ -289,6 +294,8 @@ export interface DatabaseInstance {
   getFoldersWithStats: () => WatchedFolder[]
   updateFolderScanTime: (id: number) => void
   getFolderStats: (id: number) => { photoCount: number; photoIds: number[] }
+  /** 文件夹里仍存活的源文件路径（不含视频帧）；启动对账用，一条查询代替逐张 getPhoto */
+  getLiveSourcePaths: (folderId: number) => { photos: string[]; videos: string[] }
   deletePhotosByFolder: (folderId: number) => string[] // 返回孤立的 file_hash 列表
   /** 删除文件夹下的视频 + 片段向量 + extract_frames 任务；返回视频 hash（调用方清抽帧目录） */
   deleteVideosByFolder: (folderId: number) => string[]
@@ -520,6 +527,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
+  // WAL 下 NORMAL 不会损坏库，只是掉电时可能丢最后几笔提交；FULL 会让首次导入的每次写都 fsync
+  db.pragma('synchronous = NORMAL')
+  db.pragma('temp_store = MEMORY')
+  db.pragma('cache_size = -65536') // 64 MB
+  db.pragma('mmap_size = 268435456') // 256 MB，向量表全扫描走 mmap
 
   // 加载 sqlite-vec 向量搜索扩展
   sqliteVec.load(db)
@@ -581,6 +593,12 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     deletePhotosByFolderId: db.prepare(`DELETE FROM photos WHERE folder_id = ?`),
     deleteQueueByPhotoIds: db.prepare(`DELETE FROM index_queue WHERE photo_id IN (SELECT id FROM photos WHERE folder_id = ?)`),
     getVideosByFolder: db.prepare(`SELECT id, file_hash as fileHash FROM videos WHERE folder_id = ?`),
+    getLivePhotoPaths: db.prepare(`
+      SELECT file_path as p FROM photos WHERE folder_id = ? AND deleted_at IS NULL AND video_id IS NULL
+    `).pluck(),
+    getLiveVideoPaths: db.prepare(`
+      SELECT file_path as p FROM videos WHERE folder_id = ? AND deleted_at IS NULL
+    `).pluck(),
     // extract_frames 的 photo_id 存的是 videos.id
     deleteExtractTasksByFolder: db.prepare(`
       DELETE FROM index_queue
@@ -771,7 +789,11 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       WHERE v.deleted_at IS NULL
         AND v.duration_ms > 0
         AND v.id NOT IN (SELECT video_id FROM video_segments)
-        AND v.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'extract_frames' AND status IN ('pending', 'processing'))
+        AND v.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'extract_frames' AND status IN ('pending', 'processing', 'error'))
+    `),
+    clearModelNotReadyErrors: db.prepare(`
+      DELETE FROM index_queue
+      WHERE task_type IN ('embed', 'extract_frames') AND status = 'error' AND error_msg LIKE 'Embedding model not ready%'
     `),
     getPhotosWithoutEmbedding: db.prepare(`
       SELECT p.id, p.file_hash FROM photos p
@@ -779,7 +801,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         AND p.file_hash IS NOT NULL
         AND p.file_hash NOT IN (SELECT file_hash FROM image_vec_map)
         AND (p.video_id IS NULL OR p.video_id NOT IN (SELECT id FROM videos WHERE media_kind = 'audio'))
-        AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type IN ('embed', 'thumbnail') AND status IN ('pending', 'processing'))
+        AND p.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type IN ('embed', 'thumbnail') AND status IN ('pending', 'processing', 'error'))
     `),
     getQueueStats: db.prepare(`
       SELECT
@@ -1216,6 +1238,10 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         photoIds: idsResult.map((r) => r.id),
       }
     },
+    getLiveSourcePaths: (folderId: number) => ({
+      photos: stmts.getLivePhotoPaths.all(folderId) as string[],
+      videos: stmts.getLiveVideoPaths.all(folderId) as string[],
+    }),
     deletePhotosByFolder: (folderId: number): string[] => {
       // 找出孤立的 hash（该文件夹内的，且没有其他文件夹有存活副本）
       const orphanedHashes = (stmts.getOrphanedHashes.all(folderId, folderId) as Array<{ file_hash: string }>)
@@ -1347,7 +1373,10 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
     recoverStuckTasks: (): number => {
       return stmts.recoverStuckTasks.run().changes
     },
-    requeueMissingEmbeddings: (): number => {
+    requeueMissingEmbeddings: db.transaction((): number => {
+      // 模型未就绪的失败可以自动重来（先删掉旧的失败行，免得队列里一条媒体两行）；
+      // 单文件失败（坏图 / 解码失败）不自动重排，留在任务面板由用户重试，避免每次启动白跑
+      stmts.clearModelNotReadyErrors.run()
       const photos = stmts.getPhotosWithoutEmbedding.all() as Array<{ id: number }>
       for (const photo of photos) {
         stmts.addToQueue.run(photo.id, 'embed', 10)
@@ -1357,7 +1386,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
         stmts.addToQueue.run(video.id, 'extract_frames', 6)
       }
       return photos.length + videos.length
-    },
+    }),
     getQueueStats: () => {
       const result = stmts.getQueueStats.get() as { pending: number; processing: number; done: number; error: number }
       return {
