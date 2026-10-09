@@ -22,6 +22,17 @@ import { InferenceProcess } from './inference-client'
 import { setInferenceTransport } from '../core/inference/transport'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
+const APP_NAME = 'Vixel'
+
+// 开发期 app.name 默认取 package.json 的 "vixel"，菜单 / 关于面板会显示小写名。
+// setName 也会改默认 userData 目录，先记下原路径再设回去，老数据不搬家。
+{
+  const userData = app.getPath('userData')
+  app.setName(APP_NAME)
+  app.setPath('userData', userData)
+}
+app.setAboutPanelOptions({ applicationName: APP_NAME, applicationVersion: app.getVersion() })
+
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
 const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const BACKUP_KEEP_COUNT = 3
@@ -684,6 +695,11 @@ function registerVixelProtocol(): void {
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.vixel.app')
+  // 开发期 Dock 图标兜底；名字 / ⌘Tab 图标靠 predev 的 scripts/dev-bundle.mjs 改 Electron.app
+  if (is.dev && process.platform === 'darwin') {
+    const icon = join(app.getAppPath(), 'build/icon.png')
+    if (existsSync(icon)) app.dock?.setIcon(icon)
+  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filename. The query is encoded once and shared by both vector channels.
 
 ### Added
+- App name and icon in development too: `npm run dev` (predev →
+  `scripts/dev-bundle.mjs`) patches the dev Electron.app's CFBundleName /
+  CFBundleDisplayName and icon, so the menu bar, Dock, ⌘Tab and About panel
+  show "Vixel" with the Vixel icon. The userData directory is unchanged.
 - **Person clustering rewrite** (`face/cluster.ts`, `face/clusterer.ts`):
   per-face quality score (size / yaw / sharpness); new faces join a person
   immediately only on a confident KNN vote, the rest are batch-clustered by

@@ -14,6 +14,7 @@
   },
   "homepage": "https://github.com/vixel-app/vixel#readme",
   "scripts": {
+    "predev": "node scripts/dev-bundle.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",

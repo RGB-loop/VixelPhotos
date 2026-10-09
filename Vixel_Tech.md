@@ -943,6 +943,14 @@ app.on('ready', () => {
 }
 ```
 
+**开发期名称 / 图标**：macOS 菜单栏粗体名、Dock / ⌘Tab 的名字和图标取自 bundle 的
+Info.plist 和 `electron.icns`，`app.setName()` 改不到。`predev` 跑
+`scripts/dev-bundle.mjs`：用 PlistBuddy 把 `node_modules/electron/dist/Electron.app`
+的 CFBundleName / CFBundleDisplayName 改成 Vixel、换上 `build/icon.icns`，再
+`lsregister -f` 刷新 Launch Services 缓存（幂等；不改 CFBundleIdentifier，Electron
+子进程靠它找主进程）。重装 electron 后下次 `npm run dev` 会自动再打一次。
+打包版的名字 / 图标走 `electron-builder.yml`。
+
 ### 7.2 项目结构
 
 ```
