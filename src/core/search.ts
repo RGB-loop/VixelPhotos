@@ -3,7 +3,7 @@
  */
 
 import type { DatabaseInstance } from './db'
-import type { MediaKind, SearchResult } from '../shared/types'
+import type { MatchChannel, MediaKind, SearchResult } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { rrfFuse } from './fusion'
 
@@ -104,6 +104,16 @@ export class SearchEngine {
         r.score = r.score / maxScore
       }
 
+      // 每条结果记下召回它的通道，供界面解释命中原因
+      const channelSets: Array<[MatchChannel, Set<string>]> = [
+        ['visual', new Set(imageOnlyResults.map((r) => r.fileHash))],
+        ['segment', segmentHashes],
+        ['text', new Set(ocrResults.map((r) => r.fileHash))],
+        ['filename', new Set(fileNameResults.map((r) => r.fileHash))],
+      ]
+      const matchedBy = (hash: string): MatchChannel[] =>
+        channelSets.filter(([, set]) => set.has(hash)).map(([ch]) => ch)
+
       const folderHashes = folderId != null ? this.db.getHashesInFolder(folderId) : null
       const results: SearchResult[] = []
       const seenHashes = new Set<string>()
@@ -124,7 +134,8 @@ export class SearchEngine {
             seenVideos.add(photo.videoId)
           }
           const segment = segmentByHash.get(fileHash)
-          results.push(segment ? { photo, score, segment } : { photo, score })
+          const by = matchedBy(fileHash)
+          results.push(segment ? { photo, score, segment, matchedBy: by } : { photo, score, matchedBy: by })
           if (results.length >= limit) break
         }
       }

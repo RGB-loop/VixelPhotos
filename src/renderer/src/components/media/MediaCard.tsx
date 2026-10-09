@@ -1,6 +1,9 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import type { SearchResult } from '../../../../shared/types'
+import type { MatchChannel, SearchResult } from '../../../../shared/types'
 import { formatDuration, mediaKindOf } from '../../lib/format'
+
+/** 命中原因角标：只列确定性通道 */
+const MATCH_LABELS: Array<[MatchChannel, string]> = [['text', '图中文字'], ['filename', '文件名']]
 import { spriteUrl, thumbUrl } from '../../lib/mediaUrl'
 
 export type GridDensity = 'immersive' | 'info'
@@ -46,6 +49,7 @@ export const MediaCard = memo(function MediaCard({
   result, index, selected, rank, density, onClick, onDoubleClick, onContextMenu,
 }: MediaCardProps): JSX.Element {
   const { photo, segment } = result
+  const matchLabels = MATCH_LABELS.filter(([ch]) => result.matchedBy?.includes(ch)).map(([, label]) => label)
   const info = density === 'info'
   const kind = mediaKindOf(photo)
   const [error, setError] = useState(false)
@@ -183,10 +187,19 @@ export const MediaCard = memo(function MediaCard({
         </div>
       </div>
 
-      {/* 左上：排名 */}
-      {info && rank != null && (
-        <span className="absolute top-1.5 left-1.5 min-w-[18px] h-[18px] px-1 rounded bg-black/60 backdrop-blur-sm text-white/90 text-micro font-semibold tabular-nums flex items-center justify-center pointer-events-none">
-          {rank}
+      {/* 左上：排名 + 命中原因（向量通道总会召回近邻，不标；只标确定性的文字 / 文件名命中） */}
+      {info && (rank != null || matchLabels.length > 0) && (
+        <span className="absolute top-1.5 left-1.5 flex items-center gap-1 pointer-events-none">
+          {rank != null && (
+            <span className="min-w-[18px] h-[18px] px-1 rounded bg-black/60 backdrop-blur-sm text-white/90 text-micro font-semibold tabular-nums flex items-center justify-center">
+              {rank}
+            </span>
+          )}
+          {matchLabels.map((label) => (
+            <span key={label} className="h-[18px] px-1.5 rounded bg-black/60 backdrop-blur-sm text-white/90 text-micro font-medium flex items-center">
+              {label}
+            </span>
+          ))}
         </span>
       )}
 

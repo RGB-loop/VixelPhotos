@@ -126,6 +126,7 @@ async function cmdSearch(db: DatabaseInstance, positional: string[], flags: Reco
       filePath: r.photo.filePath,
       fileHash: r.photo.fileHash,
       score: r.score,
+      matchedBy: r.matchedBy,
       caption: r.photo.caption,
       takenAt: r.photo.takenAt,
       width: r.photo.width,
