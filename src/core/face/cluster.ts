@@ -22,7 +22,7 @@ export const T_ASSIGN_LOWQ = 0.52   // 低质量脸要更确定
 export const T_LINK = 0.5           // 脸 ↔ 脸：拉回落单脸 / 开簇时的邻居
 export const T_MERGE = 0.6          // 质心 ↔ 质心：未命名之间自动合并
 export const T_MERGE_NAMED = 0.7    // 未命名 → 已命名
-export const T_SUGGEST = 0.4        // [T_SUGGEST, 合并阈值) 进"是同一个人吗？"
+export const T_SUGGEST = 0.4        // ≥ 此值、仍是两个人物的进"是同一个人吗？"
 export const Q_SEED = 0.4           // 质量 ≥ 此值才能开新簇
 export const Q_MIN = 0.12           // 低于此值不参与自动聚类
 export const MIN_FACES = 2          // 临时簇至少几张脸才成为人物
@@ -247,7 +247,11 @@ export async function clusterFaces(input: ClusterInput): Promise<ClusterPlan> {
   return { assign, create, merges, dormant }
 }
 
-/** 合并建议：质心相似度在 [T_SUGGEST, 自动合并阈值) 之间的人物对 */
+/**
+ * 合并建议：质心相似度 ≥ T_SUGGEST 的人物对（两个已命名的除外）。
+ * 不设上限：高于合并阈值却还是两个人物的，可能是手动拆开的、被"不是此人"挡住的，
+ * 或是一直没有新脸触发合并检查的 —— 都交给用户确认，驳回一次就不再出现。
+ */
 export function suggestMerges(
   persons: PersonCentroid[],
   dismissedPairs: Set<string>,
@@ -259,9 +263,7 @@ export function suggestMerges(
       const a = persons[i], b = persons[j]
       if (a.named && b.named) continue
       const s = dotF(a.centroid, b.centroid)
-      const upper = a.named || b.named ? T_MERGE_NAMED : T_MERGE
-      // ≥ 合并阈值却没合并的，是被"不是此人"等约束挡住的，不再建议
-      if (s < T_SUGGEST || s >= upper) continue
+      if (s < T_SUGGEST) continue
       if (dismissedPairs.has(pairKey(a.id, b.id))) continue
       // 已命名的放 a，界面上问"X 是不是 <已命名>"
       out.push(b.named && !a.named ? { a: b.id, b: a.id, similarity: s } : { a: a.id, b: b.id, similarity: s })

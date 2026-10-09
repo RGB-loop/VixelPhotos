@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never seed a person. Named people are never auto-merged with each other.
 - Person curation backend: merge suggestions, "不是此人" rejections, manual
   face assignment, hidden people (`face_rejections`, `person_dismissed_pairs`).
+- **People view curation UI**: double-click to name (clearing a name returns
+  the person to unnamed), ⌘/shift-click multi-select and drag-onto-person to
+  merge, a "是同一个人吗？" suggestion card, per-face "不是此人" / "移给…" in the
+  person detail "人脸" tab, hide / unhide people, live refresh after clustering.
+  Merge suggestions no longer have an upper similarity bound.
 - **Standalone audio** (`.mp3 .m4a .aac .wav .flac .ogg .opus`): cut into 32s
   segments, each embedded from the audio track alone, stored in the same
   `videos` / `video_segments` tables (`videos.media_kind = 'audio'`). The grid

@@ -1763,7 +1763,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean })
       return stmts.getPersonPhotos.all(personId, limit) as Photo[]
     },
     updatePersonName: (personId, name) => {
-      stmts.updatePersonName.run(name, personId)
+      // 清空名字 = 回到未命名（不再锁定，可被自动合并）
+      stmts.updatePersonName.run(name.trim() || null, personId)
     },
     mergePeople: (targetId, sourceIds) => {
       const transaction = db.transaction(() => {

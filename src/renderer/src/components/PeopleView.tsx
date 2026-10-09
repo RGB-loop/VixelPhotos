@@ -1,45 +1,73 @@
-import { useEffect, useState, useCallback } from 'react'
-import type { Person, Photo, SearchResult } from '../../../shared/types'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import type { Person, PersonFace, PersonSuggestion, Photo, SearchResult } from '../../../shared/types'
 
 interface PeopleViewProps {
   onSelectPhoto: (photo: Photo) => void
 }
 
+// 人脸裁剪要读原图，按 faceId 缓存在模块级，人物列表刷新时不重复裁
+const faceThumbCache = new Map<number, string>()
+function useFaceThumb(faceId: number | null | undefined): string | undefined {
+  const [src, setSrc] = useState(() => (faceId ? faceThumbCache.get(faceId) : undefined))
+  useEffect(() => {
+    if (!faceId) { setSrc(undefined); return }
+    const hit = faceThumbCache.get(faceId)
+    if (hit) { setSrc(hit); return }
+    let alive = true
+    window.api.getFaceThumbnail(faceId).then((data) => {
+      if (!data) return
+      faceThumbCache.set(faceId, data)
+      if (alive) setSrc(data)
+    })
+    return () => { alive = false }
+  }, [faceId])
+  return src
+}
+
+const DRAG_TYPE = 'application/x-vixel-person'
+
+/** 合并时保留谁：已命名 > 脸多的 */
+function pickTarget(group: Person[]): Person {
+  return [...group].sort((a, b) => (b.name ? 1 : 0) - (a.name ? 1 : 0) || b.faceCount - a.faceCount)[0]
+}
+
 export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
   const [people, setPeople] = useState<Person[]>([])
+  const [suggestions, setSuggestions] = useState<PersonSuggestion[]>([])
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState('')
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null)
-  const [personPhotos, setPersonPhotos] = useState<SearchResult[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [editingId, setEditingId] = useState<number | null>(null)
-  const [editName, setEditName] = useState('')
-  const [faceThumbs, setFaceThumbs] = useState<Map<number, string>>(new Map())
+  const [showHidden, setShowHidden] = useState(false)
+  const [notice, setNotice] = useState('')
 
   const loadPeople = useCallback(async () => {
-    const result = await window.api.getPeople()
-    setPeople(result)
+    const [list, sugg] = await Promise.all([window.api.getPeople(), window.api.getPersonSuggestions()])
+    setPeople(list)
+    setSuggestions(sugg)
     setLoading(false)
-
-    // 加载封面人脸缩略图
-    const thumbs = new Map<number, string>()
-    await Promise.all(
-      result.map(async (p) => {
-        if (p.coverFaceId) {
-          const thumb = await window.api.getFaceThumbnail(p.coverFaceId)
-          if (thumb) thumbs.set(p.id, thumb)
-        }
-      })
-    )
-    setFaceThumbs(thumbs)
+    // 子视图里的人物可能被改名 / 合并走了
+    setSelectedPerson((cur) => (cur ? list.find((p) => p.id === cur.id) ?? null : null))
   }, [])
 
   useEffect(() => {
     loadPeople()
+    // 后台聚类改动了人物：稍微合并一下刷新
+    let t: ReturnType<typeof setTimeout> | null = null
+    const off = window.api.onPeopleChanged(() => {
+      if (t) clearTimeout(t)
+      t = setTimeout(loadPeople, 500)
+    })
+    return () => { off(); if (t) clearTimeout(t) }
   }, [loadPeople])
 
-  const handleStartScan = async () => {
+  const flash = (msg: string): void => {
+    setNotice(msg)
+    setTimeout(() => setNotice((m) => (m === msg ? '' : m)), 2500)
+  }
+
+  const handleStartScan = async (): Promise<void> => {
     setScanning(true)
     setScanProgress('正在初始化模型...')
     try {
@@ -49,45 +77,37 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
         setScanning(false)
         return
       }
-      setScanProgress(`已入队 ${result.queued} 张图片，正在处理...`)
-      // 轮询进度
-      const poll = setInterval(async () => {
-        const updated = await window.api.getPeople()
-        setPeople(updated)
-        if (updated.length > 0) {
-          // 加载新的封面
-          const thumbs = new Map<number, string>()
-          await Promise.all(
-            updated.map(async (p) => {
-              if (p.coverFaceId) {
-                const thumb = await window.api.getFaceThumbnail(p.coverFaceId)
-                if (thumb) thumbs.set(p.id, thumb)
-              }
-            })
-          )
-          setFaceThumbs(thumbs)
-        }
-      }, 5000)
-      // 60 秒后停止轮询
-      setTimeout(() => {
-        clearInterval(poll)
-        setScanning(false)
-        loadPeople()
-      }, 60000)
+      setScanProgress(`已入队 ${result.queued} 张图片，识别出的人物会陆续出现`)
+      setTimeout(() => setScanning(false), 15000)
     } catch (e) {
       setScanProgress(`扫描失败: ${e}`)
       setScanning(false)
     }
   }
 
-  const handleSelectPerson = async (person: Person) => {
-    setSelectedPerson(person)
-    const photos = await window.api.getPersonPhotos(person.id, 100)
-    setPersonPhotos(photos)
+  const mergeGroup = async (group: Person[], into?: Person): Promise<void> => {
+    if (group.length < 2) return
+    const target = into ?? pickTarget(group)
+    const sources = group.filter((p) => p.id !== target.id).map((p) => p.id)
+    await window.api.mergePeople(target.id, sources)
+    setSelectedIds(new Set())
+    flash(`已合并 ${group.length} 个人物${target.name ? `到「${target.name}」` : ''}`)
+    loadPeople()
   }
 
-  const handleToggleSelect = (id: number, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const handleRename = async (personId: number, name: string): Promise<void> => {
+    await window.api.setPersonName(personId, name.trim())
+    loadPeople()
+  }
+
+  const handleHide = async (ids: number[], hidden: boolean): Promise<void> => {
+    await Promise.all(ids.map((id) => window.api.setPersonHidden(id, hidden)))
+    setSelectedIds(new Set())
+    flash(hidden ? `已隐藏 ${ids.length} 个人物` : '已取消隐藏')
+    loadPeople()
+  }
+
+  const toggleSelect = (id: number): void => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -96,60 +116,39 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
     })
   }
 
-  const handleMerge = async () => {
-    if (selectedIds.size < 2) return
-    const ids = Array.from(selectedIds)
-    // 优先保留有名字的
-    const target = people.find((p) => ids.includes(p.id) && p.name) || people.find((p) => ids.includes(p.id))
-    if (!target) return
-    const sourceIds = ids.filter((id) => id !== target.id)
-    await window.api.mergePeople(target.id, sourceIds)
-    setSelectedIds(new Set())
-    loadPeople()
-  }
-
-  const handleSaveName = async (personId: number) => {
-    await window.api.setPersonName(personId, editName)
-    setEditingId(null)
-    loadPeople()
-  }
-
-  // 人物照片子视图
+  // ── 人物详情 ──
   if (selectedPerson) {
     return (
-      <div className="h-full flex flex-col bg-canvas">
-        <div className="px-4 py-3 flex items-center gap-3 border-b border-line">
-          <button
-            onClick={() => setSelectedPerson(null)}
-            className="p-1 rounded hover:bg-fill-hover text-ink-2"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <div className="flex items-center gap-2">
-            {faceThumbs.get(selectedPerson.id) && (
-              <img src={faceThumbs.get(selectedPerson.id)} className="w-7 h-7 rounded-full object-cover" />
-            )}
-            <span className="text-body text-ink font-medium">
-              {selectedPerson.name || '未命名'}
-            </span>
-            <span className="text-callout text-ink-3">{selectedPerson.photoCount} 张图片</span>
-          </div>
-        </div>
-        <div className="flex-1 overflow-auto p-0.5">
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-0.5">
-            {personPhotos.map((r) => (
-              <PhotoThumb key={r.photo.id} photo={r.photo} onClick={() => onSelectPhoto(r.photo)} />
-            ))}
-          </div>
-        </div>
+      <PersonDetail
+        person={selectedPerson}
+        others={people.filter((p) => p.id !== selectedPerson.id && !p.hidden)}
+        onBack={() => setSelectedPerson(null)}
+        onSelectPhoto={onSelectPhoto}
+        onRename={(name) => handleRename(selectedPerson.id, name)}
+        onHide={async (hidden) => {
+          await handleHide([selectedPerson.id], hidden)
+          if (hidden) setSelectedPerson(null)
+        }}
+        onChanged={loadPeople}
+      />
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center bg-canvas">
+        <p className="text-ink-3 text-callout">加载中...</p>
       </div>
     )
   }
 
+  const visible = people.filter((p) => !p.hidden)
+  const hidden = people.filter((p) => p.hidden)
+  const shown = showHidden ? hidden : visible
+  const selected = people.filter((p) => selectedIds.has(p.id))
+
   // 空状态
-  if (!loading && people.length === 0 && !scanning) {
+  if (people.length === 0 && !scanning) {
     return (
       <div className="h-full flex items-center justify-center bg-canvas">
         <div className="text-center">
@@ -168,17 +167,8 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
     )
   }
 
-  if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center bg-canvas">
-        <p className="text-ink-3 text-callout">加载中...</p>
-      </div>
-    )
-  }
-
   return (
-    <div className="h-full flex flex-col bg-canvas">
-      {/* 扫描状态 */}
+    <div className="relative h-full flex flex-col bg-canvas">
       {scanning && (
         <div className="px-4 py-2 bg-accent/10 text-accent text-callout flex items-center gap-2">
           <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -189,104 +179,401 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
         </div>
       )}
 
-      {/* 人物网格 */}
-      <div className="flex-1 overflow-auto p-4">
-        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-          {people.map((person) => (
-            <div
-              key={person.id}
-              onClick={() => handleSelectPerson(person)}
-              className="cursor-pointer group relative"
+      <div className="flex-1 overflow-auto p-4" onClick={() => setSelectedIds(new Set())}>
+        {!showHidden && suggestions.length > 0 && (
+          <SuggestionCard
+            suggestion={suggestions[0]}
+            remaining={suggestions.length}
+            onSame={async (s) => { await mergeGroup([s.a, s.b], s.a.name ? s.a : undefined) }}
+            onDifferent={async (s) => { await window.api.dismissPersonSuggestion(s.a.id, s.b.id); loadPeople() }}
+          />
+        )}
+
+        <div className="flex items-baseline gap-3 mb-3">
+          <h2 className="text-headline text-ink">{showHidden ? '已隐藏的人物' : '人物'}</h2>
+          <span className="text-callout text-ink-3">{shown.length}</span>
+          <span className="flex-1" />
+          {!showHidden && (
+            <span className="text-micro text-ink-4">双击名字命名 · ⌘ 点击多选 · 拖到另一人上合并</span>
+          )}
+          {(hidden.length > 0 || showHidden) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowHidden((v) => !v); setSelectedIds(new Set()) }}
+              className="text-callout text-ink-3 hover:text-ink"
             >
-              {/* 勾选框 */}
-              <div
-                onClick={(e) => handleToggleSelect(person.id, e)}
-                className={`absolute top-1 left-1 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                  selectedIds.has(person.id)
-                    ? 'bg-accent border-accent'
-                    : 'border-line-heavy opacity-0 group-hover:opacity-100'
-                }`}
-              >
-                {selectedIds.has(person.id) && (
-                  <svg className="w-3 h-3 text-black/85" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                  </svg>
-                )}
-              </div>
+              {showHidden ? '← 返回人物' : `已隐藏 (${hidden.length})`}
+            </button>
+          )}
+        </div>
 
-              {/* 人脸缩略图 */}
-              <div className="w-full aspect-square rounded-full overflow-hidden bg-surface-3 mx-auto mb-2">
-                {faceThumbs.get(person.id) ? (
-                  <img src={faceThumbs.get(person.id)} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-ink-ghost">
-                    <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
-                  </div>
-                )}
-              </div>
-
-              {/* 名字 */}
-              {editingId === person.id ? (
-                <input
-                  autoFocus
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSaveName(person.id)
-                    if (e.key === 'Escape') setEditingId(null)
-                  }}
-                  onBlur={() => handleSaveName(person.id)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="w-full text-center text-callout bg-fill border border-line-heavy rounded px-1 py-0.5 text-ink focus:outline-none"
-                />
-              ) : (
-                <p
-                  className="text-center text-callout text-ink-2 truncate"
-                  onDoubleClick={(e) => {
-                    e.stopPropagation()
-                    setEditingId(person.id)
-                    setEditName(person.name || '')
-                  }}
-                >
-                  {person.name || '未命名'}
-                </p>
-              )}
-              <p className="text-center text-micro text-ink-4 mt-0.5">{person.photoCount} 张图片</p>
-            </div>
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+          {shown.map((person) => (
+            <PersonCard
+              key={person.id}
+              person={person}
+              selected={selectedIds.has(person.id)}
+              onOpen={() => setSelectedPerson(person)}
+              onToggleSelect={() => toggleSelect(person.id)}
+              onRename={(name) => handleRename(person.id, name)}
+              onDropPeople={(ids) => {
+                const group = people.filter((p) => ids.includes(p.id) || p.id === person.id)
+                // 拖到已命名的人上：保留目标；否则按默认规则
+                mergeGroup(group, person.name ? person : undefined)
+              }}
+              dragIds={() => (selectedIds.has(person.id) ? [...selectedIds] : [person.id])}
+            />
           ))}
         </div>
 
-        {!scanning && people.length > 0 && (
+        {!scanning && !showHidden && (
           <div className="text-center mt-6">
-            <button
-              onClick={handleStartScan}
-              className="text-micro text-ink-4 hover:text-ink-3"
-            >
-              重新扫描
+            <button onClick={handleStartScan} className="text-micro text-ink-4 hover:text-ink-3">
+              扫描新照片中的人脸
             </button>
           </div>
         )}
       </div>
 
-      {/* 合并浮动按钮 */}
-      {selectedIds.size >= 2 && (
-        <div className="px-4 py-3 border-t border-line bg-bar animate-fade-in">
-          <button
-            onClick={handleMerge}
-            className="w-full py-2 bg-accent/20 hover:bg-accent/30 text-accent text-callout rounded-md transition-colors"
-          >
-            合并选中 ({selectedIds.size})
+      {notice && (
+        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-md bg-raised border border-line text-callout text-ink shadow-lg animate-fade-in">
+          {notice}
+        </div>
+      )}
+
+      {selected.length > 0 && (
+        <div className="px-4 py-2.5 border-t border-line bg-bar flex items-center gap-2 animate-fade-in">
+          <span className="text-callout text-ink-2">已选 {selected.length} 个人物</span>
+          <span className="flex-1" />
+          <button onClick={() => setSelectedIds(new Set())} className="px-3 py-1.5 text-callout text-ink-3 hover:text-ink">
+            取消
           </button>
+          <button
+            onClick={() => handleHide(selected.map((p) => p.id), !showHidden)}
+            className="px-3 py-1.5 rounded-md bg-fill hover:bg-fill-hover text-callout text-ink-2"
+          >
+            {showHidden ? '取消隐藏' : '隐藏'}
+          </button>
+          {selected.length >= 2 && (
+            <button
+              onClick={() => mergeGroup(selected)}
+              className="px-3 py-1.5 rounded-md bg-accent/20 hover:bg-accent/30 text-accent text-callout"
+            >
+              合并为同一人
+            </button>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-/** 简单的照片缩略图（复用于 PersonPhotos） */
-function PhotoThumb({ photo, onClick }: { photo: Photo; onClick: () => void }) {
+function FaceCircle({ faceId, className = '' }: { faceId: number | null | undefined; className?: string }): JSX.Element {
+  const src = useFaceThumb(faceId)
+  return (
+    <div className={`rounded-full overflow-hidden bg-surface-3 ${className}`}>
+      {src ? (
+        <img src={src} className="w-full h-full object-cover" draggable={false} />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-ink-ghost">
+          <svg className="w-1/3 h-1/3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 名字：双击（或点"添加名字"）进入编辑，回车 / 失焦保存，Esc 取消 */
+function EditableName({ name, onSave, className = '' }: { name: string | null; onSave: (name: string) => void; className?: string }): JSX.Element {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const done = useRef(false)
+  const start = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    done.current = false
+    setValue(name ?? '')
+    setEditing(true)
+  }
+  const commit = (save: boolean): void => {
+    if (done.current) return
+    done.current = true
+    setEditing(false)
+    if (save && value.trim() !== (name ?? '')) onSave(value)
+  }
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={value}
+        placeholder="输入名字"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit(true)
+          if (e.key === 'Escape') commit(false)
+        }}
+        onBlur={() => commit(true)}
+        onClick={(e) => e.stopPropagation()}
+        className={`w-full text-center bg-fill border border-line-heavy rounded px-1 py-0.5 text-ink focus:outline-none ${className}`}
+      />
+    )
+  }
+  return name ? (
+    <p className={`text-center text-ink-2 truncate cursor-text ${className}`} onDoubleClick={start} title="双击修改名字">
+      {name}
+    </p>
+  ) : (
+    <p className={`text-center text-ink-4 hover:text-accent truncate cursor-pointer ${className}`} onClick={start}>
+      添加名字
+    </p>
+  )
+}
+
+interface PersonCardProps {
+  person: Person
+  selected: boolean
+  onOpen: () => void
+  onToggleSelect: () => void
+  onRename: (name: string) => void
+  onDropPeople: (ids: number[]) => void
+  dragIds: () => number[]
+}
+
+function PersonCard({ person, selected, onOpen, onToggleSelect, onRename, onDropPeople, dragIds }: PersonCardProps): JSX.Element {
+  const [dropping, setDropping] = useState(false)
+  return (
+    <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragIds()))
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        setDropping(true)
+      }}
+      onDragLeave={() => setDropping(false)}
+      onDrop={(e) => {
+        setDropping(false)
+        const ids = JSON.parse(e.dataTransfer.getData(DRAG_TYPE) || '[]') as number[]
+        if (ids.length && !(ids.length === 1 && ids[0] === person.id)) {
+          e.preventDefault()
+          onDropPeople(ids.filter((id) => id !== person.id))
+        }
+      }}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (e.metaKey || e.shiftKey || e.ctrlKey) onToggleSelect()
+        else onOpen()
+      }}
+      className="cursor-pointer group relative"
+      data-person-id={person.id}
+    >
+      <div
+        onClick={(e) => { e.stopPropagation(); onToggleSelect() }}
+        className={`absolute top-1 left-1 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+          selected ? 'bg-accent border-accent' : 'border-line-heavy bg-canvas/60 opacity-0 group-hover:opacity-100'
+        }`}
+      >
+        {selected && (
+          <svg className="w-3 h-3 text-black/85" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+          </svg>
+        )}
+      </div>
+
+      <FaceCircle
+        faceId={person.coverFaceId}
+        className={`w-full aspect-square mb-2 transition-all duration-fast ${
+          dropping ? 'ring-4 ring-accent scale-105' : selected ? 'ring-2 ring-accent' : 'group-hover:brightness-110'
+        }`}
+      />
+      <EditableName name={person.name} onSave={onRename} className="text-callout" />
+      <p className="text-center text-micro text-ink-4 mt-0.5">{person.photoCount} 张图片</p>
+    </div>
+  )
+}
+
+interface SuggestionCardProps {
+  suggestion: PersonSuggestion
+  remaining: number
+  onSame: (s: PersonSuggestion) => Promise<void>
+  onDifferent: (s: PersonSuggestion) => Promise<void>
+}
+
+function SuggestionCard({ suggestion: s, remaining, onSame, onDifferent }: SuggestionCardProps): JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const act = (fn: (s: PersonSuggestion) => Promise<void>) => async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setBusy(true)
+    try { await fn(s) } finally { setBusy(false) }
+  }
+  const label = (p: Person): string => p.name || `${p.photoCount ?? p.faceCount} 张图片`
+  return (
+    <div
+      className="mb-5 p-3 rounded-lg border border-line bg-surface-1 flex items-center gap-4"
+      onClick={(e) => e.stopPropagation()}
+      data-testid="person-suggestion"
+    >
+      <div className="flex items-center -space-x-3">
+        <FaceCircle faceId={s.a.coverFaceId} className="w-14 h-14 ring-2 ring-surface-1" />
+        <FaceCircle faceId={s.b.coverFaceId} className="w-14 h-14 ring-2 ring-surface-1" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-body text-ink">是同一个人吗？</p>
+        <p className="text-callout text-ink-3 truncate">
+          {s.a.name ? `这位是「${s.a.name}」吗？` : `${label(s.a)} · ${label(s.b)}`}
+          {remaining > 1 && <span className="text-ink-4"> · 还有 {remaining - 1} 组</span>}
+        </p>
+      </div>
+      <button
+        disabled={busy}
+        onClick={act(onDifferent)}
+        className="px-3 py-1.5 rounded-md bg-fill hover:bg-fill-hover text-callout text-ink-2 disabled:opacity-50"
+      >
+        不是
+      </button>
+      <button
+        disabled={busy}
+        onClick={act(onSame)}
+        className="px-3 py-1.5 rounded-md bg-accent/20 hover:bg-accent/30 text-accent text-callout disabled:opacity-50"
+      >
+        是同一人
+      </button>
+    </div>
+  )
+}
+
+interface PersonDetailProps {
+  person: Person
+  others: Person[]
+  onBack: () => void
+  onSelectPhoto: (photo: Photo) => void
+  onRename: (name: string) => void
+  onHide: (hidden: boolean) => void
+  onChanged: () => void
+}
+
+function PersonDetail({ person, others, onBack, onSelectPhoto, onRename, onHide, onChanged }: PersonDetailProps): JSX.Element {
+  const [tab, setTab] = useState<'photos' | 'faces'>('photos')
+  const [photos, setPhotos] = useState<SearchResult[]>([])
+  const [faces, setFaces] = useState<PersonFace[]>([])
+  const [moving, setMoving] = useState<number | null>(null)
+
+  const load = useCallback(async () => {
+    const [ph, fs] = await Promise.all([
+      window.api.getPersonPhotos(person.id, 500),
+      window.api.getPersonFaces(person.id, 500),
+    ])
+    setPhotos(ph)
+    setFaces(fs)
+  }, [person.id])
+
+  useEffect(() => { load() }, [load, person.faceCount])
+
+  const reject = async (faceId: number): Promise<void> => {
+    setFaces((fs) => fs.filter((f) => f.id !== faceId))
+    await window.api.rejectFace(faceId)
+    onChanged()
+  }
+  const moveTo = async (faceId: number, personId: number): Promise<void> => {
+    setMoving(null)
+    setFaces((fs) => fs.filter((f) => f.id !== faceId))
+    await window.api.assignFace(faceId, personId)
+    onChanged()
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-canvas">
+      <div className="px-4 py-3 flex items-center gap-3 border-b border-line">
+        <button onClick={onBack} className="p-1 rounded hover:bg-fill-hover text-ink-2" title="返回">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <FaceCircle faceId={person.coverFaceId} className="w-8 h-8" />
+        <div className="min-w-[8rem] max-w-[16rem]">
+          <EditableName name={person.name} onSave={onRename} className="text-body font-medium !text-left" />
+        </div>
+        <span className="text-callout text-ink-3">{person.photoCount} 张图片</span>
+        <span className="flex-1" />
+        <div className="flex rounded-md bg-fill p-0.5 text-callout">
+          {(['photos', 'faces'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-2.5 py-1 rounded ${tab === t ? 'bg-fill-active text-ink' : 'text-ink-3 hover:text-ink-2'}`}
+            >
+              {t === 'photos' ? '照片' : `人脸 ${faces.length}`}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => onHide(!person.hidden)}
+          className="px-2.5 py-1 rounded-md text-callout text-ink-3 hover:text-ink hover:bg-fill-hover"
+        >
+          {person.hidden ? '取消隐藏' : '隐藏此人'}
+        </button>
+      </div>
+
+      {tab === 'photos' ? (
+        <div className="flex-1 overflow-auto p-0.5">
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-0.5">
+            {photos.map((r) => (
+              <PhotoThumb key={r.photo.id} photo={r.photo} onClick={() => onSelectPhoto(r.photo)} />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-auto p-4">
+          <p className="text-callout text-ink-3 mb-3">认错的脸点「不是此人」，以后也不会再自动归到这里；也可以直接移给另一个人。</p>
+          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-3">
+            {faces.map((f) => (
+              <div key={f.id} className="group relative" data-face-id={f.id}>
+                <FaceCircle faceId={f.id} className={`w-full aspect-square ${f.quality < 0.4 ? 'opacity-70' : ''}`} />
+                <div className="absolute inset-x-0 bottom-0 flex flex-col gap-0.5 p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => reject(f.id)}
+                    className="w-full py-0.5 rounded bg-black/70 text-micro text-white hover:bg-bad/90"
+                  >
+                    不是此人
+                  </button>
+                  {others.length > 0 && (
+                    <button
+                      onClick={() => setMoving(moving === f.id ? null : f.id)}
+                      className="w-full py-0.5 rounded bg-black/70 text-micro text-white hover:bg-black/85"
+                    >
+                      移给…
+                    </button>
+                  )}
+                </div>
+                {moving === f.id && (
+                  <div className="absolute z-20 top-full left-0 mt-1 w-44 max-h-60 overflow-auto rounded-md border border-line bg-raised shadow-lg py-1">
+                    {others.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => moveTo(f.id, p.id)}
+                        className="w-full flex items-center gap-2 px-2 py-1 text-left text-callout text-ink-2 hover:bg-fill-hover"
+                      >
+                        <FaceCircle faceId={p.coverFaceId} className="w-5 h-5 shrink-0" />
+                        <span className="truncate">{p.name || `未命名 · ${p.photoCount} 张`}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 简单的照片缩略图（复用于人物详情） */
+function PhotoThumb({ photo, onClick }: { photo: Photo; onClick: () => void }): JSX.Element {
   const [thumb, setThumb] = useState<string>('')
 
   useEffect(() => {
