@@ -18,6 +18,8 @@ import type {
   Gemma2ProviderConfig,
 } from './types'
 import { Gemma2EmbeddingProvider } from './providers/gemma2Provider'
+import { RemoteEmbeddingProvider } from './providers/remoteProvider'
+import { getInferenceTransport } from '../inference/transport'
 
 export * from './types'
 
@@ -125,7 +127,7 @@ class EmbeddingService {
 
   private createProvider(): EmbeddingProvider {
     const modelsDir = this.config.modelsDir || _bundledModelsDir
-    return new Gemma2EmbeddingProvider({
+    const config: Gemma2ProviderConfig = {
       type: 'gemma2-local',
       modelsDir,
       modelDirName: this.config.modelDirName,
@@ -133,7 +135,9 @@ class EmbeddingService {
       visionQuantization: this.config.visionQuantization,
       audioQuantization: this.config.audioQuantization,
       device: this.config.device,
-    })
+    }
+    const transport = getInferenceTransport()
+    return transport ? new RemoteEmbeddingProvider(transport, config) : new Gemma2EmbeddingProvider(config)
   }
 
   async encode(input: EmbeddingInput): Promise<Float32Array> {

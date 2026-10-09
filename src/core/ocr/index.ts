@@ -19,12 +19,14 @@ import { initDetection, isDetectionReady, detectTextBoxes } from './detection'
 import { initRecognition, isRecognitionReady, recognizeBoxes } from './recognition'
 import { initCls, isClsReady, detectFlips } from './cls'
 import type { OcrResult } from './types'
+import { getInferenceTransport, RemoteReady } from '../inference/transport'
 
 export type { OcrResult } from './types'
 
 let initialized = false
 let initializing = false
 let _modelsDir = ''
+const remote = new RemoteReady()
 
 /** 由 main 在启动时调用 */
 export function setOcrModelsDir(dir: string): void {
@@ -36,6 +38,13 @@ export function setOcrModelsDir(dir: string): void {
  * 也可显式 init 来提前预热。
  */
 export async function initOcrService(): Promise<boolean> {
+  const t = getInferenceTransport()
+  if (t) {
+    if (remote.isReady(t)) return true
+    const ok = await t.call<boolean>('ocr.init', _modelsDir)
+    remote.mark(t, ok)
+    return ok
+  }
   if (initialized) return true
   if (initializing) return false
   initializing = true
@@ -80,6 +89,8 @@ export async function initOcrService(): Promise<boolean> {
 }
 
 export function isOcrReady(): boolean {
+  const t = getInferenceTransport()
+  if (t) return remote.isReady(t)
   return initialized && isDetectionReady() && isRecognitionReady()
 }
 
@@ -90,6 +101,11 @@ export function isOcrReady(): boolean {
  * 文本写入 FTS5 后即可被 BM25 检索到。
  */
 export async function processPhotoOcr(imageBuffer: Buffer): Promise<OcrResult> {
+  const t = getInferenceTransport()
+  if (t) {
+    if (!remote.isReady(t) && !(await initOcrService())) throw new Error('OCR service not available')
+    return t.call<OcrResult>('ocr.process', imageBuffer)
+  }
   if (!initialized) {
     const ok = await initOcrService()
     if (!ok) throw new Error('OCR service not available')

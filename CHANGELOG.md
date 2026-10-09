@@ -77,6 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Video duration probing via `ffmpeg -i` (ffmpeg-static ships no ffprobe).
 
 ### Fixed
+- **UI freeze / spinning cursor while indexing**: embedding, face and OCR
+  inference moved out of the main process into an Electron `utilityProcess`
+  (nice 10). IPC round-trip during indexing went from p50 2.9 s / max 20 s to
+  p95 5 ms / max 32 ms; a full index of the test set also got ~1/3 faster.
+  The worker restarts transparently if it crashes.
 - **Face alignment produced black images**, so every face got the same
   embedding and people clustering was noise. Alignment is now a pure-JS
   similarity warp on an EXIF-oriented decode shared with detection. Existing

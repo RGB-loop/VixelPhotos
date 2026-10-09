@@ -18,6 +18,8 @@ import { serveMediaFile } from '../core/media/serve'
 import { ensureSprite } from '../core/video/sprite'
 import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
+import { InferenceProcess } from './inference-client'
+import { setInferenceTransport } from '../core/inference/transport'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 // 备份配置：每 24h 一次，保留最近 3 份；可后续从 settings 暴露
@@ -33,6 +35,7 @@ let db: ReturnType<typeof initDatabase>
 let watcher: FileWatcher
 let indexer: Indexer
 let searchEngine: SearchEngine
+let inference: InferenceProcess | null = null
 let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let bundledModelsDir: string = ''
@@ -138,6 +141,9 @@ async function initServices(): Promise<void> {
   const devModelsDir = join(process.cwd(), 'resources', 'models')
   bundledModelsDir = existsSync(prodModelsDir) ? prodModelsDir : devModelsDir
 
+  // 推理（embedding / 人脸 / OCR）放到独立进程，主进程事件循环不被模型前向占住
+  inference = new InferenceProcess(join(__dirname, 'inference.js'))
+  setInferenceTransport(inference)
   initEmbeddingServicePath(userDataPath, bundledModelsDir)
   setFaceModelsDir(bundledModelsDir)
   setOcrModelsDir(bundledModelsDir)
@@ -707,6 +713,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   watcher?.stopAll()
+  inference?.stop()
   if (backupTimer) {
     clearInterval(backupTimer)
     backupTimer = null

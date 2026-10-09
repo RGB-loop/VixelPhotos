@@ -613,35 +613,38 @@ initDatabase(dbPath)
 
 ### 4.1 进程模型
 
-v0.2 是**单 Electron 进程**：main 同时负责 UI 路由、SQLite、ONNX 推理。
-没有 Worker 线程、没有 llama-server 子进程、没有 Python。视频抽帧 / 音轨
-抽取是唯一的外部子进程（ffmpeg）—— 短命的 spawn-and-wait，不常驻。
+三类进程：
+
+- **Main**：UI 路由、SQLite、Indexer 调度、`vixel://` 协议。**不跑模型推理。**
+- **Inference**（Electron `utilityProcess`，`src/main/inference.ts`）：
+  EmbeddingGemma 2 / SCRFD / MobileFaceNet / PaddleOCR 全在这里，nice 10。
+- **ffmpeg**：抽帧 / 音轨，短命的 spawn-and-wait。
+
+为什么拆：transformers.js 的一次前向会同步占住线程（视频片段单次实测可达 10s），
+放在 main 里索引期间事件循环几乎一直被占满 —— 窗口拖动、IPC、光标全卡（macOS 一直转圈）。
+实测（33 图 + 7 段音视频）：IPC 往返 p50 2.9s / max 20s → p95 5ms / max 32ms，
+总索引时间 333s → 221s（main 不再和推理抢 GC）。
 
 ```
-┌───────────────────────────────────────────────────┐
-│                  Main Process                     │
-│  ┌───────────┐  ┌────────────┐  ┌─────────────┐  │
-│  │ Indexer   │  │ Watcher    │  │ SQLite +    │  │
-│  │ EventEm.  │◄─│ chokidar   │─►│ sqlite-vec  │  │
-│  └─────┬─────┘  └────────────┘  └─────────────┘  │
-│        │                                          │
-│        ▼   onnxruntime-node / 🤗 Transformers.js  │
-│  ┌──────────────────────────────────────────────┐ │
-│  │ EmbeddingGemma 2 / SCRFD / MobileFace / OCR  │ │
-│  └──────────────────────────────────────────────┘ │
-│        │   spawn (fire-and-wait)                  │
-│        ▼                                          │
-│  ┌──────────────┐                                 │
-│  │ ffmpeg-static│  仅在抽视频帧 / 音轨时启动       │
-│  └──────────────┘                                 │
-└──────────────┬────────────────────────────────────┘
+┌──────────────────────────────┐   postMessage    ┌───────────────────────────────┐
+│ Main Process                 │ ───────────────► │ Inference (utilityProcess)    │
+│ Indexer · Watcher · SQLite   │ ◄─────────────── │ EmbeddingGemma 2 · SCRFD ·    │
+│ embedding/face/ocr 入口函数   │  structured clone │ MobileFaceNet · PaddleOCR     │
+│ 看到 transport 就转发         │                  │ 串行队列；文本 query 插队      │
+└──────────────┬───────────────┘                  └───────────────────────────────┘
+               │ spawn                               崩溃 → generation+1，下次调用自动拉起并重新 init
+               ▼
+         ffmpeg-static
                │ contextBridge + ipcMain/Renderer
-┌──────────────▼────────────────────────────────────┐
-│              Renderer Process (React)             │
-│   PhotoGrid · MapView · PeopleView · PhotoDetail  │
-│   SearchBar · FolderManager · ModelStatus         │
-└───────────────────────────────────────────────────┘
+┌──────────────▼───────────────┐
+│ Renderer Process (React)     │
+└──────────────────────────────┘
 ```
+
+转发层在 `src/core/inference/transport.ts`：`setInferenceTransport()` 之后，
+`createProvider()` 返回 `RemoteEmbeddingProvider`，`initFaceService` / `processPhotoFaces` /
+`processPhotoOcr` 转发到推理进程；没设 transport 时（单测、CLI、推理进程自身）照旧本进程执行。
+Buffer 经结构化克隆会变成 Uint8Array，推理进程侧 `reviveInput` 还原。
 
 ### 4.2 IPC 表面
 

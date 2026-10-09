@@ -7,6 +7,11 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
+        // inference：推理 utilityProcess 的入口（见 src/main/inference.ts）
+        input: {
+          index: resolve('src/main/index.ts'),
+          inference: resolve('src/main/inference.ts')
+        },
         external: ['better-sqlite3', 'sharp', 'onnxruntime-node', 'sqlite-vec']
       }
     }

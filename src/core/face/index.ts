@@ -16,6 +16,7 @@ import { dot, l2ToCosineDistance } from './distance'
 import { Q_SEED, T_ASSIGN, T_LINK } from './cluster'
 import type { DatabaseInstance } from '../db'
 import type { FaceBbox } from '../../shared/types'
+import { getInferenceTransport, RemoteReady } from '../inference/transport'
 import sharp from 'sharp'
 
 /** 检测 / 对齐 / 模型任一变化导致旧 embedding 不可比时递增，启动时会清空重扫 */
@@ -24,6 +25,7 @@ export const FACE_PIPELINE_VERSION = '3'
 let initialized = false
 let initializing = false
 let _modelsDir: string = ''
+const remote = new RemoteReady()
 
 export function setFaceModelsDir(dir: string): void {
   _modelsDir = dir
@@ -37,6 +39,13 @@ function getModelsDir(): string {
 }
 
 export async function initFaceService(): Promise<boolean> {
+  const t = getInferenceTransport()
+  if (t) {
+    if (remote.isReady(t)) return true
+    const ok = await t.call<boolean>('face.init', getModelsDir())
+    remote.mark(t, ok)
+    return ok
+  }
   if (initialized) return true
   if (initializing) return false
 
@@ -70,6 +79,8 @@ export async function initFaceService(): Promise<boolean> {
 }
 
 export function isFaceServiceReady(): boolean {
+  const t = getInferenceTransport()
+  if (t) return remote.isReady(t)
   return initialized && isDetectionReady() && isEmbeddingReady()
 }
 
@@ -88,6 +99,11 @@ export interface DetectedFaceResult {
 export async function processPhotoFaces(
   imageBuffer: Buffer
 ): Promise<DetectedFaceResult[]> {
+  const t = getInferenceTransport()
+  if (t) {
+    if (!remote.isReady(t) && !(await initFaceService())) throw new Error('Face service not ready')
+    return t.call<DetectedFaceResult[]>('face.process', imageBuffer)
+  }
   if (!isFaceServiceReady()) {
     throw new Error('Face service not ready')
   }
