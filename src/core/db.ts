@@ -1008,7 +1008,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       SELECT DISTINCT p.file_hash FROM photos p
       ${MEDIA_JOIN}
       WHERE p.deleted_at IS NULL
-        AND (COALESCE(v.file_name, p.file_name) LIKE ? OR COALESCE(v.file_path, p.file_path) LIKE ?)
+        AND (COALESCE(v.file_name, p.file_name) LIKE ? ESCAPE '\' OR COALESCE(v.file_path, p.file_path) LIKE ? ESCAPE '\')
       LIMIT ?
     `),
     // OCR 全文搜索（FTS5 BM25）
@@ -1673,7 +1673,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       }
     },
     searchByFileName: (query, limit) => {
-      const pattern = `%${query}%`
+      // 转义 LIKE 通配符：查询里的 % / _ 按字面匹配（"IMG_2024" 不该匹配 "IMGx2024"）
+      const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`
       const results = stmts.searchByFileName.all(pattern, pattern, limit) as Array<{ file_hash: string }>
       return results.map((r) => ({ fileHash: r.file_hash }))
     },

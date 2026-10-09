@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme, session } from 'electron'
 import { pathToFileURL } from 'url'
 import { join } from 'path'
 import { readFile, writeFile, unlink, mkdir, readdir, rm } from 'fs/promises'
@@ -73,7 +73,8 @@ function loadTheme(): ThemeMode {
 
 const WEB_PREFERENCES: Electron.WebPreferences = {
   preload: join(__dirname, '../preload/index.js'),
-  sandbox: false,
+  // preload 只用 contextBridge / ipcRenderer（打包后只 require('electron')），可以开沙箱
+  sandbox: true,
   contextIsolation: true,
   nodeIntegration: false,
 }
@@ -304,6 +305,27 @@ async function immutable(res: Response): Promise<Response> {
   const headers = new Headers(res.headers)
   headers.set('Cache-Control', 'public, max-age=31536000, immutable')
   return new Response(res.body, { status: res.status, headers })
+}
+
+/**
+ * 隐私承诺落到代码上：渲染进程只许访问本地（vixel:// / file:// / devtools / 开发服务器），
+ * 唯一例外是地图底图瓦片 —— 只在打开地图视图时请求，只带瓦片坐标、不带任何照片数据。
+ * 模型推理在 utilityProcess 里，且 transformers.js 已关掉远程模型（allowRemoteModels = false）。
+ */
+const NETWORK_ALLOWLIST = [/^https:\/\/[a-d]\.basemaps\.cartocdn\.com\//]
+
+function enforceOfflinePolicy(): void {
+  const devServer = process.env['ELECTRON_RENDERER_URL']
+  session.defaultSession.webRequest.onBeforeRequest(
+    { urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] },
+    (details, callback) => {
+      const url = details.url
+      const allowed = (is.dev && devServer && (url.startsWith(devServer) || /^wss?:\/\/localhost[:/]/.test(url))) ||
+        NETWORK_ALLOWLIST.some((re) => re.test(url))
+      if (!allowed) console.warn(`[privacy] blocked network request: ${url}`)
+      callback({ cancel: !allowed })
+    }
+  )
 }
 
 function registerIpcHandlers(): void {
@@ -759,6 +781,7 @@ app.whenReady().then(async () => {
   nativeTheme.on('updated', () => {
     for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(windowBackground())
   })
+  enforceOfflinePolicy()
   registerVixelProtocol()
   registerIpcHandlers()
   installAppMenu(() => mainWindow, { openSettings: openSettingsWindow })
