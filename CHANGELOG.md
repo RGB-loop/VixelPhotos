@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- Startup no longer re-reads and re-hashes the whole library: unchanged images
+  and videos (same size / mtime, thumbnail present) are skipped before any IO or
+  DB write; file reads are capped at 4 concurrent; offline-deleted videos are
+  reconciled. Failed media stays in the task panel instead of re-running each launch.
+- Index progress events are coalesced (≤ 4/s); the stats queries behind them no
+  longer run per task / per video segment on the main thread.
+- Grid paging uses new partial indexes (first page 25 ms → 0.3 ms on 50k rows);
+  WAL `synchronous=NORMAL`, larger cache, mmap, in-memory temp store.
+- One decode per photo shared by thumbnail / embed / face / OCR tasks.
+- Face crops are cached on disk and served via `vixel://face/<id>`; thumbnails,
+  face crops and sprites are served with immutable caching (`?v=<fileHash>`).
+- Renderer: the grid no longer remounts on sidebar drag / slider / selection;
+  index-time refetch throttled; Inspector fetches debounced; People view and map
+  load thumbnails via protocol and render incrementally; markers added in bulk.
+- Face / OCR ONNX sessions and main-process sharp use at most half the cores.
+
+### Added
+- `VIXEL_PROFILE=1`: slow SQL / IPC / protocol / inference logging, main
+  event-loop lag monitor, renderer long-task forwarding, end-of-session summary.
+- `vixel doctor` and `vixel bench` CLI commands; `npm run test:db` DB smoke test.
+  See `docs/debugging.md`.
+- Search results carry `matchedBy`; the grid marks OCR-text and filename hits.
+- Accessibility: focus ring, listbox/option grid semantics, dialog roles,
+  tabbable sidebar, Home/End/PageUp/PageDown; model-not-ready warning in the status bar.
+- Review reports under `docs/review/`.
+
+### Fixed
+- Image embedding failures were swallowed (task "done", no vector, silently
+  re-queued every launch).
+- Inference calls could hang forever; a stall watchdog now restarts the process.
+- XSS via file names in map popups; Esc while editing a caption closed the detail view.
+- Filename search treated `%` / `_` as wildcards.
+- Photos imported mid-session stuck on a broken-image icon.
+- CLI semantic search never loaded the model; CLI now opens the library read-only.
+
+### Security
+- Renderer sandbox enabled; renderer network access restricted to an allowlist
+  (map tiles only); `showInFinder` accepts library paths only.
+
 ### Changed
 - **Embedding: EmbeddingGemma 2 replaces SigLIP 2** as the single embedding
   model (768d, one space for text / image / video / audio). Model download
