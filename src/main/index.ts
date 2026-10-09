@@ -453,31 +453,10 @@ function registerIpcHandlers(): void {
     return indexer.getThumbnailPath(photo.fileHash)
   })
 
-  handle(IPC_CHANNELS.GET_THUMBNAIL_DATA, async (_event, photoId: number) => {
-    const photo = db.getPhoto(photoId)
-    if (!photo?.fileHash) return null
-    try {
-      const thumbnailPath = indexer.getThumbnailPath(photo.fileHash)
-      const buffer = await readFile(thumbnailPath)
-      return `data:image/webp;base64,${buffer.toString('base64')}`
-    } catch { return null }
-  })
-
   handle(IPC_CHANNELS.GET_PHOTO_LOCATIONS, async (_event, photoId: number) => {
     const photo = db.getPhoto(photoId)
     if (!photo?.fileHash) return []
     return db.getPhotoLocations(photo.fileHash)
-  })
-
-  handle(IPC_CHANNELS.GET_FULL_IMAGE_DATA, async (_event, photoId: number) => {
-    const photo = db.getPhoto(photoId)
-    if (!photo || !photo.filePath || !existsSync(photo.filePath)) {
-      return null
-    }
-    const buffer = await readFile(photo.filePath)
-    const ext = photo.filePath.split('.').pop()?.toLowerCase() || 'jpeg'
-    const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-    return `data:${mimeType};base64,${buffer.toString('base64')}`
   })
 
   handle(IPC_CHANNELS.SHOW_ITEM_MENU, async (event, opts: { count: number; isMedia: boolean }) => {
@@ -485,7 +464,13 @@ function registerIpcHandlers(): void {
     return win ? popupItemMenu(win, opts) : null
   })
 
+  // 只对库里登记过的媒体 / 监控目录生效：渲染进程传来的任意路径不直接交给 shell
   handle(IPC_CHANNELS.SHOW_IN_FINDER, async (_event, filePath: string) => {
+    const known = typeof filePath === 'string' && (
+      !!db.getPhotoByPath(filePath) || !!db.getVideoByPath(filePath) ||
+      db.getFolders().some((f) => f.path === filePath)
+    )
+    if (!known) return false
     shell.showItemInFolder(filePath)
     return true
   })
@@ -635,16 +620,6 @@ function registerIpcHandlers(): void {
   handle(IPC_CHANNELS.SET_PERSON_HIDDEN, async (_event, personId: number, hidden: boolean) => {
     db.setPersonHidden(personId, hidden)
     return { success: true }
-  })
-
-  handle(IPC_CHANNELS.GET_FACE_THUMBNAIL, async (_event, faceId: number) => {
-    try {
-      const path = await ensureFaceThumb(faceId)
-      if (!path) return null
-      return `data:image/jpeg;base64,${(await readFile(path)).toString('base64')}`
-    } catch {
-      return null
-    }
   })
 
   handle(IPC_CHANNELS.GET_PHOTO_FACES, async (_event, photoId: number) => {

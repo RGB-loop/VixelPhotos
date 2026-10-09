@@ -63,12 +63,6 @@ const api = {
   getThumbnail: (id: number): Promise<string> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_THUMBNAIL, id)
   },
-  getThumbnailData: (id: number): Promise<string | null> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.GET_THUMBNAIL_DATA, id)
-  },
-  getFullImageData: (id: number): Promise<string | null> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.GET_FULL_IMAGE_DATA, id)
-  },
   showInFinder: (filePath: string): Promise<boolean> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SHOW_IN_FINDER, filePath)
   },
@@ -168,9 +162,6 @@ const api = {
   },
   mergePeople: (targetId: number, sourceIds: number[]): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.MERGE_PEOPLE, targetId, sourceIds)
-  },
-  getFaceThumbnail: (faceId: number): Promise<string | null> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.GET_FACE_THUMBNAIL, faceId)
   },
   getPhotoFaces: (photoId: number): Promise<FaceRecord[]> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PHOTO_FACES, photoId)

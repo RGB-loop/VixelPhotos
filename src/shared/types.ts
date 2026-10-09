@@ -81,11 +81,16 @@ export interface WatchedFolder {
   photoCount?: number // 该文件夹中的照片数量
 }
 
+/** 命中通道：visual 图片向量 / segment 音视频片段向量 / text 图内文字 / filename 文件名或路径 */
+export type MatchChannel = 'visual' | 'segment' | 'text' | 'filename'
+
 export interface SearchResult {
   photo: Photo
   score: number
   /** 经片段通道命中的视频/音频：最佳片段的时间区间 */
   segment?: { startMs: number; endMs: number }
+  /** 有搜索词时：这条结果是被哪些通道召回的（UI 用来解释"为什么命中"） */
+  matchedBy?: MatchChannel[]
   thumbnailPath?: string
 }
 
@@ -203,8 +208,6 @@ export const IPC_CHANNELS = {
   // 照片
   GET_PHOTO_DETAIL: 'get-photo-detail',
   GET_THUMBNAIL: 'get-thumbnail',
-  GET_THUMBNAIL_DATA: 'get-thumbnail-data',
-  GET_FULL_IMAGE_DATA: 'get-full-image-data',
   SHOW_IN_FINDER: 'show-in-finder',
   GET_PHOTO_LOCATIONS: 'get-photo-locations',
 
@@ -254,7 +257,6 @@ export const IPC_CHANNELS = {
   GET_PERSON_PHOTOS: 'get-person-photos',
   SET_PERSON_NAME: 'set-person-name',
   MERGE_PEOPLE: 'merge-people',
-  GET_FACE_THUMBNAIL: 'get-face-thumbnail',
   GET_PHOTO_FACES: 'get-photo-faces',
   GET_PERSON_SUGGESTIONS: 'get-person-suggestions',
   DISMISS_PERSON_SUGGESTION: 'dismiss-person-suggestion',
