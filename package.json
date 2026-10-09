@@ -25,7 +25,8 @@
     "cli": "npm run build:cli && npx electron dist/cli/cli/index.js",
     "models:download": "node scripts/download-models.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:db": "npm run build:cli && ELECTRON_RUN_AS_NODE=1 electron scripts/db-smoke.cjs"
   },
   "bin": {
     "vixel": "./dist/cli/cli/index.js"

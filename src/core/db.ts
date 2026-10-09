@@ -1008,7 +1008,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       SELECT DISTINCT p.file_hash FROM photos p
       ${MEDIA_JOIN}
       WHERE p.deleted_at IS NULL
-        AND (COALESCE(v.file_name, p.file_name) LIKE ? ESCAPE '\' OR COALESCE(v.file_path, p.file_path) LIKE ? ESCAPE '\')
+        AND (COALESCE(v.file_name, p.file_name) LIKE ? ESCAPE '!' OR COALESCE(v.file_path, p.file_path) LIKE ? ESCAPE '!')
       LIMIT ?
     `),
     // OCR 全文搜索（FTS5 BM25）
@@ -1173,6 +1173,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       FROM faces WHERE person_id = ? ORDER BY quality DESC LIMIT ?
     `),
     getFaceCoverInfo: db.prepare(`SELECT file_hash as fileHash, bbox FROM faces WHERE id = ?`),
+    hasLivePhotoForHash: db.prepare(`SELECT 1 FROM photos WHERE file_hash = ? AND deleted_at IS NULL LIMIT 1`),
     checkFaceStatusColumn: db.prepare(`SELECT face_status FROM photos LIMIT 0`),
   }
   // VIXEL_PROFILE=1 时给每条语句计时，慢查询按语句名打印
@@ -1213,6 +1214,32 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     for (const f of rows) { stmts.deleteFaceVec.run(f.id); stmts.deleteFaceRejections.run(f.id) }
     stmts.deleteFacesByHash.run(hash)
     for (const pid of new Set(rows.map((r) => r.personId).filter((x): x is number => x != null))) refreshPerson(pid)
+  }
+  /** 某个 hash 的全部派生内容：图像向量 / 人脸 / caption / OCR（FTS 随触发器清） */
+  const deleteContent = (hash: string): void => {
+    const row = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
+    if (row) {
+      stmts.deleteVecByRowid.run(Number(row.rowid))
+      stmts.deleteVecMapByHash.run(hash)
+    }
+    deleteFacesForHash(hash)
+    stmts.deleteCaptionByHash.run(hash)
+    stmts.deleteOcrByHash.run(hash)
+  }
+  /**
+   * 软删某视频的全部帧 photo（beforeCommit 在同一事务里先执行），
+   * 再对已无存活引用的帧 hash 清内容。返回这些 hash，调用方据此删磁盘缩略图。
+   */
+  const dropVideoFrames = (videoId: number, beforeCommit?: () => void): string[] => {
+    const frames = stmts.getFramePhotosByVideo.all(videoId) as Photo[]
+    const frameHashes = new Set(frames.map((f) => f.fileHash).filter((h): h is string => !!h))
+    return db.transaction(() => {
+      for (const f of frames) stmts.softDeletePhoto.run(f.filePath)
+      beforeCommit?.()
+      const orphaned = [...frameHashes].filter((hash) => !stmts.hasLivePhotoForHash.get(hash))
+      orphaned.forEach(deleteContent)
+      return orphaned
+    })()
   }
   /** from 的脸 / 约束全部转给 into，删掉 from（调用方负责 refreshPerson(into)） */
   const mergeInto = (from: number, into: number): void => {
@@ -1264,21 +1291,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       stmts.deletePhotosByFolderId.run(folderId)
 
       // 孤立 hash 全套内容清理：vec0 / 人脸 ANN / 人脸 BLOB / captions / OCR
-      // 透过 deleteContentByHash 走同一套逻辑，避免日后再分叉
-      const finalize = db.transaction(() => {
-        for (const hash of orphanedHashes) {
-          // 内联 deleteContentByHash 的实现（这里不能调外层 instance 方法 — 还没构造完）
-          const row = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
-          if (row) {
-            stmts.deleteVecByRowid.run(Number(row.rowid))
-            stmts.deleteVecMapByHash.run(hash)
-          }
-          deleteFacesForHash(hash)
-          stmts.deleteCaptionByHash.run(hash)
-          stmts.deleteOcrByHash.run(hash)
-        }
-      })
-      finalize()
+      db.transaction(() => orphanedHashes.forEach(deleteContent))()
 
       return orphanedHashes // 调用方用于清理缩略图文件
     },
@@ -1643,19 +1656,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
         return []
       }
     },
-    deleteContentByHash: (fileHash: string): void => {
-      // 图像向量：先查 rowid，再删 vec0 行和映射
-      const row = stmts.deleteImageVecByHash.get(fileHash) as { rowid: bigint | number } | undefined
-      if (row) {
-        stmts.deleteVecByRowid.run(Number(row.rowid))
-        stmts.deleteVecMapByHash.run(fileHash)
-      }
-      // 人脸：face_vecs rowid 与 faces.id 一致，按 id 逐个清
-      deleteFacesForHash(fileHash)
-      // image_ocr_fts 通过触发器随 image_ocr 的 DELETE 自动清
-      stmts.deleteCaptionByHash.run(fileHash)
-      stmts.deleteOcrByHash.run(fileHash)
-    },
+    deleteContentByHash: deleteContent,
 
     searchByVec: (queryVec, limit) => {
       try {
@@ -1674,7 +1675,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     },
     searchByFileName: (query, limit) => {
       // 转义 LIKE 通配符：查询里的 % / _ 按字面匹配（"IMG_2024" 不该匹配 "IMGx2024"）
-      const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`
+      const pattern = `%${query.replace(/[!%_]/g, '!$&')}%`
       const results = stmts.searchByFileName.all(pattern, pattern, limit) as Array<{ file_hash: string }>
       return results.map((r) => ({ fileHash: r.file_hash }))
     },
@@ -1958,72 +1959,12 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getFramePhotosByVideo: (videoId) => {
       return stmts.getFramePhotosByVideo.all(videoId) as Photo[]
     },
-    removeFramesForVideo: (videoId): string[] => {
-      const frames = stmts.getFramePhotosByVideo.all(videoId) as Photo[]
-      if (frames.length === 0) return []
-      const frameHashes = new Set(frames.map((f) => f.fileHash).filter((h): h is string => !!h))
-
-      const tx = db.transaction(() => {
-        for (const f of frames) stmts.softDeletePhoto.run(f.filePath)
-      })
-      tx()
-
-      const orphaned: string[] = []
-      const hasOther = db.prepare(
-        `SELECT 1 FROM photos WHERE file_hash = ? AND deleted_at IS NULL LIMIT 1`
-      )
-      for (const hash of frameHashes) {
-        if (!hasOther.get(hash)) {
-          orphaned.push(hash)
-          const vec = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
-          if (vec) {
-            stmts.deleteVecByRowid.run(Number(vec.rowid))
-            stmts.deleteVecMapByHash.run(hash)
-          }
-          deleteFacesForHash(hash)
-          stmts.deleteCaptionByHash.run(hash)
-          stmts.deleteOcrByHash.run(hash)
-        }
-      }
-      return orphaned
-    },
+    removeFramesForVideo: (videoId): string[] => dropVideoFrames(videoId),
     cascadeRemoveVideo: (filePath) => {
       const video = stmts.getVideoByPath.get(filePath) as VideoRecord | undefined
       if (!video) return null
-
-      // 找出所有帧 photos，逐张 soft-delete；记录它们的 hash 以便后续判孤立
-      const frames = stmts.getFramePhotosByVideo.all(video.id) as Photo[]
-      const frameHashes = new Set(frames.map((f) => f.fileHash).filter((h): h is string => !!h))
-
-      const tx = db.transaction(() => {
-        for (const f of frames) {
-          stmts.softDeletePhoto.run(f.filePath)
-        }
-        stmts.softDeleteVideo.run(filePath)
-      })
-      tx()
-
-      // 哪些 frame hash 已经没有任何存活 photos 引用 → 真正可以清内容
-      const orphanedFrameHashes: string[] = []
-      const hasOther = db.prepare(
-        `SELECT 1 FROM photos WHERE file_hash = ? AND deleted_at IS NULL LIMIT 1`
-      )
-      for (const hash of frameHashes) {
-        const row = hasOther.get(hash)
-        if (!row) {
-          orphanedFrameHashes.push(hash)
-          // 复用 deleteContentByHash 的内联逻辑（同一段，避免实例自引用）
-          const vec = stmts.deleteImageVecByHash.get(hash) as { rowid: bigint | number } | undefined
-          if (vec) {
-            stmts.deleteVecByRowid.run(Number(vec.rowid))
-            stmts.deleteVecMapByHash.run(hash)
-          }
-          deleteFacesForHash(hash)
-          stmts.deleteCaptionByHash.run(hash)
-          stmts.deleteOcrByHash.run(hash)
-        }
-      }
-
+      // 帧 photo 和视频本体在同一事务里软删，再按"已无存活引用"判孤立、清内容
+      const orphanedFrameHashes = dropVideoFrames(video.id, () => stmts.softDeleteVideo.run(filePath))
       return { fileHash: video.fileHash || '', orphanedFrameHashes }
     },
 
