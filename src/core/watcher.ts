@@ -249,6 +249,14 @@ export class FileWatcher {
       const unchanged = existing != null && existing.deletedAt == null &&
         existing.fileHash === lightHash && existing.folderId === folderId
       if (unchanged && (existing.frameCount != null || this.db.hasOpenOrFailedTask(existing.id, 'extract_frames'))) {
+        // 内容没变，但缩略图缓存可能被清过：代表帧的缩略图缺了就补一个缩略图任务（不重新抽帧）
+        for (const frame of this.db.getFramePhotosByVideo(existing.id)) {
+          if (frame.deletedAt == null && frame.fileHash && !existsSync(this.indexer.getThumbnailPath(frame.fileHash)) &&
+              !this.db.hasOpenOrFailedTask(frame.id, 'thumbnail')) {
+            this.db.addToQueue(frame.id, 'thumbnail', 20)
+            this.indexer.processNext()
+          }
+        }
         return
       }
 
