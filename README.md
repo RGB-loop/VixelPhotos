@@ -82,7 +82,14 @@ SCRFD 人脸检测 + MobileFaceNet 512 维特征 + sqlite-vec 近邻索引。
   渲染进程的一切网络请求都会被拦截。
 - 照片原文件只读不写；索引、缩略图都存在本机的应用数据目录里。
 
-## 快速开始
+## 下载
+
+[**下载最新版（macOS · Apple Silicon）**](https://github.com/RGB-loop/VixelPhotos/releases/latest) —— 约 615 MB，模型已内置。
+
+这个版本没有经过 Apple 公证。第一次打开被拦截时，到 **系统设置 → 隐私与安全性** 点「仍要打开」；
+或在终端执行 `xattr -dr com.apple.quarantine /Applications/Vixel.app`。
+
+## 从源码运行
 
 需要 Node.js 20+。目前主要在 macOS（Apple Silicon）上开发和测试。
 

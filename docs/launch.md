@@ -44,14 +44,14 @@ VIXEL_CAPTURE=$D/shots VIXEL_CAPTURE_QUERIES="花,STARBUCKS,猫" npx electron . 
 
 ## 发布前必须完成（阻塞项）
 
-- [ ] **签名 + 公证**（2026-10-10 查过：当前 Apple 账号**未加入** Apple Developer Program，只是免费账号）。
+- [x] **签名 + 公证**：决定暂不加入 Developer Program，发布 ad-hoc 签名版本（`build/adhoc-sign.cjs`），release 说明里写清首次打开步骤。（2026-10-10 查过：当前 Apple 账号**未加入** Apple Developer Program，只是免费账号）。
       - 推荐：加入 Developer Program（个人约 ¥688 / 年，需 Apple 账号开启双重认证，审核一般 1–2 天），之后用
         Developer ID 证书签名，发布构建跑 `electron-builder --mac --c.mac.notarize=true`，配置 `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`。
       - 暂不加入：只能发未公证的版本。用户第一次打开会被拦截，需在「系统设置 → 隐私与安全性」里点“仍要打开”，
         或执行 `xattr -dr com.apple.quarantine /Applications/Vixel.app`。适合内测，不适合公开宣发。
 - [ ] **模型随包**：确认 `resources/models` 下有 `gemma2/`、`paddleocr/ppocrv5_dict.txt`（v5 字典，不是 `ppocr_keys_v1.txt`）、人脸模型；DMG 体积约 700 MB，下载页注明。
-- [ ] **全新机器冒烟**：新用户目录跑一遍首次使用流程（加文件夹 → 浏览 → 搜索 → 人物）。可用 `--user-data-dir=/tmp/fresh` 模拟。
-- [ ] **版本号**：`package.json` 0.2.0 → 发布版本；`CHANGELOG.md` 的 Unreleased 改成版本号 + 日期。
+- [x] **全新目录冒烟**：打包后的 app 用空数据目录启动、用演示库跑完截图巡检（搜索 / 图中文字 / 视频 / 地图 / 人物）均正常。真机全新用户仍建议再试一次。
+- [x] **版本号**：v0.2.0 已发布（2026-10-10）：https://github.com/RGB-loop/VixelPhotos/releases/tag/v0.2.0
 - [x] **宣传片 / README 配图**：已用演示库按真实界面重做（2026-10-10）。README 里内嵌播放的视频需要把新的 mp4 拖进 GitHub 网页编辑器生成附件链接。
 
 ## 发布后一周盯什么
