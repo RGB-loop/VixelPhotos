@@ -112,6 +112,9 @@ const PROMO_SCENES: Scene[] = [
   { name: 'honest', caption: '没有把握时，它会直说', run: async (w) => {
     await typeSlowly(w, '猫'); await sleep(3000)
   } },
+  { name: 'map', caption: '拍摄地点一目了然，地图也是离线的', run: async (w) => {
+    await js(typeSearch(''))(w); await sleep(300); command('source:map')(w); await sleep(4200); command('source:all')(w); await sleep(600)
+  } },
   { name: 'dark', caption: '浅色、深色，跟随系统', run: async (w) => {
     await typeSlowly(w, ''); await js(typeSearch(''))(w); await sleep(800)
     nativeTheme.themeSource = 'dark'; await sleep(2600); nativeTheme.themeSource = 'light'; await sleep(600)

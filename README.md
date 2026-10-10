@@ -7,14 +7,12 @@
 **重新认识你的照片库。**
 本地 AI 照片 / 视频 / 音频搜索 —— 全程离线，数据不出设备，无需 API Key。
 
-*AI-powered local search for photos, videos and audio. Private. Fast. No cloud.*
+*AI-powered local search for photos, videos and audio. Private. Offline. No cloud.*
 
 </div>
 
-https://github.com/user-attachments/assets/6515e6f5-d4b6-4b27-9122-9d113374b2d9
-
 <div align="center">
-<sub>66 秒宣传片 · 1080p · 原创配乐 · <a href="https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4">下载 mp4</a></sub>
+<sub>48 秒演示 · 1080p · 真实界面录屏 · <a href="https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4">下载 mp4</a></sub>
 </div>
 
 ---
@@ -26,7 +24,8 @@ https://github.com/user-attachments/assets/6515e6f5-d4b6-4b27-9122-9d113374b2d9
 ### 自然语言搜索
 输入"海边的日落""宝宝第一次走路"，直接找到对应的照片和视频片段。
 EmbeddingGemma 2 把文字、图片、视频、音频放进**同一个多语言向量空间**，
-再和图内文字、文件名一起做四路 RRF 融合 —— 中文、英文都行，搜索延迟几十毫秒。
+再和图内文字、文件名一起做四路 RRF 融合 —— 中文、英文都行。
+库里没有把握的东西，它会直说，而不是硬凑一屏结果。
 
 <img src="docs/media/search.jpg" width="860" alt="语义搜索" />
 
@@ -37,7 +36,8 @@ EmbeddingGemma 2 把文字、图片、视频、音频放进**同一个多语言�
 <img src="docs/media/ocr.jpg" width="860" alt="OCR 图内文字搜索" />
 
 ### 视频：直接跳到那一刻
-每个视频按 32 秒切段，每段的画面（每秒 1 帧）和声音一起编码成一个向量。
+每个视频按 32 秒切段，每段的画面（每 4 秒 1 帧）和声音一起编码成一个向量；
+画面里出现过的文字（招牌、字幕、白板）也会被识别。
 搜"沙滩上狗在叫"，命中的是**听到的**和**看到的**；打开详情自动跳到命中的那一段，
 时间轴上高亮显示。网格里悬停即可拖动预览。
 
@@ -46,26 +46,28 @@ EmbeddingGemma 2 把文字、图片、视频、音频放进**同一个多语言�
 ### 音频可搜 · 悬停即览
 mp3 / m4a / wav / flac 等独立音频文件同样按段进入向量空间；封面缺失时自动生成波形图。
 
-<img src="docs/media/audio.jpg" width="860" alt="音频搜索与悬停预览" />
 
 ### 按人物浏览
 SCRFD 人脸检测 + MobileFaceNet 512 维特征 + sqlite-vec 近邻索引。
 按人脸质量（大小 / 角度 / 清晰度）把关，只在很确定时自动归入，其余批量聚类；
 双击命名、拖拽合并、"是同一个人吗？"合并建议、"不是此人"、隐藏路人。
 
-<img src="docs/media/people.jpg" width="860" alt="人物" />
 
 ### 明暗随心 · 进度可见
 浅色 / 深色 / 跟随系统；状态栏点开任务抽屉，看当前正在处理的文件、每段进度、
 预计剩余时间，失败任务可一键重试。索引在独立的低优先级进程里跑，界面始终跟手。
 
-<img src="docs/media/themes.jpg" width="860" alt="明暗主题与任务抽屉" />
+<img src="docs/media/themes.jpg" width="860" alt="浅色与深色主题" />
 
-> 以上画面来自宣传片，为示意演示；界面以实际应用为准。
+### 离线地图
+带 GPS 的照片落在地图上，大量照片自动聚合。底图随应用打包，打开地图也不发任何网络请求。
+
+<img src="docs/media/map.jpg" width="860" alt="离线地图" />
+
+> 以上均为真实界面截图与录屏。示例照片和视频来自 [Immich test-assets](https://github.com/immich-app/test-assets)（公有领域）。
 
 ### 还有
 
-- **地图视图** —— 带 GPS 的照片落在离线地图上，大量照片自动聚合；不加载任何在线瓦片。
 - **相似照片** —— 任意照片一键找视觉相近的。
 - **去重** —— xxHash64 内容哈希，同一张照片在多个文件夹里只算一次、只索引一次。
 - **HEIC / RAW** —— macOS 上通过系统 `sips` 解码 CR2 / CR3 / NEF / ARW / DNG / RAF / ORF / RW2，保留 EXIF。
