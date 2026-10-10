@@ -138,12 +138,16 @@ async function extractEmbeddedJpeg(buf: Buffer, ext: string): Promise<Buffer | n
       if (buf[i + 1] === 0xd8 && buf[i + 2] === 0xff) starts.push(i)
     }
     const segs = starts.map((st, k) => buf.subarray(st, starts[k + 1] ?? buf.length))
-    candidates.push(...segs.sort((a, b) => b.length - a.length).slice(0, 3))
+    candidates.push(...segs.sort((a, b) => b.length - a.length).slice(0, 6))
   }
+  // 从大到小试，必须真能解码：Canon CR2 里最大的那段是 12 bit 无损 JPEG（传感器原始数据），
+  // 只读文件头会当成预览，解码时报 "Unsupported JPEG data precision 12"
   for (const c of candidates) {
     try {
       const meta = await sharp(c, { failOn: 'none' }).metadata()
-      if ((meta.width ?? 0) >= 640) return Buffer.from(c)
+      if ((meta.width ?? 0) < 640) continue
+      await sharp(c, { failOn: 'error' }).resize(32, 32, { fit: 'inside' }).raw().toBuffer()
+      return Buffer.from(c)
     } catch { /* 下一个 */ }
   }
   return null
