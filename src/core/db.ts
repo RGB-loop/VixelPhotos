@@ -456,6 +456,11 @@ export interface DatabaseInstance {
   countPendingClusterFaces: () => number
   /** 库里是否扫出过人脸：老库没有 face.auto 标记时，据此判断用户用过人物功能 */
   hasAnyFaces: () => boolean
+  /**
+   * 视频代表帧的人脸清掉、face_status 置回 pending，等补扫用全分辨率帧重新检测。
+   * 人脸属于命名人物的视频保留不动。返回置回 pending 的帧数。
+   */
+  resetVideoFramesForFaceRescan: () => number
   applyClusterPlan: (plan: ClusterPlan) => void
   /** 新脸入库时的即时归属：只更新计数 / 封面 / 质心，不全量重算 */
   addFaceToPerson: (faceId: number, personId: number, embedding: Float32Array) => void
@@ -1166,6 +1171,15 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getUnassignedFaces: db.prepare(`SELECT id, embedding, quality FROM faces WHERE person_id IS NULL AND cluster_state = ?`),
     countUnassigned: db.prepare(`SELECT COUNT(*) as n FROM faces WHERE person_id IS NULL AND cluster_state = 0`),
     hasAnyFaces: db.prepare(`SELECT 1 FROM faces LIMIT 1`),
+    getVideoFrameHashesForFaceRescan: db.prepare(`
+      SELECT DISTINCT p.file_hash FROM photos p JOIN videos v ON v.id = p.video_id
+      WHERE p.deleted_at IS NULL AND v.media_kind = 'video'
+        AND NOT EXISTS (
+          SELECT 1 FROM faces f JOIN people pe ON pe.id = f.person_id
+          WHERE f.file_hash = p.file_hash AND pe.name IS NOT NULL AND pe.name != ''
+        )
+    `).pluck(),
+    setFacePendingByHash: db.prepare(`UPDATE photos SET face_status = 'pending' WHERE file_hash = ? AND deleted_at IS NULL`),
     getPersonEmbeddings: db.prepare(`SELECT embedding FROM faces WHERE person_id = ?`),
     setPersonCentroid: db.prepare(`UPDATE people SET centroid = ? WHERE id = ?`),
     getPersonRow: db.prepare(`SELECT centroid, face_count as count FROM people WHERE id = ?`),
@@ -1862,6 +1876,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getDormantFaces: () => unassigned(1),
     countPendingClusterFaces: () => (stmts.countUnassigned.get() as { n: number }).n,
     hasAnyFaces: () => stmts.hasAnyFaces.get() !== undefined,
+    resetVideoFramesForFaceRescan: () => db.transaction((): number => {
+      const hashes = stmts.getVideoFrameHashesForFaceRescan.all() as string[]
+      for (const h of hashes) {
+        deleteFacesForHash(h)
+        stmts.setFacePendingByHash.run(h)
+      }
+      return hashes.length
+    })(),
     getFaceRejections: () => {
       const m = new Map<number, Set<number>>()
       for (const r of stmts.getRejections.all() as Array<{ faceId: number; personId: number }>) {

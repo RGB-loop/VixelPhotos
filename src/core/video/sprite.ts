@@ -16,6 +16,8 @@ import { extractKeyframes } from './extract'
 
 /** 帧数：鼠标扫过一张 200px 的卡片，每 ~16px 换一帧 */
 export const SPRITE_FRAMES = 12
+/** 更短的片段（实拍里有 0.2s 的误触视频）抽不出 12 个不同时间点，也没必要拖动预览 */
+export const SPRITE_MIN_DURATION_MS = 2000
 /** 每帧边长（px）：卡片最大 320pt，悬停拖动时略糊可以接受，整张 ~120KB */
 export const SPRITE_TILE = 240
 

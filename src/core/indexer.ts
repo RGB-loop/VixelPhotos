@@ -12,7 +12,7 @@ import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPer
 import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
 import { decodeImage, type DecodedImage } from './image/decode'
 import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
-import { generateSprite } from './video/sprite'
+import { generateSprite, SPRITE_MIN_DURATION_MS } from './video/sprite'
 import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
 import { SEGMENT_MS } from './db'
 import { FaceClusterer } from './face/clusterer'
@@ -39,6 +39,10 @@ sharp.concurrency(2)
 const PAUSED_KEY = 'indexing_paused'
 /** 用户启用过人脸扫描（点过"扫描人脸"）后置 1：之后新入库的媒体自动排人脸任务 */
 const FACE_AUTO_KEY = 'face.auto'
+/** 视频人脸改用全分辨率帧之后的一次性重扫标记 */
+const FACE_VIDEO_SOURCE_KEY = 'face.video_fullres'
+/** 视频人脸检测帧的长边：4K 画面降到 1920 已足够（SCRFD 输入 640，主要为了小脸的清晰度） */
+const FACE_FRAME_MAX_SIDE = 1920
 /** 进度事件最小间隔：每次都要跑两条全表聚合（主进程同步），索引时每个任务 / 每个片段都会触发 */
 const PROGRESS_MIN_INTERVAL_MS = 250
 /** 模型未就绪导致的失败以此开头；requeueMissingEmbeddings 只自动重排这类，坏文件留给任务面板 */
@@ -124,6 +128,17 @@ export class Indexer extends EventEmitter {
     if (!this.db.hasAnyFaces()) return false
     this.db.setMetaState(FACE_AUTO_KEY, '1')
     return true
+  }
+
+  /**
+   * 一次性：以前视频人脸是在 512px 缩略帧上检测的，重扫视频（照片不动）。
+   * 已归到命名人物的视频跳过，免得用户起的名字随人物清空而丢失。返回重排的条数。
+   */
+  rescanVideoFacesOnce(): number {
+    if (this.db.getMetaState(FACE_VIDEO_SOURCE_KEY) === '1') return 0
+    const n = this.isFaceAutoEnabled() ? this.db.resetVideoFramesForFaceRescan() : 0
+    this.db.setMetaState(FACE_VIDEO_SOURCE_KEY, '1')
+    return n
   }
 
   /** 手动触发人脸扫描 */
@@ -331,7 +346,7 @@ export class Indexer extends EventEmitter {
 
     // 悬停拖动预览的 sprite：放在片段之后，不推迟视频出现在网格里；失败不影响索引
     // （渲染端拿不到 sprite 会回退到播放预览，老视频由 vixel://sprite 按需补生成）
-    if (kind === 'video' && this.db.getVideoById(videoId)) {
+    if (kind === 'video' && durationMs >= SPRITE_MIN_DURATION_MS && this.db.getVideoById(videoId)) {
       try {
         await generateSprite(video.filePath, durationMs, this.getSpritePath(video.fileHash))
       } catch (spriteError) {
@@ -389,7 +404,26 @@ export class Indexer extends EventEmitter {
     this.emitProgress(stage, name)
   }
 
-  private async processFace(fileHash: string, filePath: string): Promise<void> {
+  /**
+   * 人脸检测 / 人脸裁剪用的图像。视频代表图只是 512px 的缩略帧：4K 画面里 150px 的脸缩下来不到 20px，
+   * 尺寸和清晰度都过不了质量门槛，几乎全被排除在聚类之外。视频改从源文件按同一时间点抽全分辨率帧；
+   * 普通照片（以及音频封面）照旧解码原图。bbox 是归一化坐标，两种来源可以混用。
+   */
+  async faceSourceImage(photo: { fileHash: string; filePath: string; videoId?: number | null; frameTimeMs?: number | null }): Promise<Buffer> {
+    if (photo.videoId != null && isFfmpegAvailable()) {
+      const video = this.db.getVideoById(photo.videoId)
+      if (video?.mediaKind === 'video' && existsSync(video.filePath)) {
+        const frames = await extractKeyframes(video.filePath, {
+          startSec: (photo.frameTimeMs ?? 0) / 1000, durationSec: 1, intervalSec: 1, maxFrames: 1, maxSide: FACE_FRAME_MAX_SIDE,
+        }).catch(() => [])
+        if (frames.length > 0) return frames[0].buffer
+      }
+    }
+    return (await this.decode(photo.fileHash, photo.filePath)).buffer
+  }
+
+  private async processFace(photo: { fileHash: string; filePath: string; videoId?: number | null; frameTimeMs?: number | null }): Promise<void> {
+    const { fileHash, filePath } = photo
     try {
       if (this.db.hasFacesForHash(fileHash)) {
         this.db.updateFaceStatusByHash(fileHash)
@@ -400,8 +434,7 @@ export class Indexer extends EventEmitter {
         await initFaceService()
       }
 
-      const decoded = await this.decode(fileHash, filePath)
-      const faces = await processPhotoFaces(decoded.buffer)
+      const faces = await processPhotoFaces(await this.faceSourceImage(photo))
 
       for (const face of faces) {
         const faceId = this.db.saveFace(
@@ -523,7 +556,7 @@ export class Indexer extends EventEmitter {
             this.db.addToQueue(task.photoId, 'face', 8)
           }
         } else if (task.taskType === 'face') {
-          await this.processFace(photo.fileHash, photo.filePath)
+          await this.processFace(photo)
         } else if (task.taskType === 'ocr') {
           await this.processOcr(photo.fileHash, photo.filePath)
         }

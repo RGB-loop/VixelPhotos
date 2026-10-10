@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme, session } from 'electron'
 import { pathToFileURL } from 'url'
 import { join } from 'path'
-import { readFile, writeFile, unlink, mkdir, readdir, rm } from 'fs/promises'
+import { writeFile, unlink, mkdir, readdir, rm } from 'fs/promises'
 import { createHash } from 'crypto'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -16,7 +16,7 @@ import { setOcrModelsDir } from '../core/ocr'
 import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
-import { ensureSprite } from '../core/video/sprite'
+import { ensureSprite, SPRITE_MIN_DURATION_MS } from '../core/video/sprite'
 import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { InferenceProcess } from './inference-client'
@@ -207,6 +207,8 @@ async function initServices(): Promise<void> {
       console.log(`[face] pipeline upgraded, re-scanning (${staleFaces} stale faces dropped)`)
       indexer.startFaceScan().catch((e) => console.warn('[face] re-scan failed:', e))
     } else if (indexer.isFaceAutoEnabled()) {
+      const videoRescan = indexer.rescanVideoFacesOnce()
+      if (videoRescan > 0) console.log(`[face] re-scanning ${videoRescan} video frames at full resolution`)
       // 补扫：上次之后入库、还没扫过人脸的媒体（以前只有手动点"扫描人脸"才会排）
       indexer.startFaceScan().catch((e) => console.warn('[face] catch-up scan failed:', e))
     }
@@ -299,7 +301,8 @@ async function ensureFaceThumb(faceId: number): Promise<string | null> {
     p = (async () => {
       const photo = db.getRepresentativeByHash(info.fileHash)
       if (!photo) return null
-      const crop = await getFaceThumbnail(await readFile(photo.filePath), JSON.parse(info.bbox) as FaceBbox)
+      // 与检测同源：视频取全分辨率帧，照片取原图
+      const crop = await getFaceThumbnail(await indexer.faceSourceImage(photo), JSON.parse(info.bbox) as FaceBbox)
       await mkdir(join(app.getPath('userData'), 'face_thumbs'), { recursive: true })
       await writeFile(dest, crop)
       return dest
@@ -736,7 +739,7 @@ function registerVixelProtocol(): void {
         const spritePath = indexer.getSpritePath(video.fileHash)
         if (!existsSync(spritePath)) {
           // 还没抽过帧（时长未知）的视频交给索引任务，这里不抢
-          if (!video.durationMs || !existsSync(video.filePath) || !isFfmpegAvailable()) {
+          if (!video.durationMs || video.durationMs < SPRITE_MIN_DURATION_MS || !existsSync(video.filePath) || !isFfmpegAvailable()) {
             return new Response('not ready', { status: 404 })
           }
           await ensureSprite(video.filePath, video.durationMs, spritePath)
