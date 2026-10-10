@@ -46,16 +46,27 @@ export const l2ToCosine = (distance: number): number => 1 - (distance * distance
  * 不存在的多在 2.0–2.6σ；2.5σ 把凑数结果挡掉，真命中基本保留。
  */
 export const RELEVANCE_MIN_Z = 2.5
-/** 基线抽样条数；少于 BASELINE_MIN 条向量时统计不可靠，不做门槛 */
+/**
+ * 基线抽样条数。某一类向量少于 BASELINE_MIN 条时（小库、只有几段视频），
+ * 两类合并成一个基线（同一嵌入空间）；合并后仍少于 BASELINE_MIN 才放弃门槛。
+ * 新用户常拿一个小文件夹试用，这时不过滤就会"什么都搜出整个库"。
+ */
 const BASELINE_SAMPLE = 256
-const BASELINE_MIN = 40
+const BASELINE_MIN = 20
 /** 一个明确命中都没有时，给出的"最接近"结果条数（标记 lowConfidence） */
 const FALLBACK_LIMIT = 12
 
 type VecKind = 'image' | 'segment'
 
-/** 查询相似度的 z 分数函数；样本不够时返回 null（不过滤） */
-function zScorer(query: Float32Array, sample: Float32Array[]): ((cosine: number) => number) | null {
+/**
+ * 稳健版门槛（仅小库）：中位数 / MAD 不受"一大簇相关结果"影响。小库里四分之一都是花时，
+ * 普通标准差被这簇撑大，真命中的 z 反而不够；稳健 z 能补上。两者任一过线即算相关。
+ */
+export const RELEVANCE_MIN_ROBUST_Z = 3.0
+const ROBUST_MAX_SAMPLE = 150
+
+/** 查询相似度的相关性判定函数；样本不够时返回 null（不过滤） */
+function relevanceTest(query: Float32Array, sample: Float32Array[]): ((cosine: number) => boolean) | null {
   if (sample.length < BASELINE_MIN) return null
   const sims = sample.map((v) => {
     let d = 0
@@ -64,7 +75,12 @@ function zScorer(query: Float32Array, sample: Float32Array[]): ((cosine: number)
   })
   const mean = sims.reduce((a, b) => a + b, 0) / sims.length
   const sd = Math.sqrt(sims.reduce((a, b) => a + (b - mean) ** 2, 0) / sims.length) || 1e-6
-  return (cosine) => (cosine - mean) / sd
+  const sorted = [...sims].sort((a, b) => a - b)
+  const median = sorted[sorted.length >> 1]
+  const mad = (sorted.map((x) => Math.abs(x - median)).sort((a, b) => a - b)[sorted.length >> 1] * 1.4826) || 1e-6
+  // 稳健 z 只用于小库：大库的分布本来就不被单一主题主导，再放宽会把不存在的东西放进来（实测）
+  const useRobust = sims.length < ROBUST_MAX_SAMPLE
+  return (cosine) => (cosine - mean) / sd >= RELEVANCE_MIN_Z || (useRobust && (cosine - median) / mad >= RELEVANCE_MIN_ROBUST_Z)
 }
 
 export interface SearchOptions {
@@ -118,8 +134,8 @@ export class SearchEngine {
       // 相关性门槛：向量通道只留明显高于该查询基线的命中（见 RELEVANCE_MIN_Z）
       const relevant = <T extends { distance: number }>(rows: T[], kind: VecKind): T[] => {
         if (!queryVec || rows.length === 0) return rows
-        const z = zScorer(queryVec, this.baselineSample(kind))
-        return z ? rows.filter((r) => z(l2ToCosine(r.distance)) >= RELEVANCE_MIN_Z) : rows
+        const isRelevant = relevanceTest(queryVec, this.baselineSample(kind))
+        return isRelevant ? rows.filter((r) => isRelevant(l2ToCosine(r.distance))) : rows
       }
       let imageVecResults = relevant(rawImageVec, 'image')
       let videoSegmentResults = relevant(rawSegments, 'segment')
@@ -211,6 +227,12 @@ export class SearchEngine {
   }
 
   private baselineSample(kind: VecKind): Float32Array[] {
+    const own = this.rawBaselineSample(kind)
+    if (own.length >= BASELINE_MIN) return own
+    return [...this.rawBaselineSample('image'), ...this.rawBaselineSample('segment')]
+  }
+
+  private rawBaselineSample(kind: VecKind): Float32Array[] {
     const counts = this.db.countVectors()
     const stale = (k: VecKind): boolean => {
       const b = this.baseline?.[k]
