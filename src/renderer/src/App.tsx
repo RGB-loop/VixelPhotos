@@ -166,8 +166,14 @@ function App(): JSX.Element {
         doSearch().then(setSearchResults).catch(() => {})
       }
     }
+    let modelReady = false
     const unsubscribe = window.api.onIndexProgress((progress) => {
       setIndexProgress(progress)
+      // 模型加载完成前发出的查询只有文件名 / OCR 命中；就绪时重跑一次，补上语义结果
+      if (!modelReady && progress.aiModelReady && filters.current.query.trim()) {
+        doSearch().then(setSearchResults).catch(() => {})
+      }
+      modelReady = progress.aiModelReady
       const sig = `${progress.totalPhotos}/${progress.thumbnailedPhotos}/${progress.indexedPhotos}/${progress.ocrPhotos || 0}`
       if (sig === last) return
       last = sig

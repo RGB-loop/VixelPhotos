@@ -107,7 +107,7 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
             )}
           </>
         ) : (
-          <span className="text-ink-3">{itemCount > 0 ? '索引已是最新' : '添加文件夹开始使用'}</span>
+          <span className="text-ink-3">{(progress?.totalPhotos ?? itemCount) > 0 ? '索引已是最新' : '添加文件夹开始使用'}</span>
         )}
       </button>
 
