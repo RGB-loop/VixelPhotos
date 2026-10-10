@@ -89,6 +89,7 @@ export function loadLiteRt(libDir: string): LiteRtNative {
     engineDelete: lib.func('litert_lm_embedding_engine_delete', 'void', [P]),
     optionsCreate: lib.func('litert_lm_embedding_options_create', P, []),
     optionsNormalize: lib.func('litert_lm_embedding_options_set_normalize', 'void', [P, 'bool']),
+    optionsOverflow: lib.func('litert_lm_embedding_options_set_input_overflow_strategy', 'void', [P, 'int']),
     compute: lib.func('litert_lm_embedding_engine_compute_embedding', P, [P, koffi.pointer(P), 'size_t', P]),
     responseSize: lib.func('litert_lm_embedding_response_get_size', 'size_t', [P]),
     responseValues: lib.func('litert_lm_embedding_response_get_values', P, [P]),
@@ -96,9 +97,11 @@ export function loadLiteRt(libDir: string): LiteRtNative {
   }
   fn.setLogLevel(3) // LogSeverity：0 VERBOSE … 2 INFO, 3 WARNING。只留 warning 以上；默认每次图片缩放都打一行 INFO
 
-  // 输出向量 L2 归一化（与库里的余弦检索一致）；options 无状态，全局共用一个
+  // 输出向量 L2 归一化（与库里的余弦检索一致）；options 无状态，全局共用一个。
+  // 超长输入（比如粘贴了一大段文字当查询）截断到最长签名，而不是默认的直接报错
   const options = fn.optionsCreate()
   fn.optionsNormalize(options, true)
+  fn.optionsOverflow(options, 1 /* kLiteRtLmInputOverflowStrategyTruncate */)
 
   loaded = {
     createEngine(modelPath, backend, opts) {
