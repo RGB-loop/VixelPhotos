@@ -29,7 +29,7 @@ export const enum InputType { Text = 0, Image = 1, Audio = 3 }
 export interface LiteRtNative {
   createEngine(modelPath: string, backend: 'gpu' | 'cpu', opts: { cacheDir?: string; numThreads?: number; maxInputTokens?: number }): unknown
   deleteEngine(engine: unknown): void
-  /** 一次调用、多个输入 → 一个向量（多帧 + 音频即一个视频片段向量）；在工作线程里跑，不阻塞事件循环 */
+  /** 一次调用、多个输入 → 一个向量（多帧 + 音频即一个视频片段向量）；同步执行（见实现里的说明） */
   embed(engine: unknown, items: Array<[InputType, Buffer]>): Promise<Float32Array>
 }
 
@@ -94,7 +94,7 @@ export function loadLiteRt(libDir: string): LiteRtNative {
     responseValues: lib.func('litert_lm_embedding_response_get_values', P, [P]),
     responseDelete: lib.func('litert_lm_embedding_response_delete', 'void', [P]),
   }
-  fn.setLogLevel(2) // 只留 warning 以上；库默认把每次图片缩放都打成 INFO
+  fn.setLogLevel(3) // LogSeverity：0 VERBOSE … 2 INFO, 3 WARNING。只留 warning 以上；默认每次图片缩放都打一行 INFO
 
   // 输出向量 L2 归一化（与库里的余弦检索一致）；options 无状态，全局共用一个
   const options = fn.optionsCreate()
@@ -119,20 +119,22 @@ export function loadLiteRt(libDir: string): LiteRtNative {
       fn.engineDelete(engine)
     },
     embed(engine, items) {
+      // 同步调用：koffi 的 .async 跑在 libuv 工作线程上，文本输入（分词器）在那个线程栈上会 SIGBUS
+      // （图片 / 音频不会）。推理进程本来就是串行处理请求的专用进程，同步调用不影响别人。
       const ptrs = items.map(([type, buf]) => fn.inputCreate(type, buf, buf.length))
-      return new Promise((resolve, reject) => {
-        fn.compute.async(engine, ptrs, ptrs.length, options, (err: unknown, resp: unknown) => {
-          ptrs.forEach((p) => fn.inputDelete(p))
-          if (err) return reject(err)
-          if (!resp) return reject(new Error('LiteRT: compute_embedding failed'))
-          try {
-            const n = Number(fn.responseSize(resp))
-            resolve(Float32Array.from(koffi.decode(fn.responseValues(resp), 'float', n) as number[]))
-          } finally {
-            fn.responseDelete(resp)
-          }
-        })
-      })
+      let resp: unknown = null
+      try {
+        resp = fn.compute(engine, ptrs, ptrs.length, options)
+      } finally {
+        ptrs.forEach((p) => fn.inputDelete(p))
+      }
+      if (!resp) return Promise.reject(new Error('LiteRT: compute_embedding failed (see stderr for the reason)'))
+      try {
+        const n = Number(fn.responseSize(resp))
+        return Promise.resolve(Float32Array.from(koffi.decode(fn.responseValues(resp), 'float', n) as number[]))
+      } finally {
+        fn.responseDelete(resp)
+      }
     },
   }
   return loaded

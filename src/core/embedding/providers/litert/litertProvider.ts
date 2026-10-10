@@ -7,7 +7,7 @@
  *   - 向量与旧 ONNX 版不完全一致（同图余弦中位数 0.95），两者不可混用
  *
  * 一次 compute_embedding 可以带多个输入并融合成一个向量：视频片段 = 若干帧 + 音轨。
- * 运行在推理进程（utilityProcess）里；compute 走 koffi 的工作线程，不阻塞事件循环。
+ * 运行在推理进程（utilityProcess）里，同步调用 C API（该进程本来就串行处理请求）。
  */
 import { cpus } from 'os'
 import { join } from 'path'

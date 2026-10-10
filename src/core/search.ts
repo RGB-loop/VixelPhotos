@@ -26,10 +26,10 @@ interface TextSearchResult {
 
 /**
  * "相似"的最低余弦相似度：先按它过滤，再截取条数，不够就少给、一张都没有就不展示。
- * EmbeddingGemma 2 图片向量的基线偏高：实测随机不相关图片 0.57–0.68，同场景 / 连拍 0.85+，
- * 近似帧 0.95+。0.80 能挡住"只是凑数的最近邻"，又不至于把同主题的照片漏掉。
+ * LiteRT 版 EmbeddingGemma 2 的图片向量基线偏高：实测（358 段视频的真实库）随机两张的中位数 0.72、
+ * p90 0.80，同场景连拍 0.87+；互不相关的演示图片最接近的一张也常到 0.79。0.85 只留真正相近的。
  */
-export const SIMILAR_MIN_COSINE = 0.8
+export const SIMILAR_MIN_COSINE = 0.85
 
 /** vec0 默认 L2 距离；向量已 L2 归一化，余弦相似度 = 1 − d²/2 */
 export const l2ToCosine = (distance: number): number => 1 - (distance * distance) / 2
@@ -42,10 +42,10 @@ export const l2ToCosine = (distance: number): number => 1 - (distance * distance
  * 不同查询的基线差得比"相关 / 不相关"还大（实测"夜景"真命中 0.69，不存在的"滑雪"最高 0.74）。
  *
  * 所以按查询标准化：抽样估计这个查询和整库的相似度均值 / 标准差，只保留高出均值 Z 个标准差的命中。
- * 实测（358 条视频库，10 个存在 / 10 个不存在的概念）：存在的概念最佳命中多在 2.8–5σ，
- * 不存在的多在 2.0–2.6σ；2.5σ 把凑数结果挡掉，真命中基本保留。
+ * 实测（LiteRT 向量；358 段视频的真实库 + 34 项演示库，各 ~10 个存在 / 不存在的概念）：
+ * 存在的概念最佳命中多在 3–5.5σ，最弱的（"夜景""大巴扎"）2.7–2.8σ；不存在的多在 1.8–2.6σ。
  */
-export const RELEVANCE_MIN_Z = 2.5
+export const RELEVANCE_MIN_Z = 2.75
 /**
  * 基线抽样条数。某一类向量少于 BASELINE_MIN 条时（小库、只有几段视频），
  * 两类合并成一个基线（同一嵌入空间）；合并后仍少于 BASELINE_MIN 才放弃门槛。
@@ -62,7 +62,7 @@ type VecKind = 'image' | 'segment'
  * 稳健版门槛（仅小库）：中位数 / MAD 不受"一大簇相关结果"影响。小库里四分之一都是花时，
  * 普通标准差被这簇撑大，真命中的 z 反而不够；稳健 z 能补上。两者任一过线即算相关。
  */
-export const RELEVANCE_MIN_ROBUST_Z = 3.0
+export const RELEVANCE_MIN_ROBUST_Z = 3.5
 const ROBUST_MAX_SAMPLE = 150
 
 /** 查询相似度的相关性判定函数；样本不够时返回 null（不过滤） */
