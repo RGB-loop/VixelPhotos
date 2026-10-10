@@ -233,7 +233,7 @@ const PHOTO_COLUMNS = `
   p.id, p.folder_id as folderId, p.file_path as filePath, COALESCE(v.file_name, p.file_name) as fileName,
   p.file_size as fileSize, p.file_mtime as fileMtime, p.file_hash as fileHash,
   p.width, p.height, p.taken_at as takenAt, p.lat, p.lng,
-  p.embed_status as embedStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
+  p.embed_status as embedStatus, p.face_status as faceStatus, p.video_id as videoId, p.frame_time_ms as frameTimeMs,
   p.deleted_at as deletedAt, p.created_at as createdAt, p.updated_at as updatedAt,
   ${MEDIA_KIND_EXPR} as mediaKind, v.duration_ms as durationMs`
 const MEDIA_JOIN = `LEFT JOIN videos v ON v.id = p.video_id`
@@ -454,6 +454,8 @@ export interface DatabaseInstance {
   getFaceRejections: () => Map<number, Set<number>>
   getDismissedPairs: () => Set<string>
   countPendingClusterFaces: () => number
+  /** 库里是否扫出过人脸：老库没有 face.auto 标记时，据此判断用户用过人物功能 */
+  hasAnyFaces: () => boolean
   applyClusterPlan: (plan: ClusterPlan) => void
   /** 新脸入库时的即时归属：只更新计数 / 封面 / 质心，不全量重算 */
   addFaceToPerson: (faceId: number, personId: number, embedding: Float32Array) => void
@@ -1163,6 +1165,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getPersonCentroids: db.prepare(`SELECT id, name, centroid, face_count as count, hidden FROM people WHERE face_count > 0`),
     getUnassignedFaces: db.prepare(`SELECT id, embedding, quality FROM faces WHERE person_id IS NULL AND cluster_state = ?`),
     countUnassigned: db.prepare(`SELECT COUNT(*) as n FROM faces WHERE person_id IS NULL AND cluster_state = 0`),
+    hasAnyFaces: db.prepare(`SELECT 1 FROM faces LIMIT 1`),
     getPersonEmbeddings: db.prepare(`SELECT embedding FROM faces WHERE person_id = ?`),
     setPersonCentroid: db.prepare(`UPDATE people SET centroid = ? WHERE id = ?`),
     getPersonRow: db.prepare(`SELECT centroid, face_count as count FROM people WHERE id = ?`),
@@ -1858,6 +1861,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getPendingClusterFaces: () => unassigned(0),
     getDormantFaces: () => unassigned(1),
     countPendingClusterFaces: () => (stmts.countUnassigned.get() as { n: number }).n,
+    hasAnyFaces: () => stmts.hasAnyFaces.get() !== undefined,
     getFaceRejections: () => {
       const m = new Map<number, Set<number>>()
       for (const r of stmts.getRejections.all() as Array<{ faceId: number; personId: number }>) {

@@ -206,6 +206,9 @@ async function initServices(): Promise<void> {
     if (staleFaces > 0) {
       console.log(`[face] pipeline upgraded, re-scanning (${staleFaces} stale faces dropped)`)
       indexer.startFaceScan().catch((e) => console.warn('[face] re-scan failed:', e))
+    } else if (indexer.isFaceAutoEnabled()) {
+      // 补扫：上次之后入库、还没扫过人脸的媒体（以前只有手动点"扫描人脸"才会排）
+      indexer.startFaceScan().catch((e) => console.warn('[face] catch-up scan failed:', e))
     }
   }, 2000)
 

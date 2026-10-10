@@ -37,6 +37,8 @@ async function getXxhasher(): Promise<(input: Uint8Array) => string> {
 sharp.concurrency(2)
 
 const PAUSED_KEY = 'indexing_paused'
+/** 用户启用过人脸扫描（点过"扫描人脸"）后置 1：之后新入库的媒体自动排人脸任务 */
+const FACE_AUTO_KEY = 'face.auto'
 /** 进度事件最小间隔：每次都要跑两条全表聚合（主进程同步），索引时每个任务 / 每个片段都会触发 */
 const PROGRESS_MIN_INTERVAL_MS = 250
 /** 模型未就绪导致的失败以此开头；requeueMissingEmbeddings 只自动重排这类，坏文件留给任务面板 */
@@ -113,6 +115,17 @@ export class Indexer extends EventEmitter {
     return { queued: pending.length }
   }
 
+  /**
+   * 人脸是否自动跟随索引：用户点过"扫描人脸"，或老库里已经有人脸（没有标记的旧版本）。
+   * 否则新照片 / 视频入库后永远不会被扫人脸，人物页只停留在上次手动扫描时的样子。
+   */
+  isFaceAutoEnabled(): boolean {
+    if (this.db.getMetaState(FACE_AUTO_KEY) === '1') return true
+    if (!this.db.hasAnyFaces()) return false
+    this.db.setMetaState(FACE_AUTO_KEY, '1')
+    return true
+  }
+
   /** 手动触发人脸扫描 */
   async startFaceScan(): Promise<{ queued: number }> {
     const ready = await initFaceService()
@@ -120,7 +133,9 @@ export class Indexer extends EventEmitter {
       throw new Error('Face models not available')
     }
 
-    const pending = this.db.getPendingFacePhotos()
+    this.db.setMetaState(FACE_AUTO_KEY, '1')
+    // 已在队列里的不重复排
+    const pending = this.db.getPendingFacePhotos().filter((p) => !this.db.hasOpenTask(p.id, 'face'))
     for (const photo of pending) {
       this.db.addToQueue(photo.id, 'face', 8)
     }
@@ -503,6 +518,10 @@ export class Indexer extends EventEmitter {
           await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId, photo.width != null)
         } else if (task.taskType === 'embed') {
           await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
+          // 向量好了再排人脸（优先级低于 embed，先让新内容可搜）
+          if (photo.faceStatus !== 'done' && this.isFaceAutoEnabled() && !this.db.hasOpenTask(task.photoId, 'face')) {
+            this.db.addToQueue(task.photoId, 'face', 8)
+          }
         } else if (task.taskType === 'face') {
           await this.processFace(photo.fileHash, photo.filePath)
         } else if (task.taskType === 'ocr') {
