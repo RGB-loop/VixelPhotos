@@ -71,19 +71,28 @@ export async function decodeImage(filePath: string): Promise<DecodedImage> {
   const ext = extname(filePath).toLowerCase()
   const originalBuffer = await readFile(filePath)
 
-  // 1) sharp 直接试
+  // 1) macOS 上 HEIC / RAW 直接走 sips（系统 codec）。不能先问 sharp：
+  //    sharp 读得懂 CR2 / HEIC 的文件头，metadata() 成功，真解码时才失败
+  //    （"Old-style JPEG compression not configured" / HEVC 不支持），以前这些文件全部索引失败
+  let sipsError: unknown
+  if (process.platform === 'darwin' && SIPS_EXTS.has(ext)) {
+    try {
+      const jpeg = await decodeWithSips(originalBuffer, ext)
+      return { buffer: jpeg, originalBuffer, source: 'sips', ext }
+    } catch (err) {
+      sipsError = err // 再试 sharp
+    }
+  }
+
+  // 2) sharp：用一次真解码验证（缩到 32px，JPEG 走 shrink-on-load 很便宜），只读文件头会误判。
+  //    failOn 'error'：DNG 之类的非致命元数据警告不算失败
   try {
-    await sharp(originalBuffer).metadata()
+    await sharp(originalBuffer, { failOn: 'error' }).resize(32, 32, { fit: 'inside' }).raw().toBuffer()
     return { buffer: originalBuffer, originalBuffer, source: 'passthrough', ext }
   } catch {
     /* fall through */
   }
-
-  // 2) macOS 优先走 sips（HEIC + RAW 全覆盖，调用 system codec）
-  if (process.platform === 'darwin' && SIPS_EXTS.has(ext)) {
-    const jpeg = await decodeWithSips(originalBuffer, ext)
-    return { buffer: jpeg, originalBuffer, source: 'sips', ext }
-  }
+  if (sipsError) throw sipsError
 
   // 3) 跨平台 HEIC 兜底（libheif via WASM）
   //    Linux/Windows 在这里接住，macOS 上一般用不到（sips 已经在 #2 处理）
