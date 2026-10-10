@@ -20,6 +20,7 @@ import { ensureSprite, SPRITE_MIN_DURATION_MS } from '../core/video/sprite'
 import { isFfmpegAvailable } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { InferenceProcess } from './inference-client'
+import { runCaptureTour } from './capture'
 import { timed, watchEventLoop, perfSnapshot, PROFILE } from '../core/perf'
 import { setInferenceTransport } from '../core/inference/transport'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
@@ -113,7 +114,11 @@ function createWindow(): void {
     webPreferences: WEB_PREFERENCES,
   })
   mainWindow = win
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    win.show()
+    // VIXEL_CAPTURE=<目录>：自动巡检各视图并截图（见 capture.ts）
+    if (process.env.VIXEL_CAPTURE) void runCaptureTour(win, process.env.VIXEL_CAPTURE)
+  })
   win.on('closed', () => { if (mainWindow === win) mainWindow = null })
   loadRenderer(win)
 }
@@ -198,6 +203,15 @@ async function initServices(): Promise<void> {
   // 都是 fire-and-forget，失败不阻塞应用。
   preloadJieba().catch(() => {})
   setTimeout(() => {
+    // 上次退出时没跑完的任务：启动对账会跳过所有未变化的文件，不会再有 add 事件去触发队列
+    indexer.processNext()
+    // 补 OCR：已索引但从没做过文字识别的内容（以前只能在设置里手动触发）
+    void indexer.ocrAvailable().then((ok) => {
+      if (!ok) return
+      const stale = indexer.resetOcrIfStale()
+      if (stale > 0) console.log(`[ocr] pipeline upgraded, re-scanning (${stale} old results dropped)`)
+      return indexer.startOcrScan()
+    }).catch((e) => console.warn('[ocr] catch-up scan failed:', e))
     // 模型加载完推一次进度：库已全部索引时队列不动、不会有进度事件，状态栏的"模型未就绪"要靠这一下清掉
     indexer.preloadModels().catch(() => {}).finally(() => indexer.emitProgressPublic())
     // 用户扫过人脸才自动重扫；从没扫过的库保持手动触发
@@ -302,7 +316,7 @@ async function ensureFaceThumb(faceId: number): Promise<string | null> {
       const photo = db.getRepresentativeByHash(info.fileHash)
       if (!photo) return null
       // 与检测同源：视频取全分辨率帧，照片取原图
-      const crop = await getFaceThumbnail(await indexer.faceSourceImage(photo), JSON.parse(info.bbox) as FaceBbox)
+      const crop = await getFaceThumbnail(await indexer.analysisImage(photo), JSON.parse(info.bbox) as FaceBbox)
       await mkdir(join(app.getPath('userData'), 'face_thumbs'), { recursive: true })
       await writeFile(dest, crop)
       return dest

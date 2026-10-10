@@ -29,7 +29,7 @@ let charset: string[] | null = null
 /**
  * 初始化识别器。
  * @param modelPath path to rec.onnx
- * @param charsetPath path to ppocr_keys_v1.txt（每行一个字符，加空白和 \n 即可）
+ * @param charsetPath path to ppocrv5_dict.txt（每行一个字符）
  */
 export async function initRecognition(modelPath: string, charsetPath: string): Promise<void> {
   session = await ort.InferenceSession.create(modelPath, CPU_SESSION_OPTIONS)
@@ -37,7 +37,18 @@ export async function initRecognition(modelPath: string, charsetPath: string): P
   const raw = readFileSync(charsetPath, 'utf-8')
   // PaddleOCR 字典：CTC blank 在 index 0，dict 从 index 1 开始
   const lines = raw.split(/\r?\n/).filter((l) => l.length > 0)
-  charset = ['<blank>', ...lines, ' '] // 末尾空格为 PaddleOCR 习惯
+  const cs = ['<blank>', ...lines, ' '] // 末尾空格为 PaddleOCR 习惯
+
+  // 字典必须和模型的输出类别数一致，否则每个字都会映射错、输出乱码（曾经 v5 模型配了 v1 字典，
+  // 图中文字搜索静默失效）。用一次空白输入探出类别数，不一致就拒绝初始化，让问题在日志里可见。
+  const probe = new ort.Tensor('float32', new Float32Array(3 * REC_IMG_H * 320), [1, 3, REC_IMG_H, 320])
+  const out = await session.run({ [session.inputNames[0]]: probe })
+  const classes = out[session.outputNames[0]].dims.at(-1)
+  if (classes !== cs.length) {
+    session = null
+    throw new Error(`OCR dictionary/model mismatch: model has ${classes} classes, ${charsetPath} gives ${cs.length}`)
+  }
+  charset = cs
 }
 
 export function isRecognitionReady(): boolean {
@@ -212,12 +223,18 @@ function ctcGreedyDecode(
           bestIdx = c
         }
       }
-      // 第二遍做 stable softmax 只为了估这一个字符的 prob
+      // 第二遍估这一个字符的 prob。PP-OCRv5 导出的模型输出已经过 softmax（每行是概率、和为 1）：
+      // 这时再做一次 softmax 会把 1.8 万类压平到 ~1/18385，所有行都低于置信度门槛被丢掉。
+      // 行和≈1 且非负 → 直接用 bestVal；否则当 logits 做 stable softmax
+      let rowSum = 0
+      let rowMin = Infinity
       for (let c = 0; c < C; c++) {
         const v = isBTC ? data[b * T * C + t * C + c] : data[b * C * T + c * T + t]
+        rowSum += v
+        if (v < rowMin) rowMin = v
         sumExp += Math.exp(v - bestVal)
       }
-      const prob = 1 / sumExp
+      const prob = rowMin >= 0 && Math.abs(rowSum - 1) < 1e-2 ? bestVal : 1 / sumExp
 
       // CTC 规则：连续重复 + blank(0) 都丢
       if (bestIdx !== prev && bestIdx !== 0) {

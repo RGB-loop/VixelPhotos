@@ -10,7 +10,7 @@
  *         ├── ppocr_v5_det.onnx
  *         ├── ppocr_v5_rec.onnx
  *         ├── ppocr_v5_cls.onnx             (可选)
- *         └── ppocr_keys_v1.txt
+ *         └── ppocrv5_dict.txt
  *
  * 用法：
  *   node scripts/download-models.mjs              # 全部
@@ -81,7 +81,9 @@ const MODEL_GROUPS = {
 
   // ─── OCR ────────────────────────────────────────────────────────
   // Aquamarinex/PP-OCRv5-onnx 提供 mobile det + rec（无 cls；cls 是可选项）。
-  // 字符表 ppocr_keys_v1.txt 走 GitHub raw —— PaddleOCR 上游维护。
+  // 字符表 ppocrv5_dict.txt 走 GitHub raw —— PaddleOCR 上游维护。
+  // 注意必须和 rec 模型同版本：v5 rec 输出 18385 类，旧的 ppocr_keys_v1.txt 只有 6622 字，
+  // 混用时每个字都会映射错（识别结果全是乱码、置信度 ~0，被过滤成空文本）。
   paddleocr: {
     label: 'PaddleOCR v5 (det + rec + charset; cls optional)',
     targetDir: join(MODELS_ROOT, 'paddleocr'),
@@ -95,9 +97,9 @@ const MODEL_GROUPS = {
       },
       // PaddleOCR 上游的字符表（GitHub raw，无 HF 风控问题）
       {
-        baseUrl: 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/',
+        baseUrl: 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/',
         files: [
-          { path: 'ppocr_keys_v1.txt', optional: false },
+          { path: 'ppocrv5_dict.txt', optional: false },
         ],
       },
     ],

@@ -34,6 +34,39 @@ export const SIMILAR_MIN_COSINE = 0.8
 /** vec0 默认 L2 距离；向量已 L2 归一化，余弦相似度 = 1 − d²/2 */
 export const l2ToCosine = (distance: number): number => 1 - (distance * distance) / 2
 
+/**
+ * 语义搜索的相关性门槛（按查询自适应）。
+ *
+ * 向量检索永远返回 K 个"最近"的结果，库里根本没有的东西（在新疆旅行视频里搜"海边"）也会凑满一屏。
+ * 绝对余弦值没法当门槛：EmbeddingGemma 2 的文本↔图片相似度挤在 0.65–0.80，
+ * 不同查询的基线差得比"相关 / 不相关"还大（实测"夜景"真命中 0.69，不存在的"滑雪"最高 0.74）。
+ *
+ * 所以按查询标准化：抽样估计这个查询和整库的相似度均值 / 标准差，只保留高出均值 Z 个标准差的命中。
+ * 实测（358 条视频库，10 个存在 / 10 个不存在的概念）：存在的概念最佳命中多在 2.8–5σ，
+ * 不存在的多在 2.0–2.6σ；2.5σ 把凑数结果挡掉，真命中基本保留。
+ */
+export const RELEVANCE_MIN_Z = 2.5
+/** 基线抽样条数；少于 BASELINE_MIN 条向量时统计不可靠，不做门槛 */
+const BASELINE_SAMPLE = 256
+const BASELINE_MIN = 40
+/** 一个明确命中都没有时，给出的"最接近"结果条数（标记 lowConfidence） */
+const FALLBACK_LIMIT = 12
+
+type VecKind = 'image' | 'segment'
+
+/** 查询相似度的 z 分数函数；样本不够时返回 null（不过滤） */
+function zScorer(query: Float32Array, sample: Float32Array[]): ((cosine: number) => number) | null {
+  if (sample.length < BASELINE_MIN) return null
+  const sims = sample.map((v) => {
+    let d = 0
+    for (let i = 0; i < v.length; i++) d += v[i] * query[i]
+    return d
+  })
+  const mean = sims.reduce((a, b) => a + b, 0) / sims.length
+  const sd = Math.sqrt(sims.reduce((a, b) => a + (b - mean) ** 2, 0) / sims.length) || 1e-6
+  return (cosine) => (cosine - mean) / sd
+}
+
 export interface SearchOptions {
   dateFrom?: string
   dateTo?: string
@@ -45,6 +78,8 @@ export interface SearchOptions {
 
 export class SearchEngine {
   private db: DatabaseInstance
+  // 基线样本缓存：库的向量条数变化超过 10% 才重新抽样
+  private baseline: Record<VecKind, { sample: Float32Array[]; count: number }> | null = null
 
   constructor(db: DatabaseInstance) {
     this.db = db
@@ -75,10 +110,27 @@ export class SearchEngine {
       // 按类型过滤时跳过用不上的通道：片段只属于音视频；图片向量和 OCR 只对图片 + 视频首帧有意义
       const wantSegments = kind !== 'image'
       const wantImageChannels = kind !== 'audio'
-      const imageVecResults = wantImageChannels ? this.searchByVector(queryVec, limit * 2) : []
-      const videoSegmentResults = wantSegments ? this.searchVideoSegments(queryVec, limit * 2) : []
+      const rawImageVec = wantImageChannels ? this.searchByVector(queryVec, limit * 2) : []
+      const rawSegments = wantSegments ? this.searchVideoSegments(queryVec, limit * 2) : []
       const ocrResults = wantImageChannels ? this.searchByOcr(trimmedQuery, limit * 2) : []
       const fileNameResults = this.db.searchByFileName(trimmedQuery, limit * 2)
+
+      // 相关性门槛：向量通道只留明显高于该查询基线的命中（见 RELEVANCE_MIN_Z）
+      const relevant = <T extends { distance: number }>(rows: T[], kind: VecKind): T[] => {
+        if (!queryVec || rows.length === 0) return rows
+        const z = zScorer(queryVec, this.baselineSample(kind))
+        return z ? rows.filter((r) => z(l2ToCosine(r.distance)) >= RELEVANCE_MIN_Z) : rows
+      }
+      let imageVecResults = relevant(rawImageVec, 'image')
+      let videoSegmentResults = relevant(rawSegments, 'segment')
+      // 什么都没过门槛、文字和文件名也没命中：给少量"最接近"的结果并标明，而不是凑满一屏
+      const lowConfidence = imageVecResults.length + videoSegmentResults.length + ocrResults.length + fileNameResults.length === 0 &&
+        rawImageVec.length + rawSegments.length > 0
+      if (lowConfidence) {
+        imageVecResults = rawImageVec.slice(0, FALLBACK_LIMIT)
+        videoSegmentResults = rawSegments.slice(0, FALLBACK_LIMIT)
+        limit = Math.min(limit, FALLBACK_LIMIT)
+      }
 
       // 片段命中 → 映射到该媒体代表 photo 的 fileHash，
       // 这样才能和图片通道在同一个 id 空间里融合；同时记下命中区间给 UI 定位
@@ -145,7 +197,8 @@ export class SearchEngine {
           }
           const segment = segmentByHash.get(fileHash)
           const by = matchedBy(fileHash)
-          results.push(segment ? { photo, score, segment, matchedBy: by } : { photo, score, matchedBy: by })
+          const extra = lowConfidence ? { lowConfidence: true } : {}
+          results.push(segment ? { photo, score, segment, matchedBy: by, ...extra } : { photo, score, matchedBy: by, ...extra })
           if (results.length >= limit) break
         }
       }
@@ -155,6 +208,21 @@ export class SearchEngine {
       console.error('Search error:', error)
       return this.getRecentPhotos(limit)
     }
+  }
+
+  private baselineSample(kind: VecKind): Float32Array[] {
+    const counts = this.db.countVectors()
+    const stale = (k: VecKind): boolean => {
+      const b = this.baseline?.[k]
+      return !b || Math.abs(counts[k] - b.count) > Math.max(10, b.count * 0.1)
+    }
+    if (!this.baseline || stale('image') || stale('segment')) {
+      this.baseline = {
+        image: { sample: this.db.sampleVectors('image', BASELINE_SAMPLE), count: counts.image },
+        segment: { sample: this.db.sampleVectors('segment', BASELINE_SAMPLE), count: counts.segment },
+      }
+    }
+    return this.baseline[kind].sample
   }
 
   findSimilar(fileHash: string, limit: number = 12, minCosine: number = SIMILAR_MIN_COSINE): SearchResult[] {

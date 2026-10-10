@@ -91,6 +91,8 @@ export interface SearchResult {
   segment?: { startMs: number; endMs: number }
   /** 有搜索词时：这条结果是被哪些通道召回的（UI 用来解释"为什么命中"） */
   matchedBy?: MatchChannel[]
+  /** 没有任何结果明显相关时给出的"最接近"结果：界面据此提示"没有明确匹配" */
+  lowConfidence?: boolean
   thumbnailPath?: string
 }
 

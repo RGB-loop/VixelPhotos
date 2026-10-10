@@ -8,7 +8,7 @@
  *     ├── ppocr_v5_det.onnx
  *     ├── ppocr_v5_rec.onnx
  *     ├── ppocr_v5_cls.onnx       (可选；缺则跳过 180° 检测)
- *     └── ppocr_keys_v1.txt
+ *     └── ppocrv5_dict.txt（必须与 rec 模型同版本）
  *
  * 全部 ONNX，由 onnxruntime-node 加载；与人脸模型共享同一推理栈。
  */
@@ -29,6 +29,10 @@ let _modelsDir = ''
 const remote = new RemoteReady()
 
 /** 由 main 在启动时调用 */
+/** v5 rec 模型对应的字典；换字典 / 模型版本时同时改 OCR_PIPELINE_VERSION，已有结果会重扫 */
+export const OCR_DICT_FILE = 'ppocrv5_dict.txt'
+export const OCR_PIPELINE_VERSION = 'v5-dict'
+
 export function setOcrModelsDir(dir: string): void {
   _modelsDir = dir
 }
@@ -53,7 +57,7 @@ export async function initOcrService(): Promise<boolean> {
     const det = join(base, 'ppocr_v5_det.onnx')
     const rec = join(base, 'ppocr_v5_rec.onnx')
     const cls = join(base, 'ppocr_v5_cls.onnx')
-    const keys = join(base, 'ppocr_keys_v1.txt')
+    const keys = join(base, OCR_DICT_FILE)
 
     if (!existsSync(det)) {
       console.warn(`OCR det model missing: ${det}`)

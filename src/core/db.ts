@@ -368,6 +368,8 @@ export interface DatabaseInstance {
   saveOcrText: (fileHash: string, text: string) => void
   getOcrText: (fileHash: string) => string | undefined
   getPendingOcrPhotos: () => Array<{ id: number; fileHash: string; filePath: string }>
+  /** 清空全部 OCR 结果（FTS 随触发器清），OCR 流水线升级时用；返回清掉的条数 */
+  clearAllOcr: () => number
   deleteContentByHash: (fileHash: string) => void
 
   // 视频片段（EmbeddingGemma 2：帧序列 + 音轨 → 单向量）
@@ -391,6 +393,14 @@ export interface DatabaseInstance {
     queryVec: Float32Array,
     limit: number
   ) => Array<{ segmentId: number; videoId: number; startMs: number; endMs: number; distance: number }>
+
+  /**
+   * 随机抽 n 条向量（图片 / 音视频片段），给搜索估计"这个查询和整库的基线相似度"。
+   * 返回已 L2 归一化的向量。
+   */
+  sampleVectors: (kind: 'image' | 'segment', n: number) => Float32Array[]
+  /** 两类向量的条数：样本缓存据此判断是否需要刷新 */
+  countVectors: () => { image: number; segment: number }
 
   // 搜索
   searchByVec: (
@@ -812,6 +822,8 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       SELECT v.id FROM videos v
       WHERE v.deleted_at IS NULL
         AND v.duration_ms > 0
+        -- frame_count 非空 = 扫过了（太短抽不出片段的视频也会写 1）；只补"没扫完"的，避免每次启动重跑
+        AND v.frame_count IS NULL
         AND v.id NOT IN (SELECT video_id FROM video_segments)
         AND v.id NOT IN (SELECT photo_id FROM index_queue WHERE task_type = 'extract_frames' AND status IN ('pending', 'processing', 'error'))
     `),
@@ -935,6 +947,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     getOcrText: db.prepare(`SELECT text FROM image_ocr WHERE file_hash = ?`),
     deleteOcrByHash: db.prepare(`DELETE FROM image_ocr WHERE file_hash = ?`),
     // 等待 OCR 的照片：已有 embedding 但还没 OCR 结果
+    clearAllOcr: db.prepare(`DELETE FROM image_ocr`),
     getPendingOcrPhotos: db.prepare(`
       SELECT p.id, p.file_hash as fileHash, p.file_path as filePath
       FROM photos p
@@ -951,6 +964,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     // 搜索
     // KNN 向量搜索（sqlite-vec）
     // sqlite-vec KNN: 先查 rowid+distance，再通过 map 映射到 file_hash
+    sampleImageVecs: db.prepare(`
+      SELECT embedding FROM image_vecs WHERE rowid IN (SELECT rowid FROM image_vec_map ORDER BY random() LIMIT ?)
+    `).pluck(),
+    sampleSegmentVecs: db.prepare(`
+      SELECT embedding FROM video_segment_vecs WHERE rowid IN (SELECT rowid FROM video_segment_vec_map ORDER BY random() LIMIT ?)
+    `).pluck(),
+    countImageVecs: db.prepare(`SELECT COUNT(*) FROM image_vec_map`).pluck(),
+    countSegmentVecs: db.prepare(`SELECT COUNT(*) FROM video_segment_vec_map`).pluck(),
     searchVecKnnRaw: db.prepare(`
       SELECT rowid, distance
       FROM image_vecs
@@ -1585,6 +1606,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
       const result = stmts.getOcrText.get(fileHash) as { text: string } | undefined
       return result?.text
     },
+    clearAllOcr: () => stmts.clearAllOcr.run().changes,
     getPendingOcrPhotos: () => {
       return stmts.getPendingOcrPhotos.all() as Array<{ id: number; fileHash: string; filePath: string }>
     },
@@ -1686,6 +1708,14 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
     },
     deleteContentByHash: deleteContent,
 
+    sampleVectors: (kind, n) => {
+      const rows = (kind === 'image' ? stmts.sampleImageVecs : stmts.sampleSegmentVecs).all(n) as Buffer[]
+      return rows.map(toF32)
+    },
+    countVectors: () => ({
+      image: stmts.countImageVecs.get() as number,
+      segment: stmts.countSegmentVecs.get() as number,
+    }),
     searchByVec: (queryVec, limit) => {
       try {
         // vec0 MATCH 接受 Float32Array

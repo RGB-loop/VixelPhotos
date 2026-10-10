@@ -9,7 +9,7 @@ import type { DatabaseInstance } from './db'
 import type { CurrentTask, IndexProgress, TaskType } from '../shared/types'
 import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
-import { initOcrService, isOcrReady, processPhotoOcr } from './ocr'
+import { initOcrService, isOcrReady, processPhotoOcr, OCR_PIPELINE_VERSION } from './ocr'
 import { decodeImage, type DecodedImage } from './image/decode'
 import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
 import { generateSprite, SPRITE_MIN_DURATION_MS } from './video/sprite'
@@ -41,6 +41,7 @@ const PAUSED_KEY = 'indexing_paused'
 const FACE_AUTO_KEY = 'face.auto'
 /** 视频人脸改用全分辨率帧之后的一次性重扫标记 */
 const FACE_VIDEO_SOURCE_KEY = 'face.video_fullres'
+const OCR_VERSION_KEY = 'ocr.pipeline'
 /** 视频人脸检测帧的长边：4K 画面降到 1920 已足够（SCRFD 输入 640，主要为了小脸的清晰度） */
 const FACE_FRAME_MAX_SIDE = 1920
 /** 进度事件最小间隔：每次都要跑两条全表聚合（主进程同步），索引时每个任务 / 每个片段都会触发 */
@@ -103,6 +104,27 @@ export class Indexer extends EventEmitter {
     return new Promise((resolve) => this.resumeWaiters.push(resolve))
   }
 
+  private ocrModelsPresent: boolean | null = null
+  /**
+   * 装了 OCR 模型就自动跑（不像人脸需要用户先启用）。以前只能在设置里手动触发，
+   * 大多数用户的"图中文字搜索"其实从没生效过。结果缓存：模型不会在运行中出现 / 消失。
+   */
+  async ocrAvailable(): Promise<boolean> {
+    if (this.ocrModelsPresent === null) this.ocrModelsPresent = await initOcrService().catch(() => false)
+    return this.ocrModelsPresent
+  }
+
+  /**
+   * OCR 流水线版本变了（字典 / 模型）就清掉旧结果重扫。返回清掉的条数。
+   * 第一次：之前 v5 模型配的是 v1 字典，存下来的全是空文本或乱码。
+   */
+  resetOcrIfStale(): number {
+    if (this.db.getMetaState(OCR_VERSION_KEY) === OCR_PIPELINE_VERSION) return 0
+    const n = this.db.clearAllOcr()
+    this.db.setMetaState(OCR_VERSION_KEY, OCR_PIPELINE_VERSION)
+    return n
+  }
+
   /** 手动触发 OCR 扫描（已 embed 但未 OCR 的照片） */
   async startOcrScan(): Promise<{ queued: number }> {
     const ready = await initOcrService()
@@ -162,7 +184,8 @@ export class Indexer extends EventEmitter {
     return { queued: pending.length }
   }
 
-  private async processOcr(fileHash: string, filePath: string): Promise<void> {
+  private async processOcr(photo: { fileHash: string; filePath: string; videoId?: number | null; frameTimeMs?: number | null }): Promise<void> {
+    const { fileHash, filePath } = photo
     try {
       const { hasOcr } = this.db.hasContentForHash(fileHash)
       if (hasOcr) return // 同内容已 OCR 过
@@ -175,8 +198,7 @@ export class Indexer extends EventEmitter {
         }
       }
 
-      const decoded = await this.decode(fileHash, filePath)
-      const result = await processPhotoOcr(decoded.buffer)
+      const result = await processPhotoOcr(await this.analysisImage(photo))
       if (result.text.trim().length > 0) {
         this.db.saveOcrText(fileHash, result.text)
       } else {
@@ -405,11 +427,11 @@ export class Indexer extends EventEmitter {
   }
 
   /**
-   * 人脸检测 / 人脸裁剪用的图像。视频代表图只是 512px 的缩略帧：4K 画面里 150px 的脸缩下来不到 20px，
-   * 尺寸和清晰度都过不了质量门槛，几乎全被排除在聚类之外。视频改从源文件按同一时间点抽全分辨率帧；
+   * 人脸检测 / 人脸裁剪 / OCR 用的图像。视频代表图只是 512px 的缩略帧：4K 画面里 150px 的脸缩下来不到 20px，
+   * 尺寸和清晰度都过不了质量门槛，几乎全被排除在聚类之外；帧里的文字也小到认不出。视频改从源文件按同一时间点抽全分辨率帧；
    * 普通照片（以及音频封面）照旧解码原图。bbox 是归一化坐标，两种来源可以混用。
    */
-  async faceSourceImage(photo: { fileHash: string; filePath: string; videoId?: number | null; frameTimeMs?: number | null }): Promise<Buffer> {
+  async analysisImage(photo: { fileHash: string; filePath: string; videoId?: number | null; frameTimeMs?: number | null }): Promise<Buffer> {
     if (photo.videoId != null && isFfmpegAvailable()) {
       const video = this.db.getVideoById(photo.videoId)
       if (video?.mediaKind === 'video' && existsSync(video.filePath)) {
@@ -434,7 +456,7 @@ export class Indexer extends EventEmitter {
         await initFaceService()
       }
 
-      const faces = await processPhotoFaces(await this.faceSourceImage(photo))
+      const faces = await processPhotoFaces(await this.analysisImage(photo))
 
       for (const face of faces) {
         const faceId = this.db.saveFace(
@@ -551,14 +573,17 @@ export class Indexer extends EventEmitter {
           await this.processThumbnail(photo.fileHash, photo.filePath, task.photoId, photo.width != null)
         } else if (task.taskType === 'embed') {
           await this.processEmbedding(photo.fileHash, photo.filePath, task.photoId)
-          // 向量好了再排人脸（优先级低于 embed，先让新内容可搜）
+          // 向量好了再排人脸 / OCR（优先级低于 embed，先让新内容可搜）
           if (photo.faceStatus !== 'done' && this.isFaceAutoEnabled() && !this.db.hasOpenTask(task.photoId, 'face')) {
             this.db.addToQueue(task.photoId, 'face', 8)
+          }
+          if ((await this.ocrAvailable()) && !this.db.hasContentForHash(photo.fileHash).hasOcr && !this.db.hasOpenTask(task.photoId, 'ocr')) {
+            this.db.addToQueue(task.photoId, 'ocr', 4)
           }
         } else if (task.taskType === 'face') {
           await this.processFace(photo)
         } else if (task.taskType === 'ocr') {
-          await this.processOcr(photo.fileHash, photo.filePath)
+          await this.processOcr(photo)
         }
         this.db.completeTask(task.id)
       }
