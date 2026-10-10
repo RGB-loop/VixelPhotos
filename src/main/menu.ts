@@ -1,7 +1,7 @@
 import { app, Menu, shell, BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 
 /** macOS 叫访达，Windows / Linux 是文件管理器 */
-const REVEAL_LABEL = process.platform === 'darwin' ? '在访达中显示' : '在资源管理器中显示'
+const REVEAL_LABEL = process.platform === 'darwin' ? '在访达中显示' : '打开文件所在的位置'
 import { IPC_CHANNELS, type ItemMenuAction, type MenuCommand } from '../shared/types'
 
 /**

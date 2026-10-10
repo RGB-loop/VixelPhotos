@@ -5,8 +5,8 @@
 
 export const IS_MAC = /Mac/i.test(navigator.userAgent)
 
-/** "在访达中显示" / "在资源管理器中显示" */
-export const revealLabel = IS_MAC ? '在访达中显示' : '在资源管理器中显示'
+/** "在访达中显示" / Windows 的 "打开所在位置"（按钮窄，用短说法） */
+export const revealLabel = IS_MAC ? '在访达中显示' : '打开所在位置'
 
 /** '⌥⌘S' → macOS 原样；其他平台 'Ctrl+Alt+S' */
 export function kbd(mac: string): string {
