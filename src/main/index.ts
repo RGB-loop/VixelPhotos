@@ -339,11 +339,11 @@ async function immutable(res: Response): Promise<Response> {
 }
 
 /**
- * 隐私承诺落到代码上：渲染进程只许访问本地（vixel:// / file:// / devtools / 开发服务器），
- * 唯一例外是地图底图瓦片 —— 只在打开地图视图时请求，只带瓦片坐标、不带任何照片数据。
- * 模型推理在 utilityProcess 里，且 transformers.js 已关掉远程模型（allowRemoteModels = false）。
+ * 隐私承诺落到代码上：渲染进程只许访问本地（vixel:// / file:// / devtools / 开发服务器），没有例外。
+ * 地图用随应用打包的离线底图（Natural Earth），模型推理在 utilityProcess 里，
+ * 且 transformers.js 已关掉远程模型（allowRemoteModels = false）。
  */
-const NETWORK_ALLOWLIST = [/^https:\/\/[a-d]\.basemaps\.cartocdn\.com\//]
+const NETWORK_ALLOWLIST: RegExp[] = []
 
 function enforceOfflinePolicy(): void {
   const devServer = process.env['ELECTRON_RENDERER_URL']

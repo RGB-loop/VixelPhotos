@@ -2,15 +2,17 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import type { Photo } from '../../../shared/types'
 import { useColorScheme } from '../lib/theme'
 import { thumbUrl } from '../lib/mediaUrl'
+import { addOfflineBasemap, type OfflineBasemap } from '../lib/basemap'
 
-const tileUrl = (scheme: 'dark' | 'light'): string =>
-  `https://{s}.basemaps.cartocdn.com/${scheme === 'dark' ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png`
 
 // 模块级别缓存 Leaflet，确保 markercluster 扩展不丢失
 let cachedL: typeof import('leaflet') | null = null
 async function getLeaflet() {
   if (cachedL) return cachedL
-  const L = await import('leaflet')
+  // 用 default 导出（真正的 Leaflet 对象）：生产构建里 import() 拿到的模块命名空间是冻结的，
+  // markercluster 往上挂 MarkerClusterGroup 会抛 "object is not extensible"，地图整页加载失败
+  const mod = await import('leaflet')
+  const L = ((mod as unknown as { default?: typeof import('leaflet') }).default ?? mod) as typeof import('leaflet')
   await import('leaflet/dist/leaflet.css')
   ;(window as unknown as Record<string, unknown>).L = L
   await import('leaflet.markercluster/dist/leaflet.markercluster.js')
@@ -35,10 +37,10 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
   const scheme = useColorScheme()
   const schemeRef = useRef(scheme)
   schemeRef.current = scheme
-  const tileLayerRef = useRef<{ setUrl: (url: string) => unknown } | null>(null)
+  const basemapRef = useRef<OfflineBasemap | null>(null)
 
-  // 外观切换时只换瓦片源，不重建地图
-  useEffect(() => { tileLayerRef.current?.setUrl(tileUrl(scheme)) }, [scheme])
+  // 外观切换时只换底图配色，不重建地图
+  useEffect(() => { basemapRef.current?.setScheme(scheme) }, [scheme])
 
   useEffect(() => {
     window.api.getPhotosWithGPS().then((photos) => {
@@ -64,11 +66,16 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
         const map = L.map(mapContainerRef.current, {
           zoomControl: false,
           attributionControl: false,
+          // 离线底图只到城市级，再放大只剩空白
+          minZoom: 2,
+          maxZoom: 12,
+          worldCopyJump: true,
+          preferCanvas: true,
         })
 
-        tileLayerRef.current = L.tileLayer(tileUrl(schemeRef.current), {
-          maxZoom: 19,
-        }).addTo(map)
+        // 离线底图（Natural Earth，随应用打包）：不请求任何在线瓦片
+        basemapRef.current = await addOfflineBasemap(L, map, schemeRef.current)
+        if (cancelled) return
 
         const clusterGroup = L.markerClusterGroup({
           showCoverageOnHover: false,
@@ -164,7 +171,7 @@ export function MapView({ onSelect }: MapViewProps): JSX.Element {
 
         const bounds = clusterGroup.getBounds()
         if (bounds.isValid()) {
-          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 14 })
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 9 })
         }
 
         mapInstanceRef.current = map
