@@ -632,6 +632,17 @@ function App(): JSX.Element {
           ) : source.type === 'map' ? (
             <MapView onSelect={handleSelectPhoto} />
           ) : searchResults.length > 0 ? (
+            <div className="h-full flex flex-col">
+            {/* 没有明显相关的结果：如实说明，下面只是最接近的几项 */}
+            {searchResults[0]?.lowConfidence && (
+              <div className="mx-3 mt-3 px-3.5 py-2.5 rounded-lg bg-surface-2 border border-line text-callout text-ink-2 flex items-center gap-2">
+                <svg className="w-4 h-4 text-ink-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
+                  <circle cx="11" cy="11" r="7" /><path strokeLinecap="round" d="M20 20l-3.5-3.5" />
+                </svg>
+                <span>没有找到和“{query.trim()}”明确相关的内容，以下是最接近的结果。试试换种说法，或搜图中的文字。</span>
+              </div>
+            )}
+            <div className="flex-1 min-h-0">
             <PhotoGrid
               results={searchResults}
               isSearching={hasSearchQuery && source.type !== 'similar'}
@@ -647,6 +658,8 @@ function App(): JSX.Element {
               onBackgroundClick={clearSelection}
               onUserScroll={handleUserScroll}
             />
+            </div>
+            </div>
           ) : libraryEmpty ? (
             <EmptyState
               icon="image"

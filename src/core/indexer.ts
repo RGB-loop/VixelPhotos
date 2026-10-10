@@ -11,7 +11,7 @@ import { getEmbeddingService } from './embedding'
 import { initFaceService, isFaceServiceReady, processPhotoFaces, assignFaceToPerson } from './face'
 import { initOcrService, isOcrReady, processPhotoOcr, OCR_PIPELINE_VERSION } from './ocr'
 import { decodeImage, type DecodedImage } from './image/decode'
-import { extractKeyframes, isFfmpegAvailable, probeDurationMs } from './video/extract'
+import { extractKeyframes, isFfmpegAvailable, probeMedia } from './video/extract'
 import { generateSprite, SPRITE_MIN_DURATION_MS } from './video/sprite'
 import { extractAudioTrack, extractCoverOrWaveform } from './audio/extract'
 import { SEGMENT_MS } from './db'
@@ -249,14 +249,15 @@ export class Indexer extends EventEmitter {
     }
 
     let durationMs = video.durationMs ?? 0
-    if (durationMs <= 0) {
-      durationMs = (await probeDurationMs(video.filePath)) ?? 0
+    if (durationMs <= 0 || (kind === 'video' && video.width == null)) {
+      const probe = await probeMedia(video.filePath)
+      durationMs = durationMs > 0 ? durationMs : probe.durationMs ?? 0
       if (durationMs <= 0) {
         // 读不到时长 → 文件损坏 / 无效。frame_count=0 标记"扫过了"，并报错让任务面板可见
         this.db.updateVideoMeta(videoId, { frameCount: 0 })
         throw new Error('无法读取时长（文件损坏或格式不支持）')
       }
-      this.db.updateVideoMeta(videoId, { durationMs })
+      this.db.updateVideoMeta(videoId, { durationMs, width: probe.width ?? undefined, height: probe.height ?? undefined })
     }
 
     // 模型没就绪时只落代表图（让媒体出现在网格里），然后抛错：

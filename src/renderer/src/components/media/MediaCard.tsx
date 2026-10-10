@@ -2,6 +2,9 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { MatchChannel, SearchResult } from '../../../../shared/types'
 import { formatDuration, mediaKindOf } from '../../lib/format'
 
+/** 与 core/db.ts 的 SEGMENT_MS 一致：音视频按 32s 切片 */
+const SEGMENT_MS = 32_000
+
 /** 缩略图 404 时的重试上限（退避 2s…15s，合计约 4 分钟） */
 const THUMB_MAX_RETRIES = 20
 
@@ -188,9 +191,9 @@ export const MediaCard = memo(function MediaCard({
         </div>
       )}
 
-      {/* 文件名 + 描述：信息式常驻，沉浸式悬停才出现 */}
+      {/* 文件名 + 描述：悬停才出现（相机文件名 DJI_2026… 铺满整屏只会盖住画面）；有描述时信息式常驻 */}
       <div className={`absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent transition-opacity duration-fast pointer-events-none ${
-        info ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        info && photo.caption ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
       }`}>
         <div className="absolute bottom-7 left-0 right-0 px-2.5">
           <p className="text-white/90 text-callout truncate font-medium">{photo.fileName}</p>
@@ -226,8 +229,8 @@ export const MediaCard = memo(function MediaCard({
         </svg>
       </button>
 
-      {/* 左下：命中时间点 */}
-      {info && segment && (
+      {/* 左下：命中时间点（只有一个片段的短视频，命中点永远是 0:00，不标） */}
+      {info && segment && duration > SEGMENT_MS && (
         <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-accent text-black/85 text-micro font-semibold tabular-nums pointer-events-none">
           {formatDuration(segment.startMs)}
         </span>

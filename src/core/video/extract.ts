@@ -136,6 +136,14 @@ export async function extractKeyframes(
  * 读不到时长（直播流 / 损坏文件 / "Duration: N/A"）→ 返回 null。
  */
 export async function probeDurationMs(videoPath: string): Promise<number | null> {
+  return (await probeMedia(videoPath)).durationMs
+}
+
+/**
+ * ffmpeg -i 的头信息：时长 + 首个视频流的显示尺寸（考虑旋转元数据，竖拍视频宽高对调）。
+ * 纯音频 / 读不到时对应字段为 null。
+ */
+export async function probeMedia(videoPath: string): Promise<{ durationMs: number | null; width: number | null; height: number | null }> {
   const ffmpeg = getFfmpegPath()
   if (!ffmpeg) {
     throw new Error('ffmpeg binary not available (ffmpeg-static package missing or unsupported platform)')
@@ -151,9 +159,15 @@ export async function probeDurationMs(videoPath: string): Promise<number | null>
     child.on('close', () => { clearTimeout(killTimer); resolve(buf) })
   })
   const m = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(stderr)
-  if (!m) return null
-  const ms = Math.round((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000)
-  return ms > 0 ? ms : null
+  const ms = m ? Math.round((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000) : 0
+  // "Stream #0:0[0x1](und): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc), 3840x2160, ..."
+  const v = /Stream #\d+:\d+.*?: Video:.*?(\d{2,5})x(\d{2,5})/.exec(stderr)
+  let width = v ? Number(v[1]) : null
+  let height = v ? Number(v[2]) : null
+  const rot = /rotation of (-?\d+(?:\.\d+)?) degrees|rotate\s*:\s*(-?\d+)/.exec(stderr)
+  const deg = rot ? Math.abs(Number(rot[1] ?? rot[2])) % 180 : 0
+  if (deg === 90 && width && height) [width, height] = [height, width]
+  return { durationMs: ms > 0 ? ms : null, width, height }
 }
 
 const USE_VIDEOTOOLBOX = process.platform === 'darwin'

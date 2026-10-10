@@ -17,7 +17,7 @@ import { preloadJieba } from '../core/text/tokenize'
 import { formatBackupName, selectExpired } from '../core/backup'
 import { serveMediaFile } from '../core/media/serve'
 import { ensureSprite, SPRITE_MIN_DURATION_MS } from '../core/video/sprite'
-import { isFfmpegAvailable } from '../core/video/extract'
+import { isFfmpegAvailable, probeMedia } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { InferenceProcess } from './inference-client'
 import { runCaptureTour } from './capture'
@@ -455,7 +455,16 @@ function registerIpcHandlers(): void {
   })
 
   handle(IPC_CHANNELS.GET_MEDIA_DETAIL, async (_event, videoId: number) => {
-    return db.getMediaDetail(videoId) ?? null
+    const detail = db.getMediaDetail(videoId)
+    // 老版本索引的视频没记分辨率：第一次打开时探一下补上（ffmpeg -i 只读文件头，几十毫秒）
+    if (detail && detail.kind === 'video' && detail.width == null && existsSync(detail.filePath) && isFfmpegAvailable()) {
+      const probe = await probeMedia(detail.filePath).catch(() => null)
+      if (probe?.width && probe.height) {
+        db.updateVideoMeta(videoId, { width: probe.width, height: probe.height })
+        return { ...detail, width: probe.width, height: probe.height }
+      }
+    }
+    return detail ?? null
   })
 
   handle(IPC_CHANNELS.GET_FOLDERS, async () => {
