@@ -25,13 +25,18 @@ const typeSearch = (q: string): string => `
   set.call(el, ${JSON.stringify(q)}); el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`
 
+const QUERIES = (process.env.VIXEL_CAPTURE_QUERIES || '西瓜,微信支付,海边').split(',')
+
 const STEPS: Step[] = [
   { name: 'all', run: command('source:all'), wait: 2500 },
-  { name: 'search', run: js(typeSearch(process.env.VIXEL_CAPTURE_QUERY || '海边')), wait: 3000 },
-  { name: 'inspector', run: js(`document.querySelector('.photo-card')?.click()`), wait: 1500 },
+  // 查询可用环境变量覆盖（逗号分隔：语义查询, 图中文字查询, 库里没有的东西）
+  { name: 'search', run: js(typeSearch(QUERIES[0])), wait: 3000 },
+  { name: 'inspector', run: js(`document.querySelector('.photo-card')?.click()`), wait: 2000 },
   { name: 'detail', run: js(`document.querySelector('.photo-card')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`), wait: 2000 },
   { name: 'video', run: (w) => { js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)(w); command('source:video')(w) }, wait: 2000 },
-  { name: 'people', run: command('source:people'), wait: 2500 },
+  { name: 'search-text', run: (w) => { command('source:all')(w); js(typeSearch(QUERIES[1]))(w) }, wait: 3000 },
+  { name: 'search-nomatch', run: js(typeSearch(QUERIES[2])), wait: 3000 },
+  { name: 'people', run: (w) => { js(typeSearch(''))(w); command('source:people')(w) }, wait: 6000 },
   { name: 'map', run: command('source:map'), wait: 3500 },
   { name: 'tasks', run: (w) => { command('source:all')(w); command('activity')(w) }, wait: 2000 },
 ]

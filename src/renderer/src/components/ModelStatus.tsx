@@ -93,7 +93,7 @@ export function ModelStatus(): JSX.Element {
         setOcrScanState({
           scanning: false,
           message: r.queued && r.queued > 0
-            ? `已加入 ${r.queued} 张图片到 OCR 队列`
+            ? `已加入 ${r.queued} 项到 OCR 队列`
             : '没有需要 OCR 的图片',
         })
       }

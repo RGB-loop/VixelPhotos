@@ -89,7 +89,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
         setScanning(false)
         return
       }
-      setScanProgress(`已入队 ${result.queued} 张图片，识别出的人物会陆续出现`)
+      setScanProgress(`已入队 ${result.queued} 项，识别出的人物会陆续出现`)
     } catch (e) {
       setScanProgress(`扫描失败: ${e}`)
       setScanning(false)
@@ -411,7 +411,7 @@ function PersonCard({ person, selected, onOpen, onToggleSelect, onRename, onDrop
         }`}
       />
       <EditableName name={person.name} onSave={onRename} className="text-callout" />
-      <p className="text-center text-micro text-ink-3 mt-0.5">{person.photoCount} 张图片</p>
+      <p className="text-center text-micro text-ink-3 mt-0.5">{person.photoCount} 项</p>
     </div>
   )
 }
@@ -430,7 +430,7 @@ function SuggestionCard({ suggestion: s, remaining, onSame, onDifferent }: Sugge
     setBusy(true)
     try { await fn(s) } finally { setBusy(false) }
   }
-  const label = (p: Person): string => p.name || `${p.photoCount ?? p.faceCount} 张图片`
+  const label = (p: Person): string => p.name || `${p.photoCount ?? p.faceCount} 项`
   return (
     <div
       className="mb-5 p-3 rounded-lg border border-line bg-surface-1 flex items-center gap-4"
@@ -520,7 +520,7 @@ function PersonDetail({ person, others, onBack, onSelectPhoto, onRename, onHide,
         <div className="min-w-[8rem] max-w-[16rem]">
           <EditableName name={person.name} onSave={onRename} className="text-body font-medium !text-left" />
         </div>
-        <span className="text-callout text-ink-3">{person.photoCount} 张图片</span>
+        <span className="text-callout text-ink-3">{person.photoCount} 项</span>
         <span className="flex-1" />
         <div className="flex rounded-md bg-fill p-0.5 text-callout">
           {(['photos', 'faces'] as const).map((t) => (
