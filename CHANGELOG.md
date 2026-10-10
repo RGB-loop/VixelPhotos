@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Review reports under `docs/review/`.
 
 ### Fixed
+- **Text-in-image search never worked**: the PP-OCRv5 recognition model was paired with
+  the v1 dictionary and its softmaxed output was softmaxed again. OCR is now validated at
+  startup, runs automatically after indexing, reads full-resolution video frames, and
+  existing results are re-scanned once.
+- **Search no longer pads results**: semantic hits must clearly beat the query's library
+  baseline; with no clear match, a few closest items are shown under an explicit notice.
+- **People**: new media is face-scanned automatically; video faces are detected on
+  full-resolution frames (most were previously too small/blurry to cluster).
+- Leftover tasks were never resumed after restart; too-short clips were re-queued every launch.
 - Image embedding failures were swallowed (task "done", no vector, silently
   re-queued every launch).
 - Inference calls could hang forever; a stall watchdog now restarts the process.
@@ -42,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filename search treated `%` / `_` as wildcards.
 - Photos imported mid-session stuck on a broken-image icon.
 - CLI semantic search never loaded the model; CLI now opens the library read-only.
+
+### Changed
+- New app icon on the macOS icon grid; similar-items view only shows results ≥ 0.80 cosine.
+- Release config: real repo URLs, meaningful folder-access prompts, `Vixel-<ver>` artifacts.
 
 ### Security
 - Renderer sandbox enabled; renderer network access restricted to an allowlist
