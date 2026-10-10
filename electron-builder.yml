@@ -17,6 +17,11 @@ files:
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.cli.json}'
   - '!{Vixel_PRD.md,Vixel_Tech.md,SKILL.md}'
+  # 构建产物 / 模型 / 原生运行时都不进 asar：模型和 LiteRT 走 extraResources，dist 是 CLI，release 是上一次的打包输出
+  # 注意：不要在 mac: / win: 下写 files —— 平台级 files 会整个替换这里的列表，上面的排除全部失效
+  - '!{release,dist,resources}/**'
+  # onnxruntime-node（人脸 / OCR）自带全部平台的二进制，只留目标平台的
+  - '!node_modules/onnxruntime-node/bin/napi-v*/!(${platform})/**'
 asar: true
 afterPack: build/adhoc-sign.cjs
 # asarIntegrity: 防止打包后 asar 被替换；Electron 启动时校验摘要
@@ -38,6 +43,7 @@ extraResources:
     filter:
       - '**/*'
       - '!gemma2/**'   # 旧 ONNX 模型（开发机上可能还留着），已由 LiteRT 取代
+      - '!**/*_cache*' # LiteRT GPU / XNNPACK 缓存：运行时写到 <userData>/litert-cache，不该进安装包
   # LiteRT-LM 原生库：只带目标平台那一份（npm run models:download 按平台解压到这里）
   - from: resources/litert/${platform}-${arch}
     to: litert

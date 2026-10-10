@@ -9,7 +9,7 @@
  * 一次 compute_embedding 可以带多个输入并融合成一个向量：视频片段 = 若干帧 + 音轨。
  * 运行在推理进程（utilityProcess）里，同步调用 C API（该进程本来就串行处理请求）。
  */
-import { cpus } from 'os'
+import { cpus, tmpdir } from 'os'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import sharp from 'sharp'
@@ -66,10 +66,13 @@ export class LiteRtEmbeddingProvider implements EmbeddingProvider {
     const modelPath = join(this.config.modelsDir, 'litert', LITERT_MODEL_FILE)
     if (!existsSync(modelPath)) throw new Error(`LiteRT model missing: ${modelPath} (run \`npm run models:download\`)`)
     this.native = loadLiteRt(this.config.libDir)
-    if (this.config.cacheDir && !existsSync(this.config.cacheDir)) mkdirSync(this.config.cacheDir, { recursive: true })
+    // 缓存目录必须给：不给时 LiteRT 把几百 MB 的 GPU 权重 / 程序缓存写在模型文件旁边 ——
+    // 打包后那是 .app 里面，写进去会破坏签名，/Applications 下也可能没有写权限
+    const cacheDir = this.config.cacheDir ?? join(tmpdir(), 'vixel-litert-cache')
+    if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true })
 
     // CPU 后端只用一半核，给 UI 和其他应用留余量
-    const opts = { cacheDir: this.config.cacheDir, numThreads: Math.max(1, Math.floor(cpus().length / 2)), maxInputTokens: MAX_INPUT_TOKENS }
+    const opts = { cacheDir, numThreads: Math.max(1, Math.floor(cpus().length / 2)), maxInputTokens: MAX_INPUT_TOKENS }
     const order: Array<'gpu' | 'cpu'> = this.config.backend === 'cpu' ? ['cpu'] : this.config.backend === 'gpu' ? ['gpu'] : ['gpu', 'cpu']
     let lastError: unknown
     for (const backend of order) {
