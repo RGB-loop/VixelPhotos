@@ -1,18 +1,18 @@
 {
   "name": "vixel",
   "version": "0.2.0",
-  "description": "Local AI-powered photo search app",
+  "description": "Private, offline AI search for your photos, videos and audio",
   "main": "./out/main/index.js",
   "author": "Vixel Team",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vixel-app/vixel.git"
+    "url": "https://github.com/RGB-loop/VixelPhotos.git"
   },
   "bugs": {
-    "url": "https://github.com/vixel-app/vixel/issues"
+    "url": "https://github.com/RGB-loop/VixelPhotos/issues"
   },
-  "homepage": "https://github.com/vixel-app/vixel#readme",
+  "homepage": "https://github.com/RGB-loop/VixelPhotos#readme",
   "scripts": {
     "predev": "node scripts/dev-bundle.mjs",
     "dev": "electron-vite dev",

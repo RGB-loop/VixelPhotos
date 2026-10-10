@@ -41,9 +41,13 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # 系统授权弹窗文案：说明用途 + 只读 + 不上传（用户第一次添加这些位置的文件夹时出现）
   extendInfo:
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+    NSDesktopFolderUsageDescription: Vixel 只读访问你添加的文件夹，在本机为其中的照片和视频建立索引，不会修改或上传任何文件。
+    NSDocumentsFolderUsageDescription: Vixel 只读访问你添加的文件夹，在本机为其中的照片和视频建立索引，不会修改或上传任何文件。
+    NSDownloadsFolderUsageDescription: Vixel 只读访问你添加的文件夹，在本机为其中的照片和视频建立索引，不会修改或上传任何文件。
+    NSRemovableVolumesUsageDescription: Vixel 只读访问移动硬盘上你添加的文件夹，在本机建立索引，不会修改或上传任何文件。
+    NSNetworkVolumesUsageDescription: Vixel 只读访问网络磁盘上你添加的文件夹，在本机建立索引，不会修改或上传任何文件。
   # 公证：默认 false（dev / 无证书机器）。CI release 用 CLI override 打开：
   #   electron-builder --mac --c.mac.notarize=true
   # 配合 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID 环境变量
@@ -55,7 +59,7 @@ mac:
         - arm64
 
 dmg:
-  artifactName: ${name}-${version}-${arch}.${ext}
+  artifactName: ${productName}-${version}-${arch}.${ext}
   writeUpdateInfo: false # MVP 阶段未引入 auto-updater，避免误生成
 
 win:
@@ -66,7 +70,7 @@ win:
         - x64
 
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${productName}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
