@@ -1,25 +1,25 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { ModelStatus as ModelStatusType, EmbeddingQuantizationConfig, BackupStatus } from '../../../shared/types'
+import type { ModelStatus as ModelStatusType, EmbeddingConfig, BackupStatus } from '../../../shared/types'
 
-type Quant = 'q4' | 'q8'
-const QUANT_FIELDS: Array<{ key: 'textQuantization' | 'visionQuantization' | 'audioQuantization'; label: string }> = [
-  { key: 'textQuantization', label: '文本' },
-  { key: 'visionQuantization', label: '图像/视频' },
-  { key: 'audioQuantization', label: '音频' },
+type Backend = EmbeddingConfig['backend']
+const BACKENDS: Array<{ value: Backend; label: string }> = [
+  { value: 'auto', label: '自动' },
+  { value: 'gpu', label: 'GPU' },
+  { value: 'cpu', label: 'CPU' },
 ]
 
 /**
  * 模型状态面板
  *
- * 唯一 embedding 通道：本地 EmbeddingGemma 2（文本/图像/音频/视频，768D）
- * 高级：调整各编码器的量化档位（q4 更小更快，q8 更准）
+ * 唯一 embedding 通道：本地 EmbeddingGemma 2（文本/图像/音频/视频，768D），经 LiteRT 推理
+ * 高级：选择推理后端（自动 = GPU 优先，不可用时 CPU）
  */
 export function ModelStatus(): JSX.Element {
   const [status, setStatus] = useState<ModelStatusType | null>(null)
   const [loading, setLoading] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const [quantConfig, setQuantConfig] = useState<EmbeddingQuantizationConfig>({})
+  const [embedConfig, setEmbedConfig] = useState<EmbeddingConfig>({ backend: 'auto' })
   const [saving, setSaving] = useState(false)
   const [saveResult, setSaveResult] = useState<string | null>(null)
   const [ocrScanState, setOcrScanState] = useState<{ scanning: boolean; message: string | null }>({
@@ -35,8 +35,7 @@ export function ModelStatus(): JSX.Element {
       const result = await window.api.getModelStatus()
       setStatus(result)
 
-      const qc = await window.api.getEmbeddingConfig()
-      setQuantConfig(qc)
+      setEmbedConfig(await window.api.getEmbeddingConfig())
 
       const bs = await window.api.getBackupStatus()
       setBackupStatus(bs)
@@ -71,12 +70,12 @@ export function ModelStatus(): JSX.Element {
     }
   }
 
-  const saveQuantization = async (patch: EmbeddingQuantizationConfig): Promise<void> => {
+  const saveBackend = async (backend: Backend): Promise<void> => {
     setSaving(true)
     setSaveResult(null)
     try {
-      const r = await window.api.setEmbeddingConfig(patch)
-      setSaveResult(r.success ? '已切换量化档位' + (r.ready ? '（就绪）' : '') : `失败: ${r.error}`)
+      const r = await window.api.setEmbeddingConfig({ backend })
+      setSaveResult(r.success ? '已切换推理后端' + (r.ready ? '（就绪）' : '') : `失败: ${r.error}`)
       await loadStatus()
     } finally {
       setSaving(false)
@@ -127,7 +126,7 @@ export function ModelStatus(): JSX.Element {
     <div className="p-5 space-y-5">
       <div>
         <h3 className="text-callout font-semibold text-ink mb-0.5">语义搜索模型</h3>
-        <p className="text-caption text-ink-3">本地 EmbeddingGemma 2 — 文本/图像/音频/视频统一检索、零网络</p>
+        <p className="text-caption text-ink-3">本地 EmbeddingGemma 2（LiteRT）— 文本/图像/音频/视频统一检索、零网络</p>
       </div>
 
       {/* 主状态 */}
@@ -135,12 +134,16 @@ export function ModelStatus(): JSX.Element {
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${localReady ? 'bg-ok' : localMissing ? 'bg-warn' : 'bg-fill-active'}`} />
           <div className="flex-1">
-            {localReady && <p className="text-caption text-ok/80">EmbeddingGemma 2 本地模型已就绪</p>}
+            {localReady && (
+              <p className="text-caption text-ok/80">
+                EmbeddingGemma 2 已就绪{status.activeBackend ? ` · ${status.activeBackend === 'gpu' ? 'GPU 加速' : 'CPU'}` : ''}
+              </p>
+            )}
             {localMissing && (
               <>
                 <p className="text-caption text-warn/80">模型文件缺失</p>
                 <p className="text-micro text-ink-3 mt-0.5">
-                  开发环境：执行 <code className="bg-fill px-1 rounded">node scripts/download-models.mjs</code>
+                  开发环境：执行 <code className="bg-fill px-1 rounded">npm run models:download</code>
                 </p>
               </>
             )}
@@ -210,43 +213,36 @@ export function ModelStatus(): JSX.Element {
         )}
       </div>
 
-      {/* 高级：量化档位 */}
+      {/* 高级：推理后端 */}
       <div className="pt-4 border-t border-line">
         <button
           onClick={() => setShowAdvanced((v) => !v)}
           className="text-caption text-ink-3 hover:text-ink-2 transition-colors"
         >
-          {showAdvanced ? '▾' : '▸'} 高级：量化档位
+          {showAdvanced ? '▾' : '▸'} 高级：推理后端
         </button>
 
         {showAdvanced && (
           <div className="mt-3 space-y-2.5">
-            <p className="text-micro text-ink-4">
-              q4 更小更快，q8 精度更高。切换后模型会在下次搜索 / 索引时重新加载。
+            <p className="text-micro text-ink-3">
+              自动：优先用 GPU，不可用时退回 CPU。两者结果一致，切换不需要重建索引。
             </p>
-
-            {QUANT_FIELDS.map(({ key, label }) => (
-              <div key={key} className="flex items-center justify-between">
-                <span className="text-caption text-ink-2">{label}</span>
-                <div className="flex gap-1">
-                  {(['q4', 'q8'] as Quant[]).map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => saveQuantization({ [key]: q })}
-                      disabled={saving || quantConfig[key] === q}
-                      className={`py-1 px-2.5 text-caption rounded-md disabled:cursor-default ${
-                        quantConfig[key] === q
-                          ? 'bg-accent/20 text-accent'
-                          : 'bg-fill hover:bg-fill-hover text-ink-2 disabled:opacity-30'
-                      }`}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-
+            <div className="flex gap-1">
+              {BACKENDS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => saveBackend(value)}
+                  disabled={saving || embedConfig.backend === value}
+                  className={`py-1 px-2.5 text-caption rounded-md disabled:cursor-default ${
+                    embedConfig.backend === value
+                      ? 'bg-accent/20 text-accent'
+                      : 'bg-fill hover:bg-fill-hover text-ink-2 disabled:opacity-30'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             {saveResult && (
               <p className={`text-caption ${saveResult.startsWith('失败') ? 'text-bad' : 'text-ok'}`}>
                 {saveResult}

@@ -1,18 +1,18 @@
 /**
- * 推理进程（Electron utilityProcess）：EmbeddingGemma 2 / 人脸 / OCR 都在这里跑，
+ * 推理进程（Electron utilityProcess）：EmbeddingGemma 2（LiteRT）/ 人脸 / OCR 都在这里跑，
  * 主进程只管数据库和调度，索引期间窗口不卡。协议见 ../core/inference/transport.ts。
  *
  * 请求串行执行（一次前向本来就吃满分配的核，并发只会抢内存）；
  * 搜索框的文本 query 插队到最前，最多等当前这一个推理跑完。
  */
 
-import { Gemma2EmbeddingProvider } from '../core/embedding/providers/gemma2Provider'
-import type { EmbeddingInput, Gemma2ProviderConfig } from '../core/embedding/types'
+import { LiteRtEmbeddingProvider } from '../core/embedding/providers/litert/litertProvider'
+import type { EmbeddingInput, EmbeddingProviderConfig } from '../core/embedding/types'
 import { initFaceService, processPhotoFaces, setFaceModelsDir } from '../core/face'
 import { initOcrService, processPhotoOcr, setOcrModelsDir } from '../core/ocr'
 import type { InferenceRequest, InferenceResponse } from '../core/inference/transport'
 
-let embedder: Gemma2EmbeddingProvider | null = null
+let embedder: LiteRtEmbeddingProvider | null = null
 let embedderKey = ''
 
 // 结构化克隆把 Buffer 变成普通 Uint8Array，sharp 等需要 Buffer 的地方要还原回来
@@ -39,13 +39,16 @@ function reviveInput(input: EmbeddingInput): EmbeddingInput {
 }
 
 const handlers: Record<InferenceRequest['method'], (...args: any[]) => Promise<unknown>> = {
-  'embed.init': async (config: Gemma2ProviderConfig) => {
+  'embed.init': async (config: EmbeddingProviderConfig) => {
     const key = JSON.stringify(config)
-    if (embedder?.isReady() && key === embedderKey) return
-    await embedder?.dispose()
-    embedder = new Gemma2EmbeddingProvider(config)
-    embedderKey = key
-    await embedder.init()
+    if (!(embedder?.isReady() && key === embedderKey)) {
+      await embedder?.dispose()
+      embedder = new LiteRtEmbeddingProvider(config)
+      embedderKey = key
+      await embedder.init()
+    }
+    // 告诉主进程实际用上的后端（gpu 不可用时退到 cpu）
+    return { backend: embedder.activeBackend ?? undefined }
   },
   'embed.encode': async (input: EmbeddingInput) => {
     if (!embedder?.isReady()) throw new Error('Embedding model not initialized')

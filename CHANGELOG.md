@@ -5,7 +5,7 @@ All notable changes to Vixel will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-10-10
+## [Unreleased]
 
 ### Performance
 - Startup no longer re-reads and re-hashes the whole library: unchanged images
@@ -70,9 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Embedding: EmbeddingGemma 2 replaces SigLIP 2** as the single embedding
-  model (768d, one space for text / image / video / audio). Model download
-  grows from ~210 MB to ~640 MB (text + vision q4, audio q8).
-- Quantization is selectable per encoder (q4 / q8) in Settings → 模型.
+  model (768d, one space for text / image / video / audio).
+- **EmbeddingGemma 2 runs on LiteRT-LM** (Google's official `.litertlm` build) through
+  its C API via koffi, on the GPU (Metal on macOS; WebGPU on Windows) with CPU fallback.
+  About 15× faster per image than the previous transformers.js / ONNX CPU path on an
+  M-series Mac; model download ~465 MB. The ONNX embedding path and its quantization
+  settings are removed; Settings → 模型 offers 自动 / GPU / CPU.
 - Search is now 4-way RRF: image vectors + video segment vectors + OCR BM25 +
   filename. The query is encoded once and shared by both vector channels.
 

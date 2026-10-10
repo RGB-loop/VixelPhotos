@@ -84,7 +84,7 @@ SCRFD 人脸检测 + MobileFaceNet 512 维特征 + sqlite-vec 近邻索引。
 
 ## 下载
 
-[**下载最新版（macOS · Apple Silicon）**](https://github.com/RGB-loop/Vixel/releases/latest) —— 约 615 MB，模型已内置。
+[**下载最新版（macOS · Apple Silicon）**](https://github.com/RGB-loop/Vixel/releases/latest) —— 模型已内置。
 
 这个版本没有经过 Apple 公证。第一次打开被拦截时，到 **系统设置 → 隐私与安全性** 点「仍要打开」；
 或在终端执行 `xattr -dr com.apple.quarantine /Applications/Vixel.app`。
@@ -95,7 +95,7 @@ SCRFD 人脸检测 + MobileFaceNet 512 维特征 + sqlite-vec 近邻索引。
 
 ```bash
 npm install
-npm run models:download   # 下载 EmbeddingGemma 2 + PaddleOCR，约 640 MB（只需一次）
+npm run models:download   # 下载 EmbeddingGemma 2（LiteRT）+ LiteRT 运行时 + PaddleOCR，约 500 MB（只需一次）
 npm run dev               # 开发模式（开发期也会显示 Vixel 名称和图标）
 ```
 
@@ -112,8 +112,8 @@ npm run build && npm run package   # 产物在 release/
 3. 人物页点一次**扫描人脸**；之后新加入的照片和视频都会自动识别人物。
 4. 在搜索框（**⌘F**）里用自然语言描述你要找的东西。库里确实没有相关内容时，Vixel 会如实告诉你，而不是凑满一屏。
 
-设置 → 模型 可以分别为文本 / 视觉 / 音频编码器选择 q4 或 q8 量化（默认 q4 / q4 / q8）。
-`models:download` 只下载默认档位，切换前请先下载对应文件。
+语义模型经 [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) 推理：默认用 GPU（macOS 上是 Metal），
+不可用时自动退回 CPU；设置 → 模型 里可以固定为 GPU 或 CPU。
 
 ## 支持的格式
 
@@ -136,7 +136,7 @@ npm run build && npm run package   # 产物在 release/
 ```
 ┌───────────────────────────────┐  postMessage   ┌──────────────────────────────────┐
 │ Main 进程                      │ ─────────────► │ 推理进程（utilityProcess, nice 10）│
-│ SQLite + sqlite-vec + FTS5    │ ◄───────────── │ EmbeddingGemma 2  文本/图/视频/音频 │
+│ SQLite + sqlite-vec + FTS5    │ ◄───────────── │ EmbeddingGemma 2 · LiteRT（GPU）   │
 │ 文件监听 (chokidar)            │                │ SCRFD + MobileFaceNet  人脸        │
 │ 索引队列 · 四路 RRF 搜索        │                │ PaddleOCR v5  图内文字             │
 │ vixel:// 协议（缩略图 / 流媒体） │                └──────────────────────────────────┘
@@ -150,7 +150,7 @@ npm run build && npm run package   # 产物在 release/
 
 | 能力 | 方案 |
 |---|---|
-| 多模态向量 | EmbeddingGemma 2（768 维，ONNX，transformers.js） |
+| 多模态向量 | EmbeddingGemma 2（768 维，LiteRT-LM，GPU：Metal / WebGPU，经 koffi 调用 C API） |
 | 向量检索 | sqlite-vec `vec0`：图片 768d · 媒体片段 768d · 人脸 512d |
 | 文字检索 | PaddleOCR v5 + @node-rs/jieba（SQLite UDF）+ FTS5 BM25 |
 | 融合 | 图片向量 + 媒体片段向量 + OCR + 文件名，Reciprocal Rank Fusion |

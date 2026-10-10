@@ -10,6 +10,7 @@ import { initDatabase, type DatabaseInstance } from '../core/db'
 import { SearchEngine } from '../core/search'
 import { initEmbeddingServicePath, getEmbeddingService } from '../core/embedding'
 import { cmdDoctor, cmdBench } from './doctor'
+import { litertPlatformDir } from '../core/embedding/providers/litert/native'
 
 // 跨平台 userData 路径。打包版目录名取 productName（Vixel），开发版取 package.json name（vixel）；
 // 大小写敏感的卷上两者不同，所以都试一遍，VIXEL_DATA_DIR 可显式指定
@@ -30,6 +31,16 @@ function getModelsDir(): string | undefined {
     process.env.VIXEL_MODELS_DIR,
     join(__dirname, '..', '..', '..', 'resources', 'models'),
     process.platform === 'darwin' ? '/Applications/Vixel.app/Contents/Resources/models' : undefined,
+  ]
+  return candidates.find((d): d is string => !!d && existsSync(d))
+}
+
+// LiteRT-LM 原生库目录：VIXEL_LITERT_DIR > 源码仓库 resources/litert/<platform>-<arch> > 已安装的 Vixel.app
+function getLiteRtDir(): string | undefined {
+  const candidates = [
+    process.env.VIXEL_LITERT_DIR,
+    join(__dirname, '..', '..', '..', 'resources', 'litert', litertPlatformDir()),
+    process.platform === 'darwin' ? '/Applications/Vixel.app/Contents/Resources/litert' : undefined,
   ]
   return candidates.find((d): d is string => !!d && existsSync(d))
 }
@@ -369,6 +380,7 @@ Flags:
 Environment:
   VIXEL_DATA_DIR               Library directory (default: app data dir)
   VIXEL_MODELS_DIR             Models directory (enables semantic search)
+  VIXEL_LITERT_DIR             LiteRT-LM runtime directory
   VIXEL_PROFILE=1              Log slow SQL statements`)
     process.exit(0)
   }
@@ -385,7 +397,7 @@ Environment:
 
   // 初始化。只有改 caption 需要写库；其余只读打开，不跑迁移，应用开着也安全
   const modelsDir = getModelsDir()
-  initEmbeddingServicePath(getUserDataPath(), modelsDir)
+  initEmbeddingServicePath(getUserDataPath(), modelsDir, getLiteRtDir())
   if (!modelsDir && (command === 'search' || command === 'similar' || command === 'bench')) {
     console.error('Note: models not found — semantic search disabled (set VIXEL_MODELS_DIR). Text and filename matching still work.')
   }

@@ -2,10 +2,10 @@
 /**
  * 模型下载脚本（开发 / CI 用）
  *
- * 下载 Vixel 所需的全部本地模型到 resources/models/：
+ * 下载 Vixel 所需的全部本地模型和推理运行时：
  *
  *   resources/models/
- *     ├── gemma2/                           (~620 MB)  多模态 embedding（文本/图像/音频/视频）
+ *     ├── litert/embeddinggemma-2-740m.litertlm   (~465 MB)  多模态 embedding（文本/图像/音频/视频）
  *     └── paddleocr/                        (~12 MB)   OCR
  *         ├── ppocr_v5_det.onnx
  *         ├── ppocr_v5_rec.onnx
@@ -13,14 +13,22 @@
  *         └── ppocrv5_dict.txt
  *
  * 用法：
- *   node scripts/download-models.mjs              # 全部
- *   node scripts/download-models.mjs gemma2       # 仅 EmbeddingGemma 2
- *   node scripts/download-models.mjs paddleocr    # 仅 PaddleOCR
+ *   resources/litert/<platform>-<arch>/          LiteRT-LM 原生库（来自 litert-lm-api wheel）
+ *
+ * 用法：
+ *   node scripts/download-models.mjs                     # 全部（运行时取当前平台）
+ *   node scripts/download-models.mjs litert              # 仅 EmbeddingGemma 2（LiteRT 模型）
+ *   node scripts/download-models.mjs litert-runtime      # 仅 LiteRT-LM 原生库
+ *   LITERT_PLATFORM=win32-x64 node scripts/download-models.mjs litert-runtime   # 给别的平台打包
+ *   node scripts/download-models.mjs paddleocr           # 仅 PaddleOCR
  */
 
-import { createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs'
 import { rename, rm } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -43,37 +51,16 @@ const HF_TOKEN = process.env.HF_TOKEN || ''
 
 const MODEL_GROUPS = {
   // ─── 多模态 Embedding ─────────────────────────────────────────
-  // EmbeddingGemma 2: 文本/图像/音频/视频统一嵌入空间，768 维
-  // 仓库：onnx-community/embeddinggemma-2-ONNX
-  // 量化档位：文本/视觉 q4 (284MB)，音频 q8 (340MB，官方建议)
-  gemma2: {
-    label: 'EmbeddingGemma 2 (text/image/audio/video, 768D)',
-    targetDir: join(MODELS_ROOT, 'gemma2'),
-    // transformers.js 从 <model>/onnx/ 加载权重，必须保留 HF 仓库的目录结构
-    preserveSubdirs: true,
+  // EmbeddingGemma 2（LiteRT-LM 官方转换，int4/int8 QAT）：文本/图像/音频/视频统一嵌入空间，768 维
+  // 仓库：litert-community/embeddinggemma-2-740m-litert-lm（Apache-2.0，无需登录）；固定 revision 保证可复现
+  litert: {
+    label: 'EmbeddingGemma 2 · LiteRT (text/image/audio/video, 768D)',
+    targetDir: join(MODELS_ROOT, 'litert'),
     sources: [
       {
-        baseUrl: `https://huggingface.co/${process.env.GEMMA2_REPO || 'onnx-community/embeddinggemma-2-ONNX'}/resolve/${process.env.GEMMA2_REVISION || 'main'}/`,
+        baseUrl: `https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/resolve/${process.env.LITERT_MODEL_REVISION || '24d962e906c7d332c6428e71c9676855024569e2'}/`,
         files: [
-          { path: 'config.json', optional: false },
-          { path: 'tokenizer.json', optional: false },
-          { path: 'tokenizer_config.json', optional: false },
-          { path: 'preprocessor_config.json', optional: false },
-          { path: 'processor_config.json', optional: false },
-          { path: 'chat_template.jinja', optional: true },
-          // 文件名须与 transformers.js 的 session 名 + dtype 后缀一致：
-          //   session: model / vision_encoder / audio_encoder
-          //   后缀: q4 → _q4, q8 → _quantized
-          // 权重在 .onnx_data 外部数据文件里（config.json 的 use_external_data_format），必需。
-          // 文本编码器（q4）
-          { path: 'onnx/model_q4.onnx', optional: false },
-          { path: 'onnx/model_q4.onnx_data', optional: false },
-          // 视觉编码器（q4）
-          { path: 'onnx/vision_encoder_q4.onnx', optional: false },
-          { path: 'onnx/vision_encoder_q4.onnx_data', optional: false },
-          // 音频编码器（q8）
-          { path: 'onnx/audio_encoder_quantized.onnx', optional: false },
-          { path: 'onnx/audio_encoder_quantized.onnx_data', optional: false },
+          { path: 'embeddinggemma-2-740m.litertlm', optional: false, sha256: 'e7a8a2204b91e0f96e92960e84a09a89212e1633dcb7575a9bf3378b4df77f4c' },
         ],
       },
     ],
@@ -104,6 +91,73 @@ const MODEL_GROUPS = {
       },
     ],
   },
+}
+
+// ─── LiteRT-LM 原生库 ─────────────────────────────────────────────
+// litert-lm-api 是 Google 发布的 C API 包（py3-none：wheel 里只有原生库，不含 Python）。
+// 只解压原生库到 resources/litert/<platform>-<arch>/，Electron 经 koffi 加载。
+// 换版本时同时更新 url / sha256，并核对 wheel 里 _ffi.py 的函数签名（src/core/embedding/providers/litert/native.ts）
+const LITERT_RUNTIME_VERSION = '0.18.0'
+const LITERT_RUNTIMES = {
+  'darwin-arm64': {
+    url: 'https://files.pythonhosted.org/packages/cc/df/147e5fa60cf8964bdcbc022cbd38502f91ea415bf82bed2c9335fcf9be9d/litert_lm_api-0.18.0-py3-none-macosx_12_0_arm64.whl',
+    sha256: '9fd0c55835e469a035c1b75cde4797b26292963c2c36d9fcdfceb965ffa08a37',
+    files: ['liblitert-lm.dylib'],
+  },
+  // GPU 走 WebGPU → D3D12，需要同目录的 DirectX 着色器编译器（dxcompiler / dxil）
+  'win32-x64': {
+    url: 'https://files.pythonhosted.org/packages/2e/a4/842c858a90aac25a2ae6e4744197b22764a38fb35e45b15cf9c3b7570656/litert_lm_api-0.18.0-py3-none-win_amd64.whl',
+    sha256: 'eb02dc5d0fc6a894a664cfcc63e3aaf3100973ba2c9a6a7eebf4df8749a01038',
+    files: ['litert-lm.dll', 'dxcompiler.dll', 'dxil.dll'],
+  },
+  'linux-x64': {
+    url: 'https://files.pythonhosted.org/packages/c9/8f/eb7a5203be1d48440c6b8d6e6382c3f744dd6d338fe400555718b4d695a1/litert_lm_api-0.18.0-py3-none-manylinux_2_27_x86_64.whl',
+    sha256: 'b64e2cf6d7dcb90ff094b74af595cc5d53faa07e0889f967d15df8d3e696b53c',
+    files: ['liblitert-lm.so'],
+  },
+}
+
+async function sha256Of(path) {
+  const hash = createHash('sha256')
+  await new Promise((res, rej) => createReadStream(path).on('data', (d) => hash.update(d)).on('end', res).on('error', rej))
+  return hash.digest('hex')
+}
+
+async function downloadLiteRtRuntime() {
+  const platform = process.env.LITERT_PLATFORM || `${process.platform}-${process.arch}`
+  const spec = LITERT_RUNTIMES[platform]
+  console.log(`\n${colors.green}▸ LiteRT-LM runtime ${LITERT_RUNTIME_VERSION} (${platform})${colors.reset}`)
+  if (!spec) {
+    console.error(`${colors.red}  no LiteRT-LM runtime for ${platform} (available: ${Object.keys(LITERT_RUNTIMES).join(', ')})${colors.reset}`)
+    return false
+  }
+  const targetDir = join(ROOT, 'resources', 'litert', platform)
+  if (spec.files.every((f) => existsSync(join(targetDir, f)))) {
+    console.log(`${colors.dim}✓ ${spec.files.join(', ')} (cached)${colors.reset}`)
+    return true
+  }
+  const wheel = join(tmpdir(), basename(new URL(spec.url).pathname))
+  await rm(wheel, { force: true })
+  await downloadFile(spec.url, wheel, false)
+  const actual = await sha256Of(wheel)
+  if (actual !== spec.sha256) {
+    console.error(`${colors.red}  sha256 mismatch for ${basename(wheel)}: ${actual}${colors.reset}`)
+    return false
+  }
+  // wheel 就是 zip；macOS / Windows 10+ 自带的 bsdtar 都能解
+  const extractDir = join(tmpdir(), `litert-runtime-${platform}`)
+  await rm(extractDir, { recursive: true, force: true })
+  mkdirSync(extractDir, { recursive: true })
+  const r = spawnSync('tar', ['-xf', wheel, '-C', extractDir, ...spec.files.map((f) => `litert_lm/${f}`)], { stdio: 'inherit' })
+  if (r.status !== 0) {
+    console.error(`${colors.red}  failed to extract ${basename(wheel)}${colors.reset}`)
+    return false
+  }
+  mkdirSync(targetDir, { recursive: true })
+  for (const f of spec.files) await rename(join(extractDir, 'litert_lm', f), join(targetDir, f))
+  await rm(wheel, { force: true })
+  console.log(`${colors.green}  ✓ ${spec.files.join(', ')} → ${targetDir}${colors.reset}`)
+  return true
 }
 
 function fmtSize(bytes) {
@@ -188,6 +242,10 @@ async function downloadGroup(groupKey) {
       mkdirSync(dirname(target), { recursive: true })
       try {
         await downloadFile(url, target, file.optional === true)
+        if (file.sha256 && existsSync(target) && (await sha256Of(target)) !== file.sha256) {
+          await rm(target, { force: true })
+          throw new Error('sha256 mismatch (file removed, re-run to download again)')
+        }
       } catch (err) {
         if (file.optional) {
           console.warn(`${colors.yellow}  warn: ${file.path} skipped (${err.message})${colors.reset}`)
@@ -204,14 +262,14 @@ async function downloadGroup(groupKey) {
 
 async function main() {
   const args = process.argv.slice(2)
-  const targets = args.length > 0 ? args : Object.keys(MODEL_GROUPS)
+  const targets = args.length > 0 ? args : [...Object.keys(MODEL_GROUPS), 'litert-runtime']
 
   console.log(`${colors.green}Vixel model downloader${colors.reset}`)
   console.log(`  target groups: ${targets.join(', ')}`)
 
   let allOk = true
   for (const t of targets) {
-    const ok = await downloadGroup(t)
+    const ok = t === 'litert-runtime' ? await downloadLiteRtRuntime() : await downloadGroup(t)
     if (!ok) allOk = false
   }
 

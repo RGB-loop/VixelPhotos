@@ -1,12 +1,10 @@
 /**
  * Embedding 服务
  *
- * EmbeddingGemma 2 多模态本地推理（文本/图像/音频/视频，768 维）
- * 纯本地，零网络依赖。
+ * EmbeddingGemma 2 多模态本地推理（文本/图像/音频/视频，768 维），经 LiteRT-LM，纯本地，零网络依赖。
  *
- * 配置文件：<userData>/embedding-config.json
- * 形如：
- *   { "type": "gemma2-local" }  // 默认
+ * 配置文件：<userData>/embedding-config.json，只存用户可调的项：
+ *   { "backend": "auto" }    // auto | gpu | cpu
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
@@ -15,9 +13,10 @@ import type {
   EmbeddingProvider,
   EmbeddingProviderConfig,
   EmbeddingInput,
-  Gemma2ProviderConfig,
+  LiteRtProviderConfig,
 } from './types'
-import { Gemma2EmbeddingProvider } from './providers/gemma2Provider'
+import { LiteRtEmbeddingProvider, LITERT_MODEL_FILE } from './providers/litert/litertProvider'
+import { LITERT_LIB_NAME } from './providers/litert/native'
 import { RemoteEmbeddingProvider } from './providers/remoteProvider'
 import { getInferenceTransport } from '../inference/transport'
 
@@ -26,61 +25,58 @@ export * from './types'
 // 模块级状态
 let _userDataPath: string = ''
 let _bundledModelsDir: string = ''
+let _litertLibDir: string = ''
 
+/**
+ * @param litertLibDir LiteRT-LM 原生库目录（打包后 <resources>/litert，开发时 resources/litert/<platform>-<arch>）
+ */
 export function initEmbeddingServicePath(
   userDataPath: string,
-  bundledModelsDir?: string
+  bundledModelsDir?: string,
+  litertLibDir?: string
 ): void {
   _userDataPath = userDataPath
   if (bundledModelsDir) _bundledModelsDir = bundledModelsDir
+  if (litertLibDir) _litertLibDir = litertLibDir
+}
+
+/** LiteRT 运行时 + 模型是否都在 */
+export function isLiteRtInstalled(): boolean {
+  const lib = LITERT_LIB_NAME[process.platform]
+  return !!lib && !!_litertLibDir && existsSync(join(_litertLibDir, lib)) &&
+    existsSync(join(_bundledModelsDir, 'litert', LITERT_MODEL_FILE))
 }
 
 function getConfigPath(): string {
   return join(_userDataPath, 'embedding-config.json')
 }
 
-function loadConfig(): EmbeddingProviderConfig {
+function readPersisted(): Record<string, unknown> {
   const configPath = getConfigPath()
-  if (existsSync(configPath)) {
-    try {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
-      if (raw && raw.type === 'gemma2-local') {
-        return {
-          type: 'gemma2-local',
-          modelsDir: _bundledModelsDir,
-          textQuantization: raw.textQuantization,
-          visionQuantization: raw.visionQuantization,
-          audioQuantization: raw.audioQuantization,
-          device: raw.device,
-        } as Gemma2ProviderConfig
-      }
-    } catch (err) {
-      console.warn('Failed to parse embedding-config.json, using defaults:', err)
-    }
+  if (!existsSync(configPath)) return {}
+  try {
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
+    return raw && typeof raw === 'object' ? raw : {}
+  } catch (err) {
+    console.warn('Failed to parse embedding-config.json, using defaults:', err)
+    return {}
   }
+}
 
-  // 默认：EmbeddingGemma 2，文本/视觉 q4，音频 q8
+function loadConfig(): EmbeddingProviderConfig {
+  const raw = readPersisted()
   return {
-    type: 'gemma2-local',
+    type: 'litert',
     modelsDir: _bundledModelsDir,
-    textQuantization: 'q4',
-    visionQuantization: 'q4',
-    audioQuantization: 'q8',
-    device: 'cpu',
+    libDir: _litertLibDir,
+    backend: raw.backend === 'gpu' || raw.backend === 'cpu' ? raw.backend : 'auto',
+    cacheDir: _userDataPath ? join(_userDataPath, 'litert-cache') : undefined,
   }
 }
 
 function saveConfig(config: EmbeddingProviderConfig): void {
-  const configPath = getConfigPath()
-  // 只把用户能调整的字段写盘；modelsDir 等运行时字段不持久化
-  const persistable = {
-    type: 'gemma2-local',
-    textQuantization: config.textQuantization,
-    visionQuantization: config.visionQuantization,
-    audioQuantization: config.audioQuantization,
-    device: config.device,
-  }
-  writeFileSync(configPath, JSON.stringify(persistable, null, 2))
+  // 只把用户能调整的字段写盘；路径等运行时字段不持久化
+  writeFileSync(getConfigPath(), JSON.stringify({ backend: config.backend ?? 'auto' }, null, 2))
 }
 
 class EmbeddingService {
@@ -97,9 +93,7 @@ class EmbeddingService {
   }
 
   isConfigured(): boolean {
-    // 纯本地，只要模型目录存在就算已配置
-    const modelsDir = this.config.modelsDir || _bundledModelsDir
-    return !!modelsDir
+    return isLiteRtInstalled()
   }
 
   getInitError(): string | null {
@@ -108,7 +102,7 @@ class EmbeddingService {
 
   async init(): Promise<void> {
     if (!this.isConfigured()) {
-      this.initError = 'Embedding provider not configured'
+      this.initError = 'LiteRT runtime or EmbeddingGemma 2 model missing — run `npm run models:download`'
       return
     }
 
@@ -126,18 +120,14 @@ class EmbeddingService {
   }
 
   private createProvider(): EmbeddingProvider {
-    const modelsDir = this.config.modelsDir || _bundledModelsDir
-    const config: Gemma2ProviderConfig = {
-      type: 'gemma2-local',
-      modelsDir,
-      modelDirName: this.config.modelDirName,
-      textQuantization: this.config.textQuantization,
-      visionQuantization: this.config.visionQuantization,
-      audioQuantization: this.config.audioQuantization,
-      device: this.config.device,
-    }
     const transport = getInferenceTransport()
-    return transport ? new RemoteEmbeddingProvider(transport, config) : new Gemma2EmbeddingProvider(config)
+    return transport ? new RemoteEmbeddingProvider(transport, this.config) : new LiteRtEmbeddingProvider(this.config)
+  }
+
+  /** 实际在用的推理后端（gpu / cpu），设置页展示用 */
+  getActiveBackend(): string | null {
+    if (!this.provider?.isReady()) return null
+    return (this.provider as unknown as { activeBackend?: string | null }).activeBackend ?? null
   }
 
   async encode(input: EmbeddingInput): Promise<Float32Array> {
@@ -166,11 +156,9 @@ class EmbeddingService {
     return this.encode({ type: 'video', frames, durationSec })
   }
 
-  /**
-   * 调整量化档位 / 推理设备。写盘并重建 provider（下次 encode 时懒加载）。
-   */
-  setConfig(patch: Partial<Omit<Gemma2ProviderConfig, 'type' | 'modelsDir'>>): void {
-    this.config = { ...this.config, ...patch }
+  /** 调整推理后端偏好。写盘并重建 provider（下次 encode 时懒加载）。 */
+  setConfig(patch: { backend?: LiteRtProviderConfig['backend'] }): void {
+    if (patch.backend) this.config = { ...this.config, backend: patch.backend }
     saveConfig(this.config)
     this.initError = null
     if (this.provider) {

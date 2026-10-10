@@ -41,5 +41,8 @@ coverage/
 # TypeScript
 *.tsbuildinfo
 
+# LiteRT-LM 原生库（scripts/download-models.mjs litert-runtime 下载）
+resources/litert/
+
 # Native modules cache
 .node-gyp/

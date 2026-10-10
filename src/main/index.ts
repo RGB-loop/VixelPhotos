@@ -9,7 +9,8 @@ import { initDatabase } from '../core/db'
 import { FileWatcher } from '../core/watcher'
 import { Indexer } from '../core/indexer'
 import { SearchEngine, type SearchOptions } from '../core/search'
-import { getEmbeddingService, initEmbeddingServicePath } from '../core/embedding'
+import { getEmbeddingService, initEmbeddingServicePath, isLiteRtInstalled } from '../core/embedding'
+import { litertPlatformDir } from '../core/embedding/providers/litert/native'
 import { setFaceModelsDir, getFaceThumbnail, FACE_PIPELINE_VERSION } from '../core/face'
 import { suggestMerges } from '../core/face/cluster'
 import { setOcrModelsDir } from '../core/ocr'
@@ -23,7 +24,7 @@ import { InferenceProcess } from './inference-client'
 import { runCaptureTour, runRecording } from './capture'
 import { timed, watchEventLoop, perfSnapshot, PROFILE } from '../core/perf'
 import { setInferenceTransport } from '../core/inference/transport'
-import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
+import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 const APP_NAME = 'Vixel'
 
@@ -173,7 +174,10 @@ async function initServices(): Promise<void> {
   // 推理（embedding / 人脸 / OCR）放到独立进程，主进程事件循环不被模型前向占住
   inference = new InferenceProcess(join(__dirname, 'inference.js'))
   setInferenceTransport(inference)
-  initEmbeddingServicePath(userDataPath, bundledModelsDir)
+  // LiteRT-LM 原生库：打包后在 <resources>/litert，开发时在 resources/litert/<platform>-<arch>
+  const prodLitertDir = join(process.resourcesPath, 'litert')
+  const litertLibDir = existsSync(prodLitertDir) ? prodLitertDir : join(process.cwd(), 'resources', 'litert', litertPlatformDir())
+  initEmbeddingServicePath(userDataPath, bundledModelsDir, litertLibDir)
   setFaceModelsDir(bundledModelsDir)
   setOcrModelsDir(bundledModelsDir)
 
@@ -519,42 +523,25 @@ function registerIpcHandlers(): void {
     return app.getPath('userData')
   })
 
-  // 模型状态（EmbeddingGemma 2 本地模型）
+  // 模型状态（EmbeddingGemma 2 via LiteRT）
   handle(IPC_CHANNELS.GET_MODEL_STATUS, async () => {
     const embeddingService = getEmbeddingService()
-    const config = embeddingService.getConfig()
-    const gemma2Dir = join(bundledModelsDir, config.modelDirName || 'gemma2')
-    const localModelExists = existsSync(gemma2Dir)
-
     return {
       modelsDir: bundledModelsDir,
-      providerType: config.type, // 'gemma2-local'
-      localModelExists,
+      localModelExists: isLiteRtInstalled(),
       embeddingReady: embeddingService.isReady(),
-      textQuantization: config.textQuantization,
-      visionQuantization: config.visionQuantization,
-      audioQuantization: config.audioQuantization,
+      activeBackend: embeddingService.getActiveBackend(),
+      backend: embeddingService.getConfig().backend ?? 'auto',
       initError: embeddingService.getInitError(),
     }
   })
 
-  // Embedding 配置：量化档位 / 推理设备（纯本地，无 API 后端）
-  handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => {
-    const config = getEmbeddingService().getConfig()
-    return {
-      textQuantization: config.textQuantization,
-      visionQuantization: config.visionQuantization,
-      audioQuantization: config.audioQuantization,
-      device: config.device,
-    }
-  })
+  handle(IPC_CHANNELS.GET_EMBEDDING_CONFIG, async () => ({ backend: getEmbeddingService().getConfig().backend ?? 'auto' }))
 
-  // 改量化档位会丢弃已加载的 provider，下次 encode 时按新档位重新加载。
-  // 注意：换档位不会重建已有向量 —— 不同量化档位的向量仍在同一嵌入空间，
-  // 可以混用，只是精度略有差异。
+  // 改后端会丢弃已加载的 provider，下次 encode 时重新加载。CPU / GPU 后端向量一致，不用重建索引。
   ipcMain.handle(
     IPC_CHANNELS.SET_EMBEDDING_CONFIG,
-    async (_event, patch: EmbeddingQuantizationConfig) => {
+    async (_event, patch: EmbeddingConfig) => {
       try {
         const svc = getEmbeddingService()
         svc.setConfig(patch)

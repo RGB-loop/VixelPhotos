@@ -48,7 +48,7 @@ npm run build
 VIXEL_PROFILE=1 npx electron . --user-data-dir=/tmp/vx-perf/data
 ```
 
-本轮实测（150 张 2400×1600 JPEG，M 系列 CPU）：缩略图全部 < 5 s 完成；`embed.encode` p50 3.3 s / 张；索引全程主进程无 > 50 ms 阻塞，IPC ≤ 1.2 ms。
+实测（M 系列 Mac）：缩略图 150 张 2400×1600 JPEG < 5 s；LiteRT GPU 上 `embed.encode` 约 0.3 s / 张（旧 ONNX CPU 约 3.3 s）；索引全程主进程无 > 50 ms 阻塞，IPC ≤ 1.2 ms。
 
 ## 数据库集成测试
 

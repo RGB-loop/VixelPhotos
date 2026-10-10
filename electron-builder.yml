@@ -29,12 +29,18 @@ asarUnpack:
   # sqlite-vec 的 .dylib 在平台子包里（sqlite-vec-darwin-arm64 等），原生 dlopen 读不了 asar 里的文件
   - node_modules/sqlite-vec-*/**
   - node_modules/@node-rs/jieba*/**
+  # koffi（加载 LiteRT-LM 的 FFI）：原生 .node 不能从 asar 里加载
+  - node_modules/koffi/**
 # 本地模型作为 extraResources（运行时通过 process.resourcesPath 访问）
 extraResources:
   - from: resources/models
     to: models
     filter:
       - '**/*'
+      - '!gemma2/**'   # 旧 ONNX 模型（开发机上可能还留着），已由 LiteRT 取代
+  # LiteRT-LM 原生库：只带目标平台那一份（npm run models:download 按平台解压到这里）
+  - from: resources/litert/${platform}-${arch}
+    to: litert
 
 mac:
   icon: build/icon.icns

@@ -230,7 +230,7 @@ export const IPC_CHANNELS = {
   GET_APP_PATH: 'get-app-path',
   GET_MODEL_STATUS: 'get-model-status',
 
-  // Embedding（EmbeddingGemma 2，纯本地；可调量化档位）
+  // Embedding（EmbeddingGemma 2 via LiteRT，纯本地；可选推理后端）
   GET_EMBEDDING_CONFIG: 'get-embedding-config',
   SET_EMBEDDING_CONFIG: 'set-embedding-config',
 
@@ -272,24 +272,19 @@ export const IPC_CHANNELS = {
 
 export interface ModelStatus {
   modelsDir: string
-  providerType: 'gemma2-local'
-  localModelExists: boolean   // resources/models/gemma2/ 是否存在
+  /** LiteRT 运行时 + EmbeddingGemma 2 模型文件是否都在 */
+  localModelExists: boolean
   embeddingReady: boolean
-  textQuantization?: 'q4' | 'q8'
-  visionQuantization?: 'q4' | 'q8'
-  audioQuantization?: 'q4' | 'q8'
+  /** 实际在用的推理后端：gpu / cpu；未初始化为 null */
+  activeBackend: string | null
+  /** 后端偏好 */
+  backend: 'auto' | 'gpu' | 'cpu'
   initError: string | null
 }
 
-export interface EmbeddingQuantizationConfig {
-  textQuantization?: 'q4' | 'q8'
-  visionQuantization?: 'q4' | 'q8'
-  audioQuantization?: 'q4' | 'q8'
-  device?: 'cpu' | 'webgpu'
+export interface EmbeddingConfig {
+  backend: 'auto' | 'gpu' | 'cpu'
 }
-
-// Embedding provider 选项（renderer 用来切换 UI 状态）
-export type EmbeddingProviderType = 'gemma2-local'
 
 export interface BackupStatus {
   lastBackupAt: number | null    // epoch ms

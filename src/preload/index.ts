@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingQuantizationConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction, type ThemeMode, type PersonSuggestion, type PersonFace } from '../shared/types'
+import { IPC_CHANNELS, type SearchResult, type WatchedFolder, type PhotoDetail, type PhotoLocation, type IndexProgress, type ModelStatus, type EmbeddingConfig, type Person, type FaceRecord, type BackupStatus, type MediaKind, type TaskOverview, type MediaDetail, type LibraryCounts, type MenuCommand, type ItemMenuAction, type ThemeMode, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 const api = {
   // 搜索
@@ -116,11 +116,11 @@ const api = {
   },
 
   // Embedding 配置（EmbeddingGemma 2 量化档位 / 推理设备）
-  getEmbeddingConfig: (): Promise<EmbeddingQuantizationConfig> => {
+  getEmbeddingConfig: (): Promise<EmbeddingConfig> => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_EMBEDDING_CONFIG)
   },
   /** 改量化档位；provider 会在下次 encode 时按新档位重新加载 */
-  setEmbeddingConfig: (config: EmbeddingQuantizationConfig): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
+  setEmbeddingConfig: (config: EmbeddingConfig): Promise<{ success: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke(IPC_CHANNELS.SET_EMBEDDING_CONFIG, config)
   },
 

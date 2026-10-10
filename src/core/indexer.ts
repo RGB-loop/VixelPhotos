@@ -213,7 +213,7 @@ export class Indexer extends EventEmitter {
 
   /**
    * 处理 'extract_frames' 任务（视频和纯音频共用，按 media_kind 分支）：
-   *   1. 按 32s 切片；视频片段 = 帧序列 + 音轨，音频片段 = 音轨 → Gemma2 → video_segments 表
+   *   1. 按 32s 切片；视频片段 = 帧序列 + 音轨，音频片段 = 音轨 → EmbeddingGemma 2 → video_segments 表
    *   2. 代表图：视频取首帧，音频取内嵌封面或波形 → 代表 photo（网格 / 搜索落点）
    *
    * 视频帧写到 <userData>/video_frames/<videoHash>/ 供缩略图和调试，

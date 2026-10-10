@@ -1,23 +1,26 @@
 /**
  * 把 EmbeddingGemma 2 的推理转发到推理进程（见 ../../inference/transport.ts）。
- * 进程里跑的就是 Gemma2EmbeddingProvider；这里只做转发，推理进程重启后下次调用前自动重新 init。
+ * 进程里跑的是 LiteRtEmbeddingProvider；这里只做转发，推理进程重启后下次调用前自动重新 init。
  */
 
-import type { EmbeddingProvider, EmbeddingInput, Gemma2ProviderConfig } from '../types'
+import type { EmbeddingProvider, EmbeddingInput, EmbeddingProviderConfig } from '../types'
 import { EMBEDDING_DIMENSIONS } from '../types'
 import { RemoteReady, type InferenceTransport } from '../../inference/transport'
 
 export class RemoteEmbeddingProvider implements EmbeddingProvider {
   private ready = new RemoteReady()
+  /** 推理进程里实际用上的后端（gpu 不可用时退到 cpu） */
+  activeBackend: string | null = null
 
   constructor(
     private transport: InferenceTransport,
-    private config: Gemma2ProviderConfig
+    private config: EmbeddingProviderConfig
   ) {}
 
   async init(): Promise<void> {
     if (this.ready.isReady(this.transport)) return
-    await this.transport.call('embed.init', this.config)
+    const info = await this.transport.call<{ backend?: string } | undefined>('embed.init', this.config)
+    this.activeBackend = info?.backend ?? null
     this.ready.mark(this.transport, true)
   }
 
@@ -42,6 +45,7 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
 
   async dispose(): Promise<void> {
     this.ready.mark(this.transport, false)
+    this.activeBackend = null
     await this.transport.call('embed.dispose').catch(() => {})
   }
 }

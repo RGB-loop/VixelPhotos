@@ -17,15 +17,15 @@ export interface ImageInput {
 
 export interface AudioInput {
   type: 'audio'
-  /** mono 16kHz Float32Array，符合 Gemma 2 audio encoder 要求 */
+  /** mono 16kHz Float32Array（送入前封装成 WAV） */
   samples: Float32Array
 }
 
 export interface VideoInput {
   type: 'video'
-  /** 帧序列（processor max_frames = 32，超出均匀降采样），RawImage[] 或 Buffer[] */
+  /** 帧序列（JPEG），一次推理融合成一个片段向量 */
   frames: Buffer[]
-  /** 视频时长（秒），用于 RawVideo 构造 */
+  /** 片段时长（秒） */
   durationSec: number
 }
 
@@ -52,27 +52,18 @@ export interface EmbeddingProvider {
 }
 
 /**
- * Provider 类型
- *  - `gemma2-local`：本地 ONNX，EmbeddingGemma 2 (768D，多模态：文本/图像/音频/视频)
+ * EmbeddingGemma 2 经 LiteRT-LM 推理（官方 .litertlm）：768 维，文本 / 图像 / 音频 / 视频同一空间。
+ * GPU 优先（macOS Metal，Windows WebGPU → D3D12），不可用时 CPU。
  */
-export type ProviderType = 'gemma2-local'
-
-export interface Gemma2ProviderConfig {
-  type: 'gemma2-local'
-  modelsDir: string             // 模型根目录（包含 gemma2/ 子目录）
-  modelDirName?: string         // 默认 'gemma2'
-  /**
-   * 量化档位：
-   *  - text/vision: q4 (默认，284MB)
-   *  - audio: q8 (默认，340MB，官方建议)
-   */
-  textQuantization?: 'q4' | 'q8' | 'fp32'
-  visionQuantization?: 'q4' | 'q8' | 'fp32'
-  audioQuantization?: 'q8' | 'q4' | 'fp32'
-  device?: 'cpu' | 'webgpu'     // 默认 cpu
+export interface LiteRtProviderConfig {
+  type: 'litert'
+  modelsDir: string             // 模型根目录（包含 litert/<model>.litertlm）
+  libDir: string                // LiteRT-LM 原生库所在目录（resources/litert/<platform>-<arch>）
+  backend?: 'auto' | 'gpu' | 'cpu'  // 默认 auto：GPU 优先，失败退 CPU
+  cacheDir?: string             // GPU 着色器编译缓存（首次 ~7 s，之后启动更快）
 }
 
-export type EmbeddingProviderConfig = Gemma2ProviderConfig
+export type EmbeddingProviderConfig = LiteRtProviderConfig
 
 /**
  * 向量维度常量
