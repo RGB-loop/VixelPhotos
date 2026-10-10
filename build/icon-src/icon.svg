@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- macOS 图标网格：1024 画布，824 主体，上下留白含投影 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232637"/>
+      <stop offset="1" stop-color="#0D0E14"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F0C891"/>
+      <stop offset="0.55" stop-color="#C8915A"/>
+      <stop offset="1" stop-color="#9A6638"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E3560"/>
+      <stop offset="0.5" stop-color="#A2606A"/>
+      <stop offset="0.85" stop-color="#F2A65E"/>
+    </linearGradient>
+    <linearGradient id="far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6A4C62"/>
+      <stop offset="1" stop-color="#3B2D45"/>
+    </linearGradient>
+    <linearGradient id="near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#242338"/>
+      <stop offset="1" stop-color="#15141F"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFE6B8"/>
+      <stop offset="1" stop-color="#F6B66E"/>
+    </radialGradient>
+    <radialGradient id="glare" cx="0.3" cy="0.25" r="0.6">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="glass"><circle cx="452" cy="452" r="214"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- 主体：824×824 圆角方形，居中偏上（给投影留空间） -->
+  <g filter="url(#shadow)">
+    <rect x="100" y="92" width="824" height="824" rx="185" fill="url(#bg)"/>
+  </g>
+  <rect x="100.5" y="92.5" width="823" height="823" rx="184.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="2"/>
+
+  <g transform="translate(512 504) scale(1.0) translate(-480 -480)">
+    <!-- 镜片里的风景：落日 + 远近山 -->
+    <g clip-path="url(#glass)">
+      <rect x="230" y="230" width="444" height="444" fill="url(#sky)"/>
+      <circle cx="530" cy="478" r="110" fill="#FFD9A0" opacity="0.18"/>
+      <circle cx="530" cy="478" r="66" fill="url(#sun)"/>
+      <path d="M230 560 L330 470 L400 520 L480 430 L560 505 L620 465 L674 500 L674 674 L230 674 Z" fill="url(#far)"/>
+      <path d="M230 610 L320 545 L410 600 L500 540 L600 610 L674 575 L674 674 L230 674 Z" fill="url(#near)"/>
+      <circle cx="452" cy="452" r="214" fill="url(#glare)"/>
+    </g>
+    <!-- 镜框与手柄 -->
+    <g filter="url(#soft)">
+      <path d="M660 660 L760 760" stroke="url(#gold)" stroke-width="80" stroke-linecap="round"/>
+      <path d="M628 628 L668 668" stroke="url(#gold)" stroke-width="56" stroke-linecap="butt"/>
+      <circle cx="452" cy="452" r="236" fill="none" stroke="url(#gold)" stroke-width="46"/>
+    </g>
+    <circle cx="452" cy="452" r="213" fill="none" stroke="#000" stroke-opacity="0.25" stroke-width="4"/>
+  </g>
+</svg>
