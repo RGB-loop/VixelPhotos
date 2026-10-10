@@ -20,12 +20,15 @@ import { ensureSprite, SPRITE_MIN_DURATION_MS } from '../core/video/sprite'
 import { isFfmpegAvailable, probeMedia } from '../core/video/extract'
 import { installAppMenu, popupItemMenu } from './menu'
 import { InferenceProcess } from './inference-client'
-import { runCaptureTour } from './capture'
+import { runCaptureTour, runRecording } from './capture'
 import { timed, watchEventLoop, perfSnapshot, PROFILE } from '../core/perf'
 import { setInferenceTransport } from '../core/inference/transport'
 import { IPC_CHANNELS, type ThemeMode, type IndexProgress, type FaceBbox, type EmbeddingQuantizationConfig, type PersonSuggestion, type PersonFace } from '../shared/types'
 
 const APP_NAME = 'Vixel'
+
+// 录屏模式：1280×720 窗口按 1.5 倍渲染，帧订阅直接得到 1920×1080
+if (process.env.VIXEL_RECORD) app.commandLine.appendSwitch('force-device-scale-factor', '1.5')
 
 // 开发期 app.name 默认取 package.json 的 "vixel"，菜单 / 关于面板会显示小写名。
 // setName 也会改默认 userData 目录，先记下原路径再设回去，老数据不搬家。
@@ -118,6 +121,7 @@ function createWindow(): void {
     win.show()
     // VIXEL_CAPTURE=<目录>：自动巡检各视图并截图（见 capture.ts）
     if (process.env.VIXEL_CAPTURE) void runCaptureTour(win, process.env.VIXEL_CAPTURE)
+    if (process.env.VIXEL_RECORD) void runRecording(win, process.env.VIXEL_RECORD)
   })
   win.on('closed', () => { if (mainWindow === win) mainWindow = null })
   loadRenderer(win)
@@ -795,6 +799,9 @@ app.whenReady().then(async () => {
   nativeTheme.on('updated', () => {
     for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(windowBackground())
   })
+  // 录屏：清掉渲染端 localStorage（最近搜索、布局偏好），片子里是全新安装的默认界面。
+  // 必须在窗口加载前做 —— 录制中途 reload 会让帧订阅失效
+  if (process.env.VIXEL_RECORD) await session.defaultSession.clearStorageData({ storages: ['localstorage'] })
   enforceOfflinePolicy()
   registerVixelProtocol()
   registerIpcHandlers()
