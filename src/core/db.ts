@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, join } from 'path'
 import * as sqliteVec from 'sqlite-vec'
 import type { LibraryCounts,
   Photo, WatchedFolder, PhotoDetail, PhotoLocation, VideoRecord, MediaKind, MediaDetail, TaskOverview, TaskRow,
@@ -545,6 +545,30 @@ export interface DatabaseInstance {
  * readonly：CLI 的只读命令用。不跑 DDL / 迁移 / checkpoint —— 应用开着时 CLI 也不会去改库结构
  * （迁移可能触发 face_vecs 重建）。库必须已由应用创建并迁移过。
  */
+/**
+ * sqlite-vec 原生扩展的真实路径。sqlite-vec 自带的 getLoadablePath 只找同级的
+ * node_modules/sqlite-vec-<平台>，但打包后平台子包被放在 sqlite-vec/node_modules/ 下，
+ * 而且路径落在 app.asar 里（Electron 的 fs 能读，SQLite 的 dlopen 不能）。
+ * 这里用 Node 的模块解析从 sqlite-vec 目录找平台子包，再改指向 app.asar.unpacked。
+ */
+function vecExtensionPath(): string {
+  const unpacked = (p: string): string => p.replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')
+  try {
+    return unpacked(sqliteVec.getLoadablePath())
+  } catch {
+    // 平台子包的 package.json 没有导出，require.resolve 不了；直接检查两种可能的布局
+    const os = process.platform === 'win32' ? 'windows' : process.platform
+    const ext = process.platform === 'win32' ? 'dll' : process.platform === 'darwin' ? 'dylib' : 'so'
+    const pkg = `sqlite-vec-${os}-${process.arch}`
+    const base = dirname(require.resolve('sqlite-vec'))
+    const found = [join(base, 'node_modules', pkg), join(base, '..', pkg)]
+      .map((d) => join(d, `vec0.${ext}`))
+      .find((f) => existsSync(f))
+    if (!found) throw new Error(`sqlite-vec native extension (${pkg}) not found`)
+    return unpacked(found)
+  }
+}
+
 export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; readonly?: boolean }): DatabaseInstance {
   const dir = dirname(dbPath)
   if (!existsSync(dir)) {
@@ -562,7 +586,7 @@ export function initDatabase(dbPath: string, options?: { runCleanup?: boolean; r
   db.pragma('mmap_size = 268435456') // 256 MB，向量表全扫描走 mmap
 
   // 加载 sqlite-vec 向量搜索扩展
-  sqliteVec.load(db)
+  db.loadExtension(vecExtensionPath())
   console.log('sqlite-vec loaded:', (db.prepare('select vec_version()').get() as Record<string, string>)['vec_version()'])
 
   // 注册 jiebatok(text) UDF —— FTS5 触发器调用它做 CJK 分词。

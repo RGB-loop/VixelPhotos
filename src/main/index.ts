@@ -794,7 +794,15 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  await initServices()
+  try {
+    await initServices()
+  } catch (err) {
+    // 启动失败（数据库 / 原生模块加载不了）要让用户看到，而不是留一个没有窗口的进程
+    console.error('Vixel failed to start:', err)
+    dialog.showErrorBox('Vixel 无法启动', `${err instanceof Error ? err.message : String(err)}\n\n数据目录：${app.getPath('userData')}`)
+    app.exit(1)
+    return
+  }
   applyTheme(loadTheme())
   nativeTheme.on('updated', () => {
     for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(windowBackground())

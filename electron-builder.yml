@@ -18,6 +18,7 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.cli.json}'
   - '!{Vixel_PRD.md,Vixel_Tech.md,SKILL.md}'
 asar: true
+afterPack: build/adhoc-sign.cjs
 # asarIntegrity: 防止打包后 asar 被替换；Electron 启动时校验摘要
 asarUnpack:
   - resources/**
@@ -25,6 +26,8 @@ asarUnpack:
   - node_modules/sharp/**
   - node_modules/onnxruntime-node/**
   - node_modules/sqlite-vec/**
+  # sqlite-vec 的 .dylib 在平台子包里（sqlite-vec-darwin-arm64 等），原生 dlopen 读不了 asar 里的文件
+  - node_modules/sqlite-vec-*/**
   - node_modules/@node-rs/jieba*/**
 # 本地模型作为 extraResources（运行时通过 process.resourcesPath 访问）
 extraResources:
@@ -37,6 +40,9 @@ mac:
   icon: build/icon.icns
   category: public.app-category.photography
   # 加固运行时 + 自定义 entitlements；JIT/V8 + .node 加载所需
+  # 没有 Developer ID 证书：不走证书签名（null = 不去钥匙串里乱找证书），
+  # 由 afterPack 的 build/adhoc-sign.cjs 做 ad-hoc 签名。有证书后删掉这一行即可走正式签名。
+  identity: null
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
