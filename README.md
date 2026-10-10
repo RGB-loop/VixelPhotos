@@ -117,7 +117,7 @@ npm run build && npm run package   # 产物在 release/
 | 平台 | 常见图片 | HEIC / HEIF | RAW | 视频 / 音频 |
 |---|---|---|---|---|
 | macOS | ✅ sharp | ✅ sips | ✅ sips | ✅ ffmpeg |
-| Linux / Windows | ✅ sharp | ✅ heic-convert | ⚠️ 计划中 | ✅ ffmpeg |
+| Linux / Windows | ✅ sharp | ✅ heic-convert | ✅ 相机内嵌预览 | ✅ ffmpeg |
 
 内置播放器播不了的编码（如部分 mkv / avi）会提示用系统播放器打开，搜索和索引不受影响。
 

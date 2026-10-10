@@ -30,7 +30,7 @@ export interface DecodedImage {
    */
   originalBuffer: Buffer
   /** 解码来源，便于日志和测试 */
-  source: 'passthrough' | 'sips' | 'heic-convert'
+  source: 'passthrough' | 'sips' | 'embedded-preview' | 'heic-convert'
   /** 原始扩展名（含 .），全小写 */
   ext: string
 }
@@ -80,8 +80,15 @@ export async function decodeImage(filePath: string): Promise<DecodedImage> {
       const jpeg = await decodeWithSips(originalBuffer, ext)
       return { buffer: jpeg, originalBuffer, source: 'sips', ext }
     } catch (err) {
-      sipsError = err // 再试 sharp
+      sipsError = err // 再试内嵌预览 / sharp
     }
+  }
+
+  // 1.5) RAW 内嵌的相机 JPEG 预览（几乎所有 RAW 都带一张全尺寸预览）：
+  //      系统解码失败时兜底；Linux / Windows 没有 sips，这也是它们唯一的 RAW 支持
+  if (RAW_EXTS.has(ext)) {
+    const preview = await extractEmbeddedJpeg(originalBuffer, ext)
+    if (preview) return { buffer: preview, originalBuffer, source: 'embedded-preview', ext }
   }
 
   // 2) sharp：用一次真解码验证（缩到 32px，JPEG 走 shrink-on-load 很便宜），只读文件头会误判。
@@ -110,6 +117,36 @@ export async function decodeImage(filePath: string): Promise<DecodedImage> {
         : `RAW fallback is macOS-only on this platform (${process.platform}); ` +
           `HEIC fallback requires heic-convert package`)
   )
+}
+
+const RAW_EXTS = new Set<string>(['.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2'])
+
+/**
+ * 从 RAW 里取相机写入的 JPEG 预览：RAF 头部第 84 字节起是预览的偏移 / 长度（大端）；
+ * 其他格式扫描所有 JPEG 起始标记，取能解码的最大一张。都没有返回 null。
+ */
+async function extractEmbeddedJpeg(buf: Buffer, ext: string): Promise<Buffer | null> {
+  const candidates: Buffer[] = []
+  if (ext === '.raf' && buf.length > 100 && buf.toString('latin1', 0, 15) === 'FUJIFILMCCD-RAW') {
+    const off = buf.readUInt32BE(84), len = buf.readUInt32BE(88)
+    if (off > 0 && len > 0 && off + len <= buf.length) candidates.push(buf.subarray(off, off + len))
+  }
+  if (candidates.length === 0) {
+    // 只看 JPEG 起始标记 FF D8 FF，按到下一个起始标记（或文件尾）切；取最大的几段尝试
+    const starts: number[] = []
+    for (let i = buf.indexOf(0xff); i >= 0 && i < buf.length - 3; i = buf.indexOf(0xff, i + 1)) {
+      if (buf[i + 1] === 0xd8 && buf[i + 2] === 0xff) starts.push(i)
+    }
+    const segs = starts.map((st, k) => buf.subarray(st, starts[k + 1] ?? buf.length))
+    candidates.push(...segs.sort((a, b) => b.length - a.length).slice(0, 3))
+  }
+  for (const c of candidates) {
+    try {
+      const meta = await sharp(c, { failOn: 'none' }).metadata()
+      if ((meta.width ?? 0) >= 640) return Buffer.from(c)
+    } catch { /* 下一个 */ }
+  }
+  return null
 }
 
 /**
