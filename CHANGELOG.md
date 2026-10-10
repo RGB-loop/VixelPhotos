@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Face / OCR ONNX sessions and main-process sharp use at most half the cores.
 
 ### Added
+- `VIXEL_CAPTURE` (screenshot tour) and `VIXEL_RECORD` + `scripts/make-promo.mjs` (scripted
+  real-UI promo recording with titles and captions).
 - `VIXEL_PROFILE=1`: slow SQL / IPC / protocol / inference logging, main
   event-loop lag monitor, renderer long-task forwarding, end-of-session summary.
 - `vixel doctor` and `vixel bench` CLI commands; `npm run test:db` DB smoke test.
@@ -35,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Review reports under `docs/review/`.
 
 ### Fixed
+- **Map crashed in production builds** and its CARTO tiles now require an API key: replaced
+  with a bundled offline basemap (Natural Earth, public domain). Vixel makes no network requests.
+- **HEIC and most RAW files never indexed on macOS**: sharp read their headers but couldn't
+  decode them; they now go straight to the system codec. RAW falls back to the camera's
+  embedded preview, which also brings RAW support to Linux / Windows.
+- Search relevance gate now works on small libraries (pooled / robust baseline).
 - **Text-in-image search never worked**: the PP-OCRv5 recognition model was paired with
   the v1 dictionary and its softmaxed output was softmaxed again. OCR is now validated at
   startup, runs automatically after indexing, reads full-resolution video frames, and
