@@ -51,7 +51,7 @@ VIXEL_CAPTURE=$D/shots VIXEL_CAPTURE_QUERIES="花,STARBUCKS,猫" npx electron . 
         或执行 `xattr -dr com.apple.quarantine /Applications/Vixel.app`。适合内测，不适合公开宣发。
 - [ ] **模型随包**：确认 `resources/models` 下有 `gemma2/`、`paddleocr/ppocrv5_dict.txt`（v5 字典，不是 `ppocr_keys_v1.txt`）、人脸模型；DMG 体积约 700 MB，下载页注明。
 - [x] **全新目录冒烟**：打包后的 app 用空数据目录启动、用演示库跑完截图巡检（搜索 / 图中文字 / 视频 / 地图 / 人物）均正常。真机全新用户仍建议再试一次。
-- [x] **版本号**：v0.2.0 已发布（2026-10-10）：https://github.com/RGB-loop/VixelPhotos/releases/tag/v0.2.0
+- [x] **版本号**：v0.2.0 已发布（2026-10-10）：https://github.com/RGB-loop/Vixel/releases/tag/v0.2.0
 - [x] **宣传片 / README 配图**：已用演示库按真实界面重做（2026-10-10）。README 里内嵌播放的视频需要把新的 mp4 拖进 GitHub 网页编辑器生成附件链接。
 
 ## 发布后一周盯什么

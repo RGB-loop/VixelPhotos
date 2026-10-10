@@ -12,7 +12,7 @@
 </div>
 
 <div align="center">
-<sub>48 秒演示 · 1080p · 真实界面录屏 · <a href="https://github.com/RGB-loop/VixelPhotos/raw/main/docs/media/vixel-promo.mp4">下载 mp4</a></sub>
+<sub>48 秒演示 · 1080p · 真实界面录屏 · <a href="https://github.com/RGB-loop/Vixel/raw/main/docs/media/vixel-promo.mp4">下载 mp4</a></sub>
 </div>
 
 ---
@@ -84,7 +84,7 @@ SCRFD 人脸检测 + MobileFaceNet 512 维特征 + sqlite-vec 近邻索引。
 
 ## 下载
 
-[**下载最新版（macOS · Apple Silicon）**](https://github.com/RGB-loop/VixelPhotos/releases/latest) —— 约 615 MB，模型已内置。
+[**下载最新版（macOS · Apple Silicon）**](https://github.com/RGB-loop/Vixel/releases/latest) —— 约 615 MB，模型已内置。
 
 这个版本没有经过 Apple 公证。第一次打开被拦截时，到 **系统设置 → 隐私与安全性** 点「仍要打开」；
 或在终端执行 `xattr -dr com.apple.quarantine /Applications/Vixel.app`。

@@ -48,7 +48,7 @@ await card([
 await card([
   { text: '完全离线 · 数据不出设备', size: 76, weight: 600 },
   { text: '模型在你的 Mac 上运行，不上传、不需要账号', size: 44, color: '#C9C2B8' },
-  { text: '开源 · github.com/RGB-loop/VixelPhotos', size: 40, color: '#D9B48A' },
+  { text: '开源 · github.com/RGB-loop/Vixel', size: 40, color: '#D9B48A' },
 ], join(tmp, 'outro.png'), false)
 
 const still = (png, secs, file) =>

@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Vixel! This document provides gui
 
 1. Clone the repository
    ```bash
-   git clone https://github.com/RGB-loop/VixelPhotos.git
+   git clone https://github.com/RGB-loop/Vixel.git
    cd vixel
    ```
 
