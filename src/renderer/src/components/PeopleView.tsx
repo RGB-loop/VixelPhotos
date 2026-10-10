@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import type { Person, PersonFace, PersonSuggestion, Photo, SearchResult } from '../../../shared/types'
+import { IS_MAC } from '../lib/platform'
 import { faceUrl, thumbUrl } from '../lib/mediaUrl'
 
 interface PeopleViewProps {
@@ -205,7 +206,7 @@ export function PeopleView({ onSelectPhoto }: PeopleViewProps): JSX.Element {
           <span className="text-callout text-ink-3">{shown.length}</span>
           <span className="flex-1" />
           {!showHidden && (
-            <span className="text-micro text-ink-3">双击名字命名 · ⌘ 点击多选 · 拖到另一人上合并</span>
+            <span className="text-micro text-ink-3">双击名字命名 · {IS_MAC ? '⌘' : 'Ctrl'} 点击多选 · 拖到另一人上合并</span>
           )}
           {(hidden.length > 0 || showHidden) && (
             <button

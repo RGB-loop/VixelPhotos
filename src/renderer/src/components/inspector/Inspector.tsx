@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { MediaDetail, PhotoDetail, PhotoLocation, SearchResult } from '../../../../shared/types'
 import { formatDuration, formatFileSize, mediaKindOf } from '../../lib/format'
 import { thumbUrl } from '../../lib/mediaUrl'
+import { revealLabel } from '../../lib/platform'
 import { Icon } from '../shell/icons'
 
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' } as const
@@ -202,7 +203,7 @@ export function Inspector({ result, onSelect, showPreview, onClose, resolution: 
             ))}
           </div>
           <div className="flex gap-1.5 mt-2">
-            <ActionButton icon="folder" onClick={() => sourcePath && window.api.showInFinder(sourcePath)}>在访达中显示</ActionButton>
+            <ActionButton icon="folder" onClick={() => sourcePath && window.api.showInFinder(sourcePath)}>{revealLabel}</ActionButton>
             {isMedia && (
               <ActionButton icon="video" onClick={() => photo.videoId != null && window.api.openSourceVideo(photo.videoId)}>
                 系统播放器
@@ -258,7 +259,7 @@ export function SelectionSummary({ results, breakdown, onReveal, onCopyPaths, on
         {onClose && <CloseButton onClick={onClose} />}
       </div>
       <div className="flex gap-1.5">
-        <ActionButton icon="folder" onClick={onReveal}>在访达中显示</ActionButton>
+        <ActionButton icon="folder" onClick={onReveal}>{revealLabel}</ActionButton>
         <ActionButton icon="all" onClick={onCopyPaths}>拷贝路径</ActionButton>
       </div>
     </div>

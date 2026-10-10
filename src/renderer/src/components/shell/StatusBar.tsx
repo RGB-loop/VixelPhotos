@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { kbd } from '../../lib/platform'
 import type { IndexProgress } from '../../../../shared/types'
 
 export const THUMB_MIN = 120
@@ -86,7 +87,7 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
       {/* 活动区：点开抽屉 */}
       <button
         onClick={onOpenActivity}
-        title="查看活动 (⌥⌘A)"
+        title={`查看活动 (${kbd('⌥⌘A')})`}
         className="min-w-0 flex-1 h-full flex items-center gap-2 px-2 -mx-2 hover:bg-fill transition-colors duration-fast"
       >
         {paused ? (
@@ -167,7 +168,7 @@ export function StatusBar({ progress, itemCount, breakdown, selectedCount = 0, o
       )}
 
       {thumbSize !== undefined && onThumbSize && (
-        <label className="flex-shrink-0 flex items-center gap-1.5" title="缩略图大小 (⌘+ / ⌘−)">
+        <label className="flex-shrink-0 flex items-center gap-1.5" title={`缩略图大小 (${kbd('⌘+')} / ${kbd('⌘−')})`}>
           <span className="w-2 h-2 rounded-[2px] border border-ink-3" />
           <input
             type="range"

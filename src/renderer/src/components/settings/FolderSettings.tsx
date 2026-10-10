@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { folderName } from '../../lib/platform'
 import type { WatchedFolder } from '../../../../shared/types'
 
 /** 设置 › 文件夹：监视的文件夹列表，添加 / 移除（移除前确认） */
@@ -45,7 +46,7 @@ export function FolderSettings(): JSX.Element {
   }, [])
 
   const getFolderName = (path: string): string => {
-    return path.split('/').pop() || path
+    return folderName(path)
   }
 
   return (

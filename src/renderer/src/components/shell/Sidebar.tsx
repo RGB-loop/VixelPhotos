@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { LibraryCounts, WatchedFolder } from '../../../../shared/types'
+import { folderName, kbd } from '../../lib/platform'
 import { Icon, type IconName } from './icons'
 
 export type KindFilter = 'all' | 'image' | 'video' | 'audio'
@@ -13,10 +14,10 @@ export type Source =
   | { type: 'similar'; photoId: number; name: string }
 
 export const LIBRARY_ITEMS: { kind: KindFilter; label: string; icon: IconName; shortcut: string }[] = [
-  { kind: 'all', label: '全部', icon: 'all', shortcut: '⌘1' },
-  { kind: 'image', label: '图片', icon: 'image', shortcut: '⌘2' },
-  { kind: 'video', label: '视频', icon: 'video', shortcut: '⌘3' },
-  { kind: 'audio', label: '音频', icon: 'audio', shortcut: '⌘4' },
+  { kind: 'all', label: '全部', icon: 'all', shortcut: kbd('⌘1') },
+  { kind: 'image', label: '图片', icon: 'image', shortcut: kbd('⌘2') },
+  { kind: 'video', label: '视频', icon: 'video', shortcut: kbd('⌘3') },
+  { kind: 'audio', label: '音频', icon: 'audio', shortcut: kbd('⌘4') },
 ]
 
 export const SIDEBAR_MIN = 200
@@ -42,9 +43,7 @@ interface SidebarProps {
 /** 侧栏里最近搜索最多列几条，其余留在存储里 */
 const RECENT_SHOWN = 5
 
-export function folderName(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path
-}
+export { folderName }
 
 export function Sidebar({
   width, onResize, source, onSelect, counts, folders, onAddFolder,
@@ -100,8 +99,8 @@ export function Sidebar({
         </Group>
 
         <Group title="浏览">
-          <Row icon="map" label="地图" hint="⌘5" active={source.type === 'map'} onClick={() => onSelect({ type: 'map' })} />
-          <Row icon="people" label="人物" hint="⌘6" active={source.type === 'people'} onClick={() => onSelect({ type: 'people' })} />
+          <Row icon="map" label="地图" hint={kbd('⌘5')} active={source.type === 'map'} onClick={() => onSelect({ type: 'map' })} />
+          <Row icon="people" label="人物" hint={kbd('⌘6')} active={source.type === 'people'} onClick={() => onSelect({ type: 'people' })} />
         </Group>
 
         {(savedSearches.length > 0 || recentShown.length > 0) && (
@@ -137,7 +136,7 @@ export function Sidebar({
           action={
             <button
               onClick={onAddFolder}
-              title="添加文件夹 (⌘O)"
+              title={`添加文件夹 (${kbd('⌘O')})`}
               className="w-5 h-5 rounded flex items-center justify-center text-ink-3 hover:text-ink hover:bg-fill-hover transition-colors duration-fast"
             >
               <Icon name="plus" className="w-3.5 h-3.5" />

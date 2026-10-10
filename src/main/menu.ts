@@ -1,4 +1,7 @@
 import { app, Menu, shell, BrowserWindow, type MenuItemConstructorOptions } from 'electron'
+
+/** macOS 叫访达，Windows / Linux 是文件管理器 */
+const REVEAL_LABEL = process.platform === 'darwin' ? '在访达中显示' : '在资源管理器中显示'
 import { IPC_CHANNELS, type ItemMenuAction, type MenuCommand } from '../shared/types'
 
 /**
@@ -48,7 +51,7 @@ export function installAppMenu(
         { type: 'separator' },
         hint('打开', 'Enter', 'open-item'),
         hint('快速查看', 'Space', 'quick-look'),
-        item('在访达中显示', 'CmdOrCtrl+Shift+R', 'reveal'),
+        item(REVEAL_LABEL, 'CmdOrCtrl+Shift+R', 'reveal'),
         { type: 'separator' },
         { role: 'close', label: '关闭窗口' },
       ],
@@ -121,7 +124,7 @@ export function popupItemMenu(
         { label: '快速查看', click: pick('quick-look') },
         { type: 'separator' },
       ] as MenuItemConstructorOptions[]),
-      { label: multi ? `在访达中显示 ${count} 项` : '在访达中显示', accelerator: 'CmdOrCtrl+Shift+R', click: pick('reveal') },
+      { label: multi ? `${REVEAL_LABEL} ${count} 项` : REVEAL_LABEL, accelerator: 'CmdOrCtrl+Shift+R', click: pick('reveal') },
       { label: multi ? `拷贝 ${count} 个路径` : '拷贝路径', click: pick('copy-path') },
       ...(multi ? [] : [
         { type: 'separator' },
